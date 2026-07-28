@@ -1,0 +1,46 @@
+api_version: pystream/v1
+job:
+  name: wordcount
+operators:
+  - id: words
+    type: source
+    parallelism: 2
+    config:
+      connector: kafka
+      topic: words
+      value_format: json
+      bootstrap_servers: kafka:9092
+      bad_record_policy: fail
+      validator: wordcount_udfs:validate_input
+  - id: normalize
+    type: map
+    parallelism: 2
+    udf: wordcount_udfs:normalize
+  - id: by_word
+    type: key_by
+    parallelism: 2
+    udf: wordcount_udfs:word_key
+  - id: totals
+    type: reduce
+    parallelism: 3
+    udf: wordcount_udfs:add_counts
+    window:
+      type: tumbling
+      time_characteristic: processing
+      size: 10s
+  - id: output
+    type: sink
+    parallelism: 1
+    config:
+      connector: file
+      format: csv
+      output_path: /data/output
+edges:
+  - from: words
+    to: normalize
+  - from: normalize
+    to: by_word
+  - from: by_word
+    to: totals
+  - from: totals
+    to: output

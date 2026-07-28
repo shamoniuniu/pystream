@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.python-version.local
+.venv/
+venv/
+env/
+
+# Build and package artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test and quality caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# IDE and operating system files
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# PyStream runtime data
+artifacts/
+checkpoints/
+data/
+logs/
+output/
+run/
+work/
+
+# Original assignment materials
+/【实践二】简易流计算系统设计.md
+/【实践二】简易流计算系统设计.pdf

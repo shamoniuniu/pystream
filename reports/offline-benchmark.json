@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-07-27T02:13:11.482435+00:00",
+  "benchmark": "offline_in_process_wordcount",
+  "latency_scope": "record creation through synthetic window trigger and flushed CSV result; excludes real window wait, Kafka, TCP, Docker, and scheduling",
+  "environment": {
+    "os": "Windows-11-10.0.26100-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 186 Stepping 3, GenuineIntel",
+    "cpu_count": 12,
+    "memory_bytes": 33974157312,
+    "python": "3.13.12",
+    "docker": null,
+    "compose": null
+  },
+  "parameters": {
+    "input_records": 50000,
+    "kafka_partitions": 2,
+    "parallelism": {
+      "source": 2,
+      "map": 2,
+      "key_by": 2,
+      "reduce": 3,
+      "sink": 1
+    },
+    "window_size_seconds": 300,
+    "word_cardinality": 100
+  },
+  "results": {
+    "completed_records": 50000,
+    "output_rows": 100,
+    "duration_seconds": 5.959428,
+    "throughput_records_per_second": 8390.07,
+    "p50_latency_ms": 2787.685,
+    "p95_latency_ms": 5745.805,
+    "error_count": 0,
+    "dropped_records": 0,
+    "input_output_count_match": true,
+    "output_row_count_match": true,
+    "reducer_record_distribution": {
+      "0": 20000,
+      "1": 16500,
+      "2": 13500
+    }
+  },
+  "threshold": null
+}

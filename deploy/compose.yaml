@@ -1,0 +1,291 @@
+name: pystream
+
+x-pystream-service: &pystream-service
+  build:
+    context: ..
+    dockerfile: Dockerfile
+    args:
+      PYTHON_VERSION: 3.11.9
+  image: pystream:0.1.0
+  user: "10001:10001"
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  restart: unless-stopped
+  stop_grace_period: 20s
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  networks:
+    - pystream
+
+x-worker: &worker
+  <<: *pystream-service
+  depends_on:
+    jobmanager:
+      condition: service_healthy
+    kafka:
+      condition: service_healthy
+    kafka-init:
+      condition: service_completed_successfully
+  expose:
+    - "8081"
+    - "9000"
+  volumes:
+    - pystream-output:/data/output
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8081/health', timeout=2)); assert d['status']=='ok'"
+    interval: 5s
+    timeout: 3s
+    retries: 12
+    start_period: 10s
+  deploy:
+    resources:
+      reservations:
+        cpus: "0.10"
+        memory: 128M
+      limits:
+        cpus: "0.50"
+        memory: 512M
+
+services:
+  kafka:
+    image: apache/kafka:3.9.1
+    hostname: kafka
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    expose:
+      - "9092"
+    volumes:
+      - pystream-kafka:/var/lib/kafka/data
+    networks:
+      - pystream
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+        limits:
+          cpus: "1.00"
+          memory: 1G
+
+  kafka-init:
+    image: apache/kafka:3.9.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - pystream
+    command:
+      - /opt/kafka/bin/kafka-topics.sh
+      - --bootstrap-server
+      - kafka:9092
+      - --create
+      - --if-not-exists
+      - --topic
+      - words
+      - --partitions
+      - "2"
+      - --replication-factor
+      - "1"
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+        limits:
+          cpus: "0.25"
+          memory: 256M
+
+  jobmanager:
+    <<: *pystream-service
+    hostname: jobmanager
+    command:
+      - python
+      - -m
+      - pystream.service
+      - jobmanager
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --artifact-root
+      - /data/artifacts
+    ports:
+      - "8080:8080"
+    volumes:
+      - pystream-artifacts:/data/artifacts
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8080/health', timeout=2)); assert d['status']=='ok'"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+        limits:
+          cpus: "0.50"
+          memory: 512M
+
+  worker-1:
+    <<: *worker
+    hostname: worker-1
+    command:
+      - python
+      - -m
+      - pystream.service
+      - worker
+      - --worker-id
+      - worker-1
+      - --control-address
+      - http://worker-1:8081
+      - --data-host
+      - worker-1
+      - --data-port
+      - "9000"
+      - --slots
+      - "4"
+      - --jobmanager-url
+      - http://jobmanager:8080
+      - --work-root
+      - /data/work
+    volumes:
+      - pystream-output:/data/output
+      - pystream-worker-1:/data/work
+
+  worker-2:
+    <<: *worker
+    hostname: worker-2
+    command:
+      - python
+      - -m
+      - pystream.service
+      - worker
+      - --worker-id
+      - worker-2
+      - --control-address
+      - http://worker-2:8081
+      - --data-host
+      - worker-2
+      - --data-port
+      - "9000"
+      - --slots
+      - "4"
+      - --jobmanager-url
+      - http://jobmanager:8080
+      - --work-root
+      - /data/work
+    volumes:
+      - pystream-output:/data/output
+      - pystream-worker-2:/data/work
+
+  worker-3:
+    <<: *worker
+    hostname: worker-3
+    command:
+      - python
+      - -m
+      - pystream.service
+      - worker
+      - --worker-id
+      - worker-3
+      - --control-address
+      - http://worker-3:8081
+      - --data-host
+      - worker-3
+      - --data-port
+      - "9000"
+      - --slots
+      - "4"
+      - --jobmanager-url
+      - http://jobmanager:8080
+      - --work-root
+      - /data/work
+    volumes:
+      - pystream-output:/data/output
+      - pystream-worker-3:/data/work
+
+  tools:
+    <<: *pystream-service
+    profiles:
+      - tools
+    restart: "no"
+    entrypoint:
+      - python
+    command:
+      - -m
+      - pystream
+      - --help
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+      worker-1:
+        condition: service_healthy
+      worker-2:
+        condition: service_healthy
+      worker-3:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      PYSTREAM_JOBMANAGER_URL: http://jobmanager:8080
+      PYSTREAM_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PYSTREAM_OUTPUT_ROOT: /data/output
+    volumes:
+      - pystream-output:/data/output
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+        limits:
+          cpus: "0.25"
+          memory: 256M
+
+networks:
+  pystream:
+    driver: bridge
+
+volumes:
+  pystream-artifacts:
+  pystream-kafka:
+  pystream-output:
+  pystream-worker-1:
+  pystream-worker-2:
+  pystream-worker-3:
