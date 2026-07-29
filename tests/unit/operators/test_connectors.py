@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from pystream.api import EventTimeExecutionConfig, FileSinkConfig, KafkaSourceConfig
-from pystream.checkpoint import decode_state
+from pystream.checkpoint import decode_state, encode_state
 from pystream.common import ChangeKind, MessageType, RecordEnvelope
 from pystream.operators import (
     BadRecordError,
@@ -108,6 +108,28 @@ class FakeConsumer:
     def __aiter__(self):
         async def iterate():
             for message in self.messages:
+                yield message
+
+        return iterate()
+
+
+class DelayedAssignmentConsumer(FakeConsumer):
+    """首条消息可读时才暴露 assignment，模拟异步 group join。"""
+
+    def __init__(self, messages: list[FakeMessage]) -> None:
+        super().__init__(
+            messages,
+            assigned_partitions={FakePartition("words", 0)},
+        )
+        self.assignment_ready = False
+
+    def assignment(self) -> set[FakePartition]:
+        return set(self.assigned_partitions) if self.assignment_ready else set()
+
+    def __aiter__(self):
+        async def iterate():
+            for message in self.messages:
+                self.assignment_ready = True
                 yield message
 
         return iterate()
@@ -266,6 +288,34 @@ async def test_source_checkpoint_pauses_snapshots_exact_offsets_and_resumes() ->
 
 
 @pytest.mark.asyncio
+async def test_source_checkpoint_未消费assignment使用null_offset且不提交() -> None:
+    consumer = FakeConsumer(
+        assigned_partitions={FakePartition("words", 2)},
+    )
+    source = KafkaJsonSource(
+        fixed_context(),
+        job_id="job-1",
+        config=source_config(),
+        consumer_factory=RecordingConsumerFactory(consumer),
+    )
+    await source.open()
+    await source.pause()
+
+    state = decode_state(source.snapshot_state(), "kafka-source")
+    assert state["partitions"] == [
+        {
+            "topic": "words",
+            "partition": 2,
+            "next_offset": None,
+            "max_event_time": None,
+        }
+    ]
+    await source.commit_checkpoint()
+    assert consumer.commit_payloads == [{}]
+    await source.close()
+
+
+@pytest.mark.asyncio
 async def test_source_restore_seeks_current_assignment_and_preserves_watermark_baseline() -> None:
     config = source_config(event_time={"pointer": "/event_time"})
     strategy = EventTimeExecutionConfig(
@@ -326,6 +376,40 @@ async def test_source_restore_seeks_current_assignment_and_preserves_watermark_b
         record.event_time for record in records if record.message_type is MessageType.WATERMARK
     ] == [datetime(2026, 7, 26, 12, 0, 5, tzinfo=UTC)]
     await restored.close()
+
+
+@pytest.mark.asyncio
+async def test_source_restore_null_offset_延迟assignment不丢首条消息() -> None:
+    consumer = DelayedAssignmentConsumer([FakeMessage(b'{"word":"first","count":1}', offset=0)])
+    source = KafkaJsonSource(
+        fixed_context(),
+        job_id="job-1",
+        config=source_config(),
+        consumer_factory=RecordingConsumerFactory(consumer),
+    )
+    snapshot = encode_state(
+        "kafka-source",
+        {
+            "topic": "words",
+            "partitions": [
+                {
+                    "topic": "words",
+                    "partition": 0,
+                    "next_offset": None,
+                    "max_event_time": None,
+                }
+            ],
+            "last_watermark": None,
+        },
+    )
+    await source.open()
+    await source.restore_state(snapshot)
+
+    records = [record async for record in source.records()]
+
+    assert [record.record_id for record in records] == ["words:0:0"]
+    assert consumer.seek_calls == []
+    await source.close()
 
 
 @pytest.mark.asyncio

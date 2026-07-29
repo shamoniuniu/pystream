@@ -33,8 +33,14 @@ class RecordingCheckpointGateway:
         self.fail_arm_task = fail_arm_task
         self.calls: list[tuple[str, str, int]] = []
 
-    async def arm_checkpoint(self, worker, task_id: str, checkpoint_id: int) -> None:
-        del worker
+    async def arm_checkpoint(
+        self,
+        worker,
+        task_id: str,
+        attempt_id: int,
+        checkpoint_id: int,
+    ) -> None:
+        del worker, attempt_id
         self.calls.append(("arm", task_id, checkpoint_id))
         if task_id == self.fail_arm_task:
             raise ConnectionError("arm response lost")
@@ -43,9 +49,10 @@ class RecordingCheckpointGateway:
         self,
         worker,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
-        del worker
+        del worker, attempt_id
         self.calls.append(("trigger", task_id, checkpoint_id))
         return self._snapshot(task_id, checkpoint_id)
 
@@ -53,9 +60,10 @@ class RecordingCheckpointGateway:
         self,
         worker,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
-        del worker
+        del worker, attempt_id
         self.calls.append(("wait", task_id, checkpoint_id))
         if self.wait_delay:
             await asyncio.sleep(self.wait_delay)
@@ -65,9 +73,10 @@ class RecordingCheckpointGateway:
         self,
         worker,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> None:
-        del worker
+        del worker, attempt_id
         self.calls.append(("complete", task_id, checkpoint_id))
         if task_id == self.fail_complete_task:
             raise ConnectionError("complete response lost")
@@ -76,9 +85,10 @@ class RecordingCheckpointGateway:
         self,
         worker,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> None:
-        del worker
+        del worker, attempt_id
         self.calls.append(("abort", task_id, checkpoint_id))
 
     def _snapshot(self, task_id: str, checkpoint_id: int) -> TaskSnapshotDescriptor:

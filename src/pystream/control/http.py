@@ -267,6 +267,7 @@ class JobManagerHttpService:
             request.match_info["task_id"],
             status,
             error,
+            attempt_id=_required_integer(document, "attempt_id", minimum=0),
         )
         self._log(
             logging.ERROR if status is TaskStatus.FAILED else logging.INFO,
@@ -275,6 +276,7 @@ class JobManagerHttpService:
             job_id=job.job_id,
             status=status.value,
             task_id=request.match_info["task_id"],
+            attempt_id=document["attempt_id"],
             error=error,
         )
         return web.json_response({"job_id": job.job_id, "status": job.status.value})

@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 from pystream.api import FileSinkConfig, OperatorType, Partitioning
-from pystream.checkpoint import LocalCheckpointStore, encode_state
+from pystream.checkpoint import (
+    LocalCheckpointStore,
+    TaskSnapshotDescriptor,
+    decode_state,
+    encode_state,
+)
 from pystream.common import MessageType, RecordEnvelope
 from pystream.control import (
     ArtifactDescriptor,
@@ -104,6 +109,17 @@ class CheckpointMemorySource(MemorySource):
         self.checkpoint_commits += 1
 
 
+class RestoringMemorySource(CheckpointMemorySource):
+    """记录 TaskRuntime 在启动执行循环前传入的合并 Source 状态。"""
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.restored_snapshot: bytes | None = None
+
+    async def restore_state(self, snapshot: bytes) -> None:
+        self.restored_snapshot = snapshot
+
+
 class SlowFlushFile:
     """包装真实临时文件，并在 flush 时模拟慢文件系统。"""
 
@@ -165,8 +181,9 @@ def deployment(
     *,
     incoming: tuple[PhysicalChannel, ...] = (),
     outgoing: tuple[PhysicalChannel, ...] = (),
+    restore: tuple[TaskSnapshotDescriptor, ...] = (),
 ) -> TaskDeployment:
-    return TaskDeployment(task_instance, ARTIFACT, incoming, outgoing)
+    return TaskDeployment(task_instance, ARTIFACT, incoming, outgoing, restore)
 
 
 def record(record_id: str, word: str) -> RecordEnvelope:
@@ -514,6 +531,123 @@ async def test_checkpoint多输入收齐与abort后的延迟drain隔离(tmp_path
         assert descriptor.checkpoint_id == 2
         await runtime.complete_checkpoint(2)
         assert runtime.state is TaskRuntimeState.RUNNING
+    finally:
+        await runtime.stop()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_source_restore合并operator分区并保留当前task_watermark(
+    tmp_path: Path,
+) -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    store = LocalCheckpointStore(tmp_path / "checkpoints")
+    source_task = task("words", OperatorType.SOURCE, parallelism=2)
+    source_task.attempt_id = 1
+    source_task.restored_checkpoint_id = 5
+
+    def source_descriptor(
+        task_id: str,
+        partition: int,
+        watermark: datetime,
+    ) -> TaskSnapshotDescriptor:
+        inner = encode_state(
+            "kafka-source",
+            {
+                "topic": "words",
+                "partitions": [
+                    {
+                        "topic": "words",
+                        "partition": partition,
+                        "next_offset": partition + 10,
+                        "max_event_time": watermark.isoformat(),
+                    }
+                ],
+                "last_watermark": watermark.isoformat(),
+            },
+        )
+        return store.write_task_snapshot(
+            job_id="job-1",
+            checkpoint_id=5,
+            attempt_id=0,
+            task_id=task_id,
+            operator_id="words",
+            state={
+                "kind": "source",
+                "snapshot": inner.decode("utf-8"),
+                "input_watermarks": [],
+                "last_output_watermark": None,
+            },
+        )
+
+    primary = source_descriptor(source_task.task_id, 0, AT_WINDOW_START)
+    secondary = source_descriptor("job-1:words:1", 1, AT_WINDOW_END)
+    source = RestoringMemorySource()
+    runtime = TaskRuntime(
+        deployment(source_task, restore=(primary, secondary)),
+        server,
+        source=source,
+        checkpoint_enabled=True,
+        checkpoint_store=store,
+    )
+    try:
+        await runtime.start()
+        assert source.restored_snapshot is not None
+        restored = decode_state(source.restored_snapshot, "kafka-source")
+        assert [item["partition"] for item in restored["partitions"]] == [0, 1]
+        assert restored["last_watermark"] == AT_WINDOW_START.isoformat()
+    finally:
+        await runtime.stop()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_operator_restore在执行前恢复每输入和输出watermark(tmp_path: Path) -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    store = LocalCheckpointStore(tmp_path / "checkpoints")
+    upstream = task("upstream", OperatorType.MAP)
+    target = task("target", OperatorType.MAP)
+    target.attempt_id = 1
+    target.restored_checkpoint_id = 6
+    incoming = channel(upstream, target, Partitioning.FORWARD, server)
+    descriptor = store.write_task_snapshot(
+        job_id="job-1",
+        checkpoint_id=6,
+        attempt_id=0,
+        task_id=target.task_id,
+        operator_id=target.operator_id,
+        state={
+            "kind": "operator",
+            "snapshot": encode_state("stateless-operator", {}).decode("utf-8"),
+            "input_watermarks": [
+                {
+                    "upstream_task_id": upstream.task_id,
+                    "watermark": AT_WINDOW_START.isoformat(),
+                }
+            ],
+            "last_output_watermark": AT_WINDOW_START.isoformat(),
+        },
+    )
+    runtime = TaskRuntime(
+        deployment(target, incoming=(incoming,), restore=(descriptor,)),
+        server,
+        operator=MapOperator(OperatorContext("target"), lambda payload: payload),
+        checkpoint_enabled=True,
+        checkpoint_store=store,
+    )
+    identity = ChannelIdentity(
+        "job-1",
+        upstream.task_id,
+        target.task_id,
+        attempt_id=1,
+    )
+    try:
+        await runtime.start()
+        assert runtime._input_watermarks[identity] == AT_WINDOW_START
+        assert runtime._last_output_watermark == AT_WINDOW_START
+        assert runtime._idle_inputs == set()
     finally:
         await runtime.stop()
         await server.close()

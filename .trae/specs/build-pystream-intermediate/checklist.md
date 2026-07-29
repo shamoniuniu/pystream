@@ -49,14 +49,14 @@
 
 - [ ] Worker 进程 SIGKILL 后 Compose 自动拉起
 - [ ] Worker 重注册并重新参与调度
-- [ ] 作业进入 RECOVERING，attempt 递增
-- [ ] 全图停止、释放 slot、下游优先重新部署
-- [ ] Source partition 换 subtask 后仍按 manifest seek
-- [ ] Reduce/Watermark 状态恢复
+- [x] 作业进入 RECOVERING，attempt 递增
+- [x] 全图停止、释放 slot、下游优先重新部署
+- [x] Source partition 换 subtask 后仍按 manifest seek
+- [x] Reduce/Watermark 状态恢复
 - [ ] 恢复后无输入丢失，允许 Sink 重复
-- [ ] 旧 attempt 连接/状态/快照被 fencing
-- [ ] 重试耗尽进入 FAILED
-- [ ] RECOVERING 中 cancel 停止后续重试
+- [x] 旧 attempt 连接/状态/快照被 fencing
+- [x] 重试耗尽进入 FAILED
+- [x] RECOVERING 中 cancel 停止后续重试
 
 ## 质量门
 

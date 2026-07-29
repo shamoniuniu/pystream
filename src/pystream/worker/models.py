@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from pystream.api import OperatorType, Partitioning
+from pystream.checkpoint import CheckpointError, TaskSnapshotDescriptor
 from pystream.control import (
     ArtifactDescriptor,
     PhysicalChannel,
@@ -30,6 +31,8 @@ def deployment_to_dict(deployment: TaskDeployment) -> dict[str, Any]:
             "operator_type": task.operator_type.value,
             "subtask_index": task.subtask_index,
             "parallelism": task.parallelism,
+            "attempt_id": task.attempt_id,
+            "restored_checkpoint_id": task.restored_checkpoint_id,
             "status": task.status.value,
             "worker_id": task.worker_id,
             "slot_index": task.slot_index,
@@ -41,6 +44,9 @@ def deployment_to_dict(deployment: TaskDeployment) -> dict[str, Any]:
         },
         "incoming_channels": [_channel_to_dict(item) for item in deployment.incoming_channels],
         "outgoing_channels": [_channel_to_dict(item) for item in deployment.outgoing_channels],
+        "restore_descriptors": [
+            descriptor.to_dict() for descriptor in deployment.restore_descriptors
+        ],
     }
 
 
@@ -48,7 +54,13 @@ def deployment_from_dict(document: object) -> TaskDeployment:
     """从不可信 HTTP JSON 恢复完整 TaskDeployment。"""
     root = _strict_dict(
         document,
-        {"task", "artifact", "incoming_channels", "outgoing_channels"},
+        {
+            "task",
+            "artifact",
+            "incoming_channels",
+            "outgoing_channels",
+            "restore_descriptors",
+        },
         "$",
     )
     task_data = _strict_dict(
@@ -60,6 +72,8 @@ def deployment_from_dict(document: object) -> TaskDeployment:
             "operator_type",
             "subtask_index",
             "parallelism",
+            "attempt_id",
+            "restored_checkpoint_id",
             "status",
             "worker_id",
             "slot_index",
@@ -73,6 +87,10 @@ def deployment_from_dict(document: object) -> TaskDeployment:
     )
     incoming = _channel_list(root["incoming_channels"], "$.incoming_channels")
     outgoing = _channel_list(root["outgoing_channels"], "$.outgoing_channels")
+    restore_descriptors = _descriptor_list(
+        root["restore_descriptors"],
+        "$.restore_descriptors",
+    )
     try:
         task = TaskInstance(
             task_id=_string(task_data["task_id"], "$.task.task_id"),
@@ -81,6 +99,11 @@ def deployment_from_dict(document: object) -> TaskDeployment:
             operator_type=OperatorType(task_data["operator_type"]),
             subtask_index=_integer(task_data["subtask_index"], "$.task.subtask_index", minimum=0),
             parallelism=_integer(task_data["parallelism"], "$.task.parallelism", minimum=1),
+            attempt_id=_integer(task_data["attempt_id"], "$.task.attempt_id", minimum=0),
+            restored_checkpoint_id=_nullable_integer(
+                task_data["restored_checkpoint_id"],
+                "$.task.restored_checkpoint_id",
+            ),
             status=TaskStatus(task_data["status"]),
             worker_id=_nullable_string(task_data["worker_id"], "$.task.worker_id"),
             slot_index=_nullable_integer(task_data["slot_index"], "$.task.slot_index"),
@@ -94,11 +117,33 @@ def deployment_from_dict(document: object) -> TaskDeployment:
         raise WorkerRequestError(f"部署字段无效: {exc}") from exc
     if task.job_id != artifact.job_id:
         raise WorkerRequestError("$.artifact.job_id 必须与 $.task.job_id 一致")
+    if task.restored_checkpoint_id is None:
+        if restore_descriptors:
+            raise WorkerRequestError(
+                "未设置 restored_checkpoint_id 时 restore_descriptors 必须为空"
+            )
+    else:
+        if not restore_descriptors:
+            raise WorkerRequestError("设置 restored_checkpoint_id 时必须提供 restore_descriptors")
+        for descriptor in restore_descriptors:
+            if (
+                descriptor.job_id != task.job_id
+                or descriptor.checkpoint_id != task.restored_checkpoint_id
+                or descriptor.operator_id != task.operator_id
+                or descriptor.attempt_id >= task.attempt_id
+            ):
+                raise WorkerRequestError("restore descriptor 与 Task 恢复身份不匹配")
+        if task.operator_type is OperatorType.SOURCE:
+            if not any(descriptor.task_id == task.task_id for descriptor in restore_descriptors):
+                raise WorkerRequestError("Source restore descriptors 缺少当前 task_id")
+        elif len(restore_descriptors) != 1 or restore_descriptors[0].task_id != task.task_id:
+            raise WorkerRequestError("非 Source Task 必须只恢复自身 descriptor")
     return TaskDeployment(
         task=task,
         artifact=artifact,
         incoming_channels=incoming,
         outgoing_channels=outgoing,
+        restore_descriptors=restore_descriptors,
     )
 
 
@@ -119,6 +164,18 @@ def _channel_to_dict(channel: PhysicalChannel) -> dict[str, Any]:
             }
         ),
     }
+
+
+def _descriptor_list(
+    value: object,
+    path: str,
+) -> tuple[TaskSnapshotDescriptor, ...]:
+    if not isinstance(value, list):
+        raise WorkerRequestError(f"{path} 必须是 array")
+    try:
+        return tuple(TaskSnapshotDescriptor.from_dict(item) for item in value)
+    except CheckpointError as exc:
+        raise WorkerRequestError(f"{path} 包含非法 descriptor: {exc}") from exc
 
 
 def _channel_list(value: object, path: str) -> tuple[PhysicalChannel, ...]:

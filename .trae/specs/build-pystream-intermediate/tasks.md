@@ -54,21 +54,21 @@
   - [x] attempt 目录隔离和旧写入拒绝
   - [x] Store 单元测试
 
-- [ ] Task 6: 实现停流协调 Checkpoint
+- [x] Task 6: 实现停流协调 Checkpoint
   - [x] Worker arm/trigger/status/complete/abort API
   - [x] Source pause、partition snapshot、精确 commit/resume
   - [x] CHECKPOINT_DRAIN 多输入收齐和状态写入
-  - [ ] Source operator partition 状态合并
+  - [x] Source operator partition 状态合并
   - [x] timeout/abort/连续失败
   - [x] Coordinator 和多 Runtime 集成测试
 
-- [ ] Task 7: 实现整作业自动恢复
-  - [ ] Job/Task RECOVERING 与 attempt 状态机
-  - [ ] 故障去重、停止、释放、延迟、重新调度
-  - [ ] Worker 重注册和高 attempt 部署
-  - [ ] 从最高完整 Checkpoint restore/seek
-  - [ ] max attempts、cancel 优先和状态接口
-  - [ ] 控制面、Worker、Runtime 恢复测试
+- [x] Task 7: 实现整作业自动恢复
+  - [x] Job/Task RECOVERING 与 attempt 状态机
+  - [x] 故障去重、停止、释放、延迟、重新调度
+  - [x] Worker 重注册和高 attempt 部署
+  - [x] 从最高完整 Checkpoint restore/seek
+  - [x] max attempts、cancel 优先和状态接口
+  - [x] 控制面、Worker、Runtime 恢复测试
 
 - [ ] Task 8: 完成部署和中级 demo
   - [ ] Compose 共享 checkpoint 卷与 0.2.0 镜像

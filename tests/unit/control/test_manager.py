@@ -7,7 +7,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from pystream.api import CheckpointConfig, ExecutionConfig, StreamGraph
+from pystream.api import (
+    CheckpointConfig,
+    ExecutionConfig,
+    RestartConfig,
+    StreamGraph,
+)
 from pystream.checkpoint import LocalCheckpointStore, TaskSnapshotDescriptor
 from pystream.control import (
     ArtifactError,
@@ -33,13 +38,16 @@ class RecordingGateway:
         fail_deploy_at: int | None = None,
         fail_stop_task: str | None = None,
         fail_checkpoint: bool = False,
+        fail_deploy_attempts: set[int] | None = None,
     ) -> None:
         self.fail_deploy_at = fail_deploy_at
         self.fail_stop_task = fail_stop_task
         self.fail_checkpoint = fail_checkpoint
+        self.fail_deploy_attempts = set(fail_deploy_attempts or ())
         self.checkpoint_store: LocalCheckpointStore | None = None
         self.deploy_calls: list[tuple[str, str]] = []
         self.deployments: list[TaskDeployment] = []
+        self.deployment_attempts: list[tuple[str, int, tuple[TaskSnapshotDescriptor, ...]]] = []
         self.stop_calls: list[tuple[str, str]] = []
         self.checkpoint_calls: list[tuple[str, str, int]] = []
 
@@ -47,10 +55,25 @@ class RecordingGateway:
         call_number = len(self.deploy_calls) + 1
         self.deploy_calls.append((worker.worker_id, deployment.task.task_id))
         self.deployments.append(deployment)
+        self.deployment_attempts.append(
+            (
+                deployment.task.task_id,
+                deployment.task.attempt_id,
+                deployment.restore_descriptors,
+            )
+        )
         if self.fail_deploy_at == call_number:
             raise ConnectionError("simulated deploy failure")
+        if deployment.task.attempt_id in self.fail_deploy_attempts:
+            raise ConnectionError(f"simulated attempt {deployment.task.attempt_id} deploy failure")
 
-    async def stop_task(self, worker: WorkerNode, task_id: str) -> None:
+    async def stop_task(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        attempt_id: int,
+    ) -> None:
+        del attempt_id
         self.stop_calls.append((worker.worker_id, task_id))
         if task_id == self.fail_stop_task:
             raise ConnectionError("simulated stop failure")
@@ -59,18 +82,20 @@ class RecordingGateway:
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> None:
-        del worker
+        del worker, attempt_id
         self.checkpoint_calls.append(("arm", task_id, checkpoint_id))
 
     async def trigger_checkpoint(
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
-        del worker
+        del worker, attempt_id
         self.checkpoint_calls.append(("trigger", task_id, checkpoint_id))
         if self.fail_checkpoint:
             raise ConnectionError("simulated checkpoint failure")
@@ -80,9 +105,10 @@ class RecordingGateway:
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
-        del worker
+        del worker, attempt_id
         self.checkpoint_calls.append(("wait", task_id, checkpoint_id))
         return self._snapshot(task_id, checkpoint_id)
 
@@ -90,18 +116,20 @@ class RecordingGateway:
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> None:
-        del worker
+        del worker, attempt_id
         self.checkpoint_calls.append(("complete", task_id, checkpoint_id))
 
     async def abort_checkpoint(
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> None:
-        del worker
+        del worker, attempt_id
         self.checkpoint_calls.append(("abort", task_id, checkpoint_id))
 
     def _snapshot(self, task_id: str, checkpoint_id: int) -> TaskSnapshotDescriptor:
@@ -150,6 +178,8 @@ def checkpoint_graph(
     graph: StreamGraph,
     *,
     max_consecutive_failures: int = 3,
+    max_recovery_attempts: int = 3,
+    recovery_delay: str = "0s",
 ) -> StreamGraph:
     definition = graph.definition.model_copy(
         update={
@@ -158,7 +188,11 @@ def checkpoint_graph(
                     interval="3600s",
                     timeout="2s",
                     max_consecutive_failures=max_consecutive_failures,
-                )
+                ),
+                restart=RestartConfig(
+                    max_attempts=max_recovery_attempts,
+                    delay=recovery_delay,
+                ),
             )
         }
     )
@@ -327,6 +361,31 @@ async def test_report_task_failed_停止其他任务并聚合作业失败(
 
 
 @pytest.mark.asyncio
+async def test_report_task_status_忽略旧attempt上报(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway()
+    manager = manager_with_workers(tmp_path, gateway, worker_count=2, slots=2)
+    await manager.submit_job(two_task_graph, b"bundle", job_id="job-stale-report")
+    task_id = gateway.deploy_calls[0][1]
+    task = manager.get_execution_graph("job-stale-report").tasks[task_id]
+    task.attempt_id = 1
+
+    job = await manager.report_task_status(
+        "job-stale-report",
+        task_id,
+        TaskStatus.FAILED,
+        "old runtime failed",
+        attempt_id=0,
+    )
+
+    assert job.status is JobStatus.RUNNING
+    assert task.status is TaskStatus.RUNNING
+    assert gateway.stop_calls == []
+
+
+@pytest.mark.asyncio
 async def test_reconcile_worker_health_将失联worker上的作业置为failed(
     tmp_path,
     two_task_graph: StreamGraph,
@@ -388,7 +447,7 @@ async def test_jobmanager手动checkpoint更新状态并保留周期任务(
 
 
 @pytest.mark.asyncio
-async def test_checkpoint连续失败达到阈值后整作业失败且编号不复用(
+async def test_checkpoint连续失败达到阈值后触发整作业恢复且编号不复用(
     tmp_path,
     two_task_graph: StreamGraph,
 ) -> None:
@@ -404,10 +463,130 @@ async def test_checkpoint连续失败达到阈值后整作业失败且编号不�
     with pytest.raises(CheckpointCoordinationError, match="simulated checkpoint failure"):
         await manager.trigger_checkpoint("job-checkpoint-fail")
 
-    assert manager.get_job("job-checkpoint-fail").status is JobStatus.FAILED
-    assert "连续失败达到上限" in (manager.get_job("job-checkpoint-fail").error or "")
+    recovery = manager._runs["job-checkpoint-fail"].recovery_task
+    assert recovery is not None
+    await recovery
+
+    assert manager.get_job("job-checkpoint-fail").status is JobStatus.RUNNING
+    assert manager._runs["job-checkpoint-fail"].attempt_id == 1
     assert {
         checkpoint_id for action, _, checkpoint_id in gateway.checkpoint_calls if action == "arm"
     } == {1, 2}
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_task失败从最近完整checkpoint恢复全图(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway()
+    manager = manager_with_workers(tmp_path, gateway, worker_count=2, slots=2)
+    graph = checkpoint_graph(two_task_graph)
+    await manager.submit_job(graph, b"bundle", job_id="job-recover")
+    await manager.trigger_checkpoint("job-recover")
+    failed_task_id = gateway.deploy_calls[0][1]
+
+    job = await manager.report_task_status(
+        "job-recover",
+        failed_task_id,
+        TaskStatus.FAILED,
+        "runtime disconnected",
+        attempt_id=0,
+    )
+    assert job.status is JobStatus.RECOVERING
+    recovery = manager._runs["job-recover"].recovery_task
+    assert recovery is not None
+    await recovery
+
+    assert job.status is JobStatus.RUNNING
+    assert manager._runs["job-recover"].attempt_id == 1
+    attempt_one = [item for item in gateway.deployment_attempts if item[1] == 1]
+    assert len(attempt_one) == 2
+    assert all(
+        descriptors and {descriptor.checkpoint_id for descriptor in descriptors} == {1}
+        for _, _, descriptors in attempt_one
+    )
+    assert all(
+        task.attempt_id == 1 and task.restored_checkpoint_id == 1
+        for task in manager.get_execution_graph("job-recover").tasks.values()
+    )
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_中级作业初次部署失败进入recovery后成功(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway(fail_deploy_at=1)
+    manager = manager_with_workers(tmp_path, gateway, worker_count=2, slots=2)
+    graph = checkpoint_graph(two_task_graph, max_recovery_attempts=1)
+
+    job = await manager.submit_job(graph, b"bundle", job_id="job-initial-recovery")
+    assert job.status is JobStatus.RECOVERING
+    recovery = manager._runs["job-initial-recovery"].recovery_task
+    assert recovery is not None
+    await recovery
+
+    assert job.status is JobStatus.RUNNING
+    assert manager._runs["job-initial-recovery"].attempt_id == 1
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery重试耗尽后failed并释放资源(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway(fail_deploy_attempts={1, 2})
+    manager = manager_with_workers(tmp_path, gateway, worker_count=2, slots=2)
+    graph = checkpoint_graph(two_task_graph, max_recovery_attempts=2)
+    await manager.submit_job(graph, b"bundle", job_id="job-retry-exhausted")
+    task_id = gateway.deploy_calls[0][1]
+
+    await manager.report_task_status(
+        "job-retry-exhausted",
+        task_id,
+        TaskStatus.FAILED,
+        "worker lost",
+        attempt_id=0,
+    )
+    recovery = manager._runs["job-retry-exhausted"].recovery_task
+    assert recovery is not None
+    await recovery
+
+    assert manager.get_job("job-retry-exhausted").status is JobStatus.FAILED
+    assert manager._runs["job-retry-exhausted"].attempt_id == 2
     assert all(view.used_slots == 0 for view in manager.resources())
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_recovering期间cancel阻止后续attempt(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway()
+    manager = manager_with_workers(tmp_path, gateway, worker_count=2, slots=2)
+    graph = checkpoint_graph(
+        two_task_graph,
+        max_recovery_attempts=3,
+        recovery_delay="10s",
+    )
+    await manager.submit_job(graph, b"bundle", job_id="job-recovery-cancel")
+    task_id = gateway.deploy_calls[0][1]
+    await manager.report_task_status(
+        "job-recovery-cancel",
+        task_id,
+        TaskStatus.FAILED,
+        "worker lost",
+        attempt_id=0,
+    )
+
+    job = await manager.cancel_job("job-recovery-cancel")
+
+    assert job.status is JobStatus.CANCELLED
+    assert manager._runs["job-recovery-cancel"].attempt_id == 0
+    assert manager._runs["job-recovery-cancel"].recovery_task is None
     await manager.close()

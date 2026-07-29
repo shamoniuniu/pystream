@@ -27,7 +27,13 @@ class RecordingGateway:
     async def deploy_task(self, worker: WorkerNode, deployment: TaskDeployment) -> None:
         self.deployments.append((worker.worker_id, deployment))
 
-    async def stop_task(self, worker: WorkerNode, task_id: str) -> None:
+    async def stop_task(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        attempt_id: int,
+    ) -> None:
+        del attempt_id
         self.stops.append((worker.worker_id, task_id))
 
 

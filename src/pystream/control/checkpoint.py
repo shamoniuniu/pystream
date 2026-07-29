@@ -59,6 +59,7 @@ class CheckpointCoordinator:
                 await self.worker_gateway.arm_checkpoint(
                     self._worker(task),
                     task.task_id,
+                    task.attempt_id,
                     checkpoint_id,
                 )
 
@@ -72,6 +73,7 @@ class CheckpointCoordinator:
                     self.worker_gateway.trigger_checkpoint(
                         self._worker(task),
                         task.task_id,
+                        task.attempt_id,
                         checkpoint_id,
                     )
                     for task in source_tasks
@@ -85,6 +87,7 @@ class CheckpointCoordinator:
                     self.worker_gateway.wait_checkpoint(
                         self._worker(task),
                         task.task_id,
+                        task.attempt_id,
                         checkpoint_id,
                     )
                     for task in operator_tasks
@@ -105,6 +108,7 @@ class CheckpointCoordinator:
                 await self.worker_gateway.complete_checkpoint(
                     self._worker(task),
                     task.task_id,
+                    task.attempt_id,
                     checkpoint_id,
                 )
             return manifest
@@ -144,6 +148,7 @@ class CheckpointCoordinator:
                 await self.worker_gateway.abort_checkpoint(
                     self._worker(task),
                     task.task_id,
+                    task.attempt_id,
                     checkpoint_id,
                 )
             except Exception as exc:

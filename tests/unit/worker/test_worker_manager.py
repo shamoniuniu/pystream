@@ -98,11 +98,17 @@ class MemoryFetcher:
 
 class RecordingReporter:
     def __init__(self) -> None:
-        self.failures: list[tuple[str, str, str]] = []
+        self.failures: list[tuple[str, str, int, str]] = []
         self.reported = asyncio.Event()
 
-    async def report_task_failed(self, job_id: str, task_id: str, error: str) -> None:
-        self.failures.append((job_id, task_id, error))
+    async def report_task_failed(
+        self,
+        job_id: str,
+        task_id: str,
+        attempt_id: int,
+        error: str,
+    ) -> None:
+        self.failures.append((job_id, task_id, attempt_id, error))
         self.reported.set()
 
 
@@ -176,6 +182,7 @@ def source_deployment(
     descriptor: ArtifactDescriptor,
     *,
     worker_id: str = "worker-1",
+    attempt_id: int = 0,
 ) -> TaskDeployment:
     task = TaskInstance(
         task_id="job-1:words:0",
@@ -184,6 +191,7 @@ def source_deployment(
         operator_type=OperatorType.SOURCE,
         subtask_index=0,
         parallelism=1,
+        attempt_id=attempt_id,
         status=TaskStatus.DEPLOYING,
         worker_id=worker_id,
         slot_index=0,
@@ -243,9 +251,9 @@ async def test_manager_转发checkpoint生命周期并复用共享store(tmp_path
     task_id = deployment.task.task_id
     try:
         await manager.deploy(deployment)
-        await manager.arm_checkpoint(task_id, 1)
-        descriptor = await manager.trigger_checkpoint(task_id, 1)
-        assert await manager.wait_checkpoint(task_id, 1) == descriptor
+        await manager.arm_checkpoint(task_id, 0, 1)
+        descriptor = await manager.trigger_checkpoint(task_id, 0, 1)
+        assert await manager.wait_checkpoint(task_id, 0, 1) == descriptor
         assert consumer.commits == []
 
         manager.checkpoint_store.complete_checkpoint(
@@ -255,12 +263,49 @@ async def test_manager_转发checkpoint生命周期并复用共享store(tmp_path
             expected_task_ids={task_id},
             snapshots=(descriptor,),
         )
-        await manager.complete_checkpoint(task_id, 1)
+        await manager.complete_checkpoint(task_id, 0, 1)
         assert consumer.commits == [{}]
 
-        await manager.arm_checkpoint(task_id, 2)
-        await manager.abort_checkpoint(task_id, 2)
+        await manager.arm_checkpoint(task_id, 0, 2)
+        await manager.abort_checkpoint(task_id, 0, 2)
         assert consumer.commits == [{}]
+    finally:
+        await manager.close()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_manager_高attempt替换旧runtime并拒绝低attempt(tmp_path: Path) -> None:
+    content, descriptor = build_source_bundle(tmp_path)
+    first_consumer = BlockingConsumer()
+    second_consumer = BlockingConsumer()
+    consumers = [first_consumer, second_consumer]
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    manager = WorkerTaskManager(
+        "worker-1",
+        tmp_path / "work",
+        server,
+        MemoryFetcher(content),
+        consumer_factory=lambda *args, **kwargs: consumers.pop(0),
+    )
+    first = source_deployment(descriptor, attempt_id=0)
+    second = source_deployment(descriptor, attempt_id=1)
+    try:
+        await manager.deploy(first)
+        replaced = await manager.deploy(second)
+        duplicate = await manager.deploy(second)
+
+        assert first_consumer.stopped
+        assert second_consumer.started
+        assert replaced == duplicate
+        assert manager._runtimes[first.task.task_id].deployment.task.attempt_id == 1
+        stale_stop = await manager.stop(first.task.task_id, attempt_id=0)
+        assert stale_stop is not None and stale_stop.state is TaskRuntimeState.RUNNING
+        with pytest.raises(WorkerTaskError, match="attempt 不匹配"):
+            await manager.arm_checkpoint(first.task.task_id, 0, 1)
+        with pytest.raises(WorkerTaskError, match="旧 attempt"):
+            await manager.deploy(source_deployment(descriptor, attempt_id=0))
     finally:
         await manager.close()
         await server.close()
@@ -326,7 +371,8 @@ async def test_manager_运行时异常上报_jobmanager(tmp_path: Path) -> None:
     snapshot = manager.get(deployment.task.task_id)
     assert snapshot.state is TaskRuntimeState.FAILED
     assert reporter.failures[0][:2] == ("job-1", deployment.task.task_id)
-    assert "broker disconnected" in reporter.failures[0][2]
+    assert reporter.failures[0][2] == 0
+    assert "broker disconnected" in reporter.failures[0][3]
     await manager.close()
     await server.close()
 

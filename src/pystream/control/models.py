@@ -22,6 +22,7 @@ class JobStatus(StrEnum):
     REJECTED = "REJECTED"
     DEPLOYING = "DEPLOYING"
     RUNNING = "RUNNING"
+    RECOVERING = "RECOVERING"
     FAILING = "FAILING"
     FAILED = "FAILED"
     CANCELLING = "CANCELLING"
@@ -44,8 +45,16 @@ _JOB_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.SUBMITTED: frozenset({JobStatus.VALIDATING}),
     JobStatus.VALIDATING: frozenset({JobStatus.DEPLOYING, JobStatus.REJECTED}),
     JobStatus.REJECTED: frozenset(),
-    JobStatus.DEPLOYING: frozenset({JobStatus.RUNNING, JobStatus.FAILING}),
-    JobStatus.RUNNING: frozenset({JobStatus.CANCELLING, JobStatus.FAILING}),
+    JobStatus.DEPLOYING: frozenset(
+        {
+            JobStatus.RUNNING,
+            JobStatus.RECOVERING,
+            JobStatus.CANCELLING,
+            JobStatus.FAILING,
+        }
+    ),
+    JobStatus.RUNNING: frozenset({JobStatus.RECOVERING, JobStatus.CANCELLING, JobStatus.FAILING}),
+    JobStatus.RECOVERING: frozenset({JobStatus.DEPLOYING, JobStatus.CANCELLING, JobStatus.FAILING}),
     JobStatus.FAILING: frozenset({JobStatus.FAILED}),
     JobStatus.FAILED: frozenset(),
     JobStatus.CANCELLING: frozenset({JobStatus.CANCELLED, JobStatus.FAILING}),
@@ -53,7 +62,7 @@ _JOB_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
 }
 
 _TASK_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
-    TaskStatus.CREATED: frozenset({TaskStatus.SCHEDULED, TaskStatus.FAILED}),
+    TaskStatus.CREATED: frozenset({TaskStatus.SCHEDULED, TaskStatus.CANCELLED, TaskStatus.FAILED}),
     TaskStatus.SCHEDULED: frozenset(
         {TaskStatus.DEPLOYING, TaskStatus.CANCELLED, TaskStatus.FAILED}
     ),
@@ -186,6 +195,8 @@ class TaskInstance:
     operator_type: OperatorType
     subtask_index: int
     parallelism: int
+    attempt_id: int = 0
+    restored_checkpoint_id: int | None = None
     status: TaskStatus = TaskStatus.CREATED
     worker_id: str | None = None
     slot_index: int | None = None
@@ -210,6 +221,31 @@ class TaskInstance:
         """清除 Worker/slot 引用，保留任务终态供查询。"""
         self.worker_id = None
         self.slot_index = None
+
+    def reset_for_attempt(
+        self,
+        attempt_id: int,
+        restored_checkpoint_id: int | None,
+    ) -> None:
+        """为更高 attempt 重置可调度状态，保持逻辑 task_id 不变。"""
+        if (
+            isinstance(attempt_id, bool)
+            or not isinstance(attempt_id, int)
+            or attempt_id <= self.attempt_id
+        ):
+            raise InvalidStateTransition("新 attempt_id 必须严格递增")
+        if restored_checkpoint_id is not None and (
+            isinstance(restored_checkpoint_id, bool)
+            or not isinstance(restored_checkpoint_id, int)
+            or restored_checkpoint_id < 0
+        ):
+            raise InvalidStateTransition("restored_checkpoint_id 必须是非负整数或 null")
+        if self.worker_id is not None or self.slot_index is not None:
+            raise InvalidStateTransition("重置 attempt 前必须释放 Task assignment")
+        self.attempt_id = attempt_id
+        self.restored_checkpoint_id = restored_checkpoint_id
+        self.status = TaskStatus.CREATED
+        self.error = None
 
 
 @dataclass(frozen=True, slots=True)

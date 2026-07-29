@@ -14,13 +14,19 @@ from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
 from pystream.api import Partitioning
 from pystream.artifact import UDFLoader
-from pystream.checkpoint import LocalCheckpointStore, TaskSnapshotDescriptor
+from pystream.checkpoint import (
+    CheckpointError,
+    LocalCheckpointStore,
+    TaskSnapshotDescriptor,
+    decode_state,
+    encode_state,
+)
 from pystream.common import MessageType, RecordEnvelope, utc_now
 from pystream.control import PhysicalChannel, TaskDeployment
 from pystream.observability import log_event
@@ -59,6 +65,9 @@ class AsyncRecordSource(Protocol):
 
     async def commit_checkpoint(self) -> None:
         """提交最近一次已暂停快照中的精确输入位置。"""
+
+    async def restore_state(self, snapshot: bytes) -> None:
+        """从版本化快照恢复外部输入位置和时间基线。"""
 
     async def close(self) -> None:
         """释放输入连接。"""
@@ -105,6 +114,8 @@ class RuntimeSnapshot:
     batches_out: int = 0
     errors: int = 0
     operator_metrics: dict[str, int] = field(default_factory=dict)
+    attempt_id: int = 0
+    restored_checkpoint_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +279,8 @@ class TaskRuntime:
             batches_out=sum(channel.batches_sent for channel in self._all_output_channels),
             errors=self._failure_count,
             operator_metrics=self._operator_metrics(),
+            attempt_id=task.attempt_id,
+            restored_checkpoint_id=task.restored_checkpoint_id,
         )
 
     async def start(self) -> None:
@@ -285,6 +298,7 @@ class TaskRuntime:
                 await self.source.open()
             elif self.operator is not None:
                 self.operator.open()
+            await self._restore_checkpoint()
             self._routes, self._all_output_channels = await self._connect_outputs()
         except BaseException:
             await self._cleanup(graceful=False)
@@ -812,6 +826,90 @@ class TaskRuntime:
             emitted_records=len(outputs),
         )
 
+    async def _restore_checkpoint(self) -> None:
+        descriptors = self.deployment.restore_descriptors
+        if not descriptors:
+            return
+        store = self._checkpoint_store
+        if store is None:
+            raise RuntimeLifecycleError("恢复 Task 必须配置 Checkpoint Store")
+        task = self.deployment.task
+        checkpoint_id = task.restored_checkpoint_id
+        if checkpoint_id is None:
+            raise RuntimeLifecycleError("恢复 descriptor 存在但 Task 缺少 restored_checkpoint_id")
+        states = await asyncio.gather(
+            *(asyncio.to_thread(store.read_task_snapshot, item) for item in descriptors)
+        )
+        for descriptor in descriptors:
+            if (
+                descriptor.job_id != task.job_id
+                or descriptor.operator_id != task.operator_id
+                or descriptor.checkpoint_id != checkpoint_id
+                or descriptor.attempt_id >= task.attempt_id
+            ):
+                raise RuntimeLifecycleError("恢复 descriptor 与当前 Task identity 不匹配")
+
+        if self.source is not None:
+            snapshot = _merge_kafka_source_snapshots(
+                tuple(zip(descriptors, states, strict=True)),
+                primary_task_id=task.task_id,
+            )
+            await self.source.restore_state(snapshot)
+        else:
+            if len(descriptors) != 1 or descriptors[0].task_id != task.task_id:
+                raise RuntimeLifecycleError("非 Source Task 必须只恢复自身 descriptor")
+            state = _validate_runtime_restore_state(states[0], expected_kind="operator")
+            snapshot = state["snapshot"]
+            if not isinstance(snapshot, str):
+                raise RuntimeLifecycleError("Task restore snapshot 必须是 UTF-8 JSON 字符串")
+            if self.operator is None:  # pragma: no cover - 构造器保证
+                raise RuntimeLifecycleError("恢复 Task 缺少 Operator")
+            self.operator.restore_state(snapshot.encode("utf-8"))
+            self._restore_runtime_watermarks(state)
+
+        self._log(
+            logging.INFO,
+            "task_state_restored",
+            "Task 已从完整 Checkpoint 恢复",
+            checkpoint_id=checkpoint_id,
+            source_descriptors=len(descriptors),
+        )
+
+    def _restore_runtime_watermarks(self, state: dict[str, object]) -> None:
+        raw_inputs = state["input_watermarks"]
+        if not isinstance(raw_inputs, list):
+            raise RuntimeLifecycleError("Task restore input_watermarks 必须是 array")
+        restored: dict[str, datetime | None] = {}
+        for index, item in enumerate(raw_inputs):
+            if not isinstance(item, dict) or set(item) != {
+                "upstream_task_id",
+                "watermark",
+            }:
+                raise RuntimeLifecycleError(f"Task restore input_watermarks[{index}] 字段错误")
+            upstream_task_id = item["upstream_task_id"]
+            if not isinstance(upstream_task_id, str) or not upstream_task_id:
+                raise RuntimeLifecycleError(
+                    f"Task restore input_watermarks[{index}] upstream_task_id 非法"
+                )
+            if upstream_task_id in restored:
+                raise RuntimeLifecycleError("Task restore 包含重复 upstream_task_id")
+            restored[upstream_task_id] = _parse_restore_time(
+                item["watermark"],
+                f"input_watermarks[{index}].watermark",
+            )
+        expected = {identity.upstream_task_id for identity in self._incoming_identities}
+        if set(restored) != expected:
+            raise RuntimeLifecycleError("Task restore input_watermarks 与物理输入集合不匹配")
+        for identity in self._incoming_identities:
+            self._input_watermarks[identity] = restored[identity.upstream_task_id]
+        self._last_output_watermark = _parse_restore_time(
+            state["last_output_watermark"],
+            "last_output_watermark",
+        )
+        self._idle_inputs.clear()
+        now = self._monotonic_clock()
+        self._last_input_activity = {identity: now for identity in self._incoming_identities}
+
     async def _connect_outputs(
         self,
     ) -> tuple[tuple[_OutputRoute, ...], tuple[BoundedDataChannel, ...]]:
@@ -967,6 +1065,131 @@ class TaskRuntime:
             task_id=task.task_id,
             **fields,
         )
+
+
+def _validate_runtime_restore_state(
+    document: object,
+    *,
+    expected_kind: str,
+) -> dict[str, object]:
+    if not isinstance(document, dict) or set(document) != {
+        "kind",
+        "snapshot",
+        "input_watermarks",
+        "last_output_watermark",
+    }:
+        raise RuntimeLifecycleError("Task restore state 字段集合不匹配")
+    if document["kind"] != expected_kind:
+        raise RuntimeLifecycleError(
+            f"Task restore kind 不匹配: {document['kind']!r} != {expected_kind!r}"
+        )
+    return document
+
+
+def _merge_kafka_source_snapshots(
+    entries: tuple[
+        tuple[TaskSnapshotDescriptor, dict[str, object]],
+        ...,
+    ],
+    *,
+    primary_task_id: str,
+) -> bytes:
+    topic: str | None = None
+    partitions: dict[tuple[str, int], dict[str, object]] = {}
+    primary_watermark: object = None
+    primary_count = 0
+    for descriptor, outer in entries:
+        state = _validate_runtime_restore_state(outer, expected_kind="source")
+        if state["input_watermarks"] != [] or state["last_output_watermark"] is not None:
+            raise RuntimeLifecycleError("Source restore 包含非法 Runtime Watermark 状态")
+        snapshot = state["snapshot"]
+        if not isinstance(snapshot, str):
+            raise RuntimeLifecycleError("Source restore snapshot 必须是 UTF-8 JSON 字符串")
+        try:
+            source = decode_state(snapshot.encode("utf-8"), "kafka-source")
+        except CheckpointError as exc:
+            raise RuntimeLifecycleError(f"Kafka Source restore snapshot 非法: {exc}") from exc
+        if set(source) != {"topic", "partitions", "last_watermark"}:
+            raise RuntimeLifecycleError("Kafka Source restore 字段集合不匹配")
+        source_topic = source["topic"]
+        if not isinstance(source_topic, str) or not source_topic:
+            raise RuntimeLifecycleError("Kafka Source restore topic 非法")
+        if topic is None:
+            topic = source_topic
+        elif topic != source_topic:
+            raise RuntimeLifecycleError("Kafka Source restore topic 不一致")
+        raw_partitions = source["partitions"]
+        if not isinstance(raw_partitions, list):
+            raise RuntimeLifecycleError("Kafka Source restore partitions 必须是 array")
+        for index, item in enumerate(raw_partitions):
+            if not isinstance(item, dict) or set(item) != {
+                "topic",
+                "partition",
+                "next_offset",
+                "max_event_time",
+            }:
+                raise RuntimeLifecycleError(f"Kafka Source restore partitions[{index}] 字段错误")
+            partition_topic = item["topic"]
+            partition = item["partition"]
+            next_offset = item["next_offset"]
+            if (
+                partition_topic != source_topic
+                or isinstance(partition, bool)
+                or not isinstance(partition, int)
+                or partition < 0
+                or (
+                    next_offset is not None
+                    and (
+                        isinstance(next_offset, bool)
+                        or not isinstance(next_offset, int)
+                        or next_offset < 0
+                    )
+                )
+            ):
+                raise RuntimeLifecycleError(
+                    f"Kafka Source restore partitions[{index}] identity/offset 非法"
+                )
+            _parse_restore_time(
+                item["max_event_time"],
+                f"partitions[{index}].max_event_time",
+            )
+            key = (source_topic, partition)
+            if key in partitions:
+                raise RuntimeLifecycleError(
+                    f"Kafka Source restore 包含重复 partition {source_topic}:{partition}"
+                )
+            partitions[key] = dict(item)
+        _parse_restore_time(source["last_watermark"], "last_watermark")
+        if descriptor.task_id == primary_task_id:
+            primary_count += 1
+            primary_watermark = source["last_watermark"]
+    if topic is None or primary_count != 1:
+        raise RuntimeLifecycleError("Source restore 缺少唯一当前 task descriptor")
+    try:
+        return encode_state(
+            "kafka-source",
+            {
+                "topic": topic,
+                "partitions": [partitions[key] for key in sorted(partitions)],
+                "last_watermark": primary_watermark,
+            },
+        )
+    except CheckpointError as exc:
+        raise RuntimeLifecycleError(f"合并 Kafka Source restore 失败: {exc}") from exc
+
+
+def _parse_restore_time(value: object, field: str) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RuntimeLifecycleError(f"Task restore {field} 必须是 ISO-8601 字符串或 null")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeLifecycleError(f"Task restore {field} 不是合法 ISO-8601 时间") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise RuntimeLifecycleError(f"Task restore {field} 必须包含时区")
+    return parsed.astimezone(UTC)
 
 
 def _require_checkpoint_id(checkpoint_id: int) -> None:

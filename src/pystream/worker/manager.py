@@ -51,6 +51,7 @@ class StatusReporter(Protocol):
         self,
         job_id: str,
         task_id: str,
+        attempt_id: int,
         error: str,
     ) -> None:
         """报告任务失败；控制面负责停止其余任务。"""
@@ -91,6 +92,7 @@ class WorkerTaskManager:
             checkpoint_root or self.work_root / "checkpoints"
         )
         self._runtimes: dict[str, TaskRuntime] = {}
+        self._highest_attempts: dict[str, int] = {}
         self._deployment_lock = asyncio.Lock()
         self._artifact_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
@@ -107,14 +109,32 @@ class WorkerTaskManager:
                 f"任务 {task.task_id} 分配给 {task.worker_id!r}, 不能部署到 {self.worker_id!r}"
             )
         async with self._deployment_lock:
+            highest_attempt = self._highest_attempts.get(task.task_id, -1)
+            if task.attempt_id < highest_attempt:
+                raise WorkerTaskError(
+                    f"拒绝旧 attempt {task.attempt_id}, "
+                    f"Task {task.task_id} 当前最高 attempt={highest_attempt}"
+                )
             existing = self._runtimes.get(task.task_id)
             if existing is not None:
-                if existing.state in {
+                existing_attempt = existing.deployment.task.attempt_id
+                if task.attempt_id < existing_attempt:
+                    raise WorkerTaskError(
+                        f"拒绝旧 attempt {task.attempt_id}, 运行中 attempt={existing_attempt}"
+                    )
+                if task.attempt_id == existing_attempt and existing.state in {
                     TaskRuntimeState.STARTING,
                     TaskRuntimeState.RUNNING,
                 }:
                     return existing.snapshot
-                raise WorkerTaskError(f"任务 {task.task_id} 已存在且状态为 {existing.state.value}")
+                if task.attempt_id == existing_attempt:
+                    raise WorkerTaskError(
+                        f"任务 {task.task_id} attempt={task.attempt_id} "
+                        f"已存在且状态为 {existing.state.value}"
+                    )
+                await existing.stop()
+                del self._runtimes[task.task_id]
+            self._highest_attempts[task.task_id] = task.attempt_id
             job_root = await self._prepare_artifact(deployment.artifact)
             loader: UDFLoader | None = None
             try:
@@ -190,20 +210,34 @@ class WorkerTaskManager:
                 runtime_arguments = dict(self.runtime_options)
                 runtime_arguments.setdefault("monotonic_clock", context.clock.monotonic)
                 runtime_arguments.setdefault("checkpoint_enabled", execution is not None)
-                if execution is not None:
+                if execution is not None or deployment.restore_descriptors:
                     runtime_arguments.setdefault("checkpoint_store", self.checkpoint_store)
                 if event_time_strategy is not None:
                     runtime_arguments.setdefault(
                         "watermark_idle_timeout",
                         event_time_strategy.idle_timeout_seconds,
                     )
+
+                async def report_failure(
+                    job_id: str,
+                    task_id: str,
+                    error: BaseException,
+                    attempt_id: int = task.attempt_id,
+                ) -> None:
+                    await self._report_failure(
+                        job_id,
+                        task_id,
+                        attempt_id,
+                        error,
+                    )
+
                 runtime = TaskRuntime(
                     deployment,
                     self.data_server,
                     source=source,
                     operator=operator,
                     udf_loader=loader,
-                    failure_callback=self._report_failure,
+                    failure_callback=report_failure,
                     **runtime_arguments,
                 )
                 self._runtimes[task.task_id] = runtime
@@ -215,41 +249,69 @@ class WorkerTaskManager:
                     loader.close()
                 raise WorkerTaskError(f"部署任务 {task.task_id} 失败: {exc}") from exc
 
-    async def stop(self, task_id: str) -> RuntimeSnapshot | None:
+    async def stop(
+        self,
+        task_id: str,
+        attempt_id: int | None = None,
+    ) -> RuntimeSnapshot | None:
         """幂等停止任务；未知 task_id 返回 None。"""
         runtime = self._runtimes.get(task_id)
         if runtime is None:
             return None
+        current_attempt = runtime.deployment.task.attempt_id
+        if attempt_id is not None and attempt_id < current_attempt:
+            return runtime.snapshot
+        if attempt_id is not None and attempt_id > current_attempt:
+            raise WorkerTaskError(
+                f"停止请求 attempt={attempt_id} 高于当前 attempt={current_attempt}"
+            )
         await runtime.stop()
         return runtime.snapshot
 
-    async def arm_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+    async def arm_checkpoint(
+        self,
+        task_id: str,
+        attempt_id: int,
+        checkpoint_id: int,
+    ) -> None:
         """为本地 Task 准备 Checkpoint。"""
-        await self._runtime(task_id).arm_checkpoint(checkpoint_id)
+        await self._runtime(task_id, attempt_id).arm_checkpoint(checkpoint_id)
 
     async def trigger_checkpoint(
         self,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
         """触发本地 Source Task 快照。"""
-        return await self._runtime(task_id).trigger_checkpoint(checkpoint_id)
+        return await self._runtime(task_id, attempt_id).trigger_checkpoint(checkpoint_id)
 
     async def wait_checkpoint(
         self,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
         """等待本地 Task 收齐 DRAIN 并完成快照。"""
-        return await self._runtime(task_id).wait_checkpoint(checkpoint_id)
+        return await self._runtime(task_id, attempt_id).wait_checkpoint(checkpoint_id)
 
-    async def complete_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+    async def complete_checkpoint(
+        self,
+        task_id: str,
+        attempt_id: int,
+        checkpoint_id: int,
+    ) -> None:
         """通知本地 Task 全图 manifest 已完成。"""
-        await self._runtime(task_id).complete_checkpoint(checkpoint_id)
+        await self._runtime(task_id, attempt_id).complete_checkpoint(checkpoint_id)
 
-    async def abort_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+    async def abort_checkpoint(
+        self,
+        task_id: str,
+        attempt_id: int,
+        checkpoint_id: int,
+    ) -> None:
         """中止本地 Task 的活动 Checkpoint。"""
-        await self._runtime(task_id).abort_checkpoint(checkpoint_id)
+        await self._runtime(task_id, attempt_id).abort_checkpoint(checkpoint_id)
 
     def get(self, task_id: str) -> RuntimeSnapshot:
         """查询单个本地任务。"""
@@ -258,11 +320,17 @@ class WorkerTaskManager:
         except KeyError as exc:
             raise WorkerTaskError(f"未知任务 {task_id!r}") from exc
 
-    def _runtime(self, task_id: str) -> TaskRuntime:
+    def _runtime(self, task_id: str, attempt_id: int) -> TaskRuntime:
         try:
-            return self._runtimes[task_id]
+            runtime = self._runtimes[task_id]
         except KeyError as exc:
             raise WorkerTaskError(f"未知任务 {task_id!r}") from exc
+        current_attempt = runtime.deployment.task.attempt_id
+        if attempt_id != current_attempt:
+            raise WorkerTaskError(
+                f"Task {task_id} attempt 不匹配: request={attempt_id}, current={current_attempt}"
+            )
+        return runtime
 
     def snapshots(self) -> tuple[RuntimeSnapshot, ...]:
         """按 task_id 返回全部本地任务状态。"""
@@ -327,12 +395,14 @@ class WorkerTaskManager:
         self,
         job_id: str,
         task_id: str,
+        attempt_id: int,
         error: BaseException,
     ) -> None:
         if self.status_reporter is not None:
             await self.status_reporter.report_task_failed(
                 job_id,
                 task_id,
+                attempt_id,
                 f"{type(error).__name__}: {error}",
             )
 

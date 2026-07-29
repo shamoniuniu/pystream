@@ -63,6 +63,15 @@ class ExecutionGraph:
             bound.append(replace(channel, target_endpoint=endpoint))
         self.channels = tuple(bound)
 
+    def reset_for_attempt(
+        self,
+        attempt_id: int,
+        restored_checkpoint_id: int | None,
+    ) -> None:
+        """释放完成后把全部逻辑 Task 重置为同一新 attempt。"""
+        for task in self.tasks.values():
+            task.reset_for_attempt(attempt_id, restored_checkpoint_id)
+
 
 def _task_id(job_id: str, operator_id: str, subtask_index: int) -> str:
     return f"{job_id}:{operator_id}:{subtask_index}"

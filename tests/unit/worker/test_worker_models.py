@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pystream.api import OperatorType, Partitioning
+from pystream.checkpoint import TaskSnapshotDescriptor
 from pystream.control import (
     ArtifactDescriptor,
     PhysicalChannel,
@@ -82,4 +83,34 @@ def test_deployment_json_要求数组和合法枚举() -> None:
     document = deployment_to_dict(sample_deployment())
     document["task"]["operator_type"] = "join"
     with pytest.raises(WorkerRequestError, match="部署字段无效"):
+        deployment_from_dict(document)
+
+
+def test_deployment_json_恢复descriptor严格往返并拒绝当前attempt快照() -> None:
+    base = sample_deployment()
+    base.task.attempt_id = 2
+    base.task.restored_checkpoint_id = 7
+    descriptor = TaskSnapshotDescriptor(
+        job_id=base.task.job_id,
+        checkpoint_id=7,
+        attempt_id=1,
+        task_id=base.task.task_id,
+        operator_id=base.task.operator_id,
+        relative_path="job-1/checkpoint/tasks/map.json",
+        sha256="b" * 64,
+        size=100,
+    )
+    deployment = TaskDeployment(
+        base.task,
+        base.artifact,
+        base.incoming_channels,
+        base.outgoing_channels,
+        (descriptor,),
+    )
+
+    assert deployment_from_dict(deployment_to_dict(deployment)) == deployment
+
+    document = deployment_to_dict(deployment)
+    document["restore_descriptors"][0]["attempt_id"] = 2
+    with pytest.raises(WorkerRequestError, match="恢复身份"):
         deployment_from_dict(document)

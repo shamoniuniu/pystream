@@ -43,6 +43,26 @@ def test_job_失败路径保留最后错误():
     assert job.error == "worker lost"
 
 
+def test_job_恢复状态允许重部署和取消():
+    recovered = Job(job_id="job-1", name="wordcount")
+    recovered.transition(JobStatus.VALIDATING)
+    recovered.transition(JobStatus.DEPLOYING)
+    recovered.transition(JobStatus.RUNNING)
+    recovered.transition(JobStatus.RECOVERING, "worker lost")
+    recovered.transition(JobStatus.DEPLOYING)
+    recovered.transition(JobStatus.RUNNING)
+    assert recovered.status is JobStatus.RUNNING
+
+    cancelled = Job(job_id="job-2", name="wordcount")
+    cancelled.transition(JobStatus.VALIDATING)
+    cancelled.transition(JobStatus.DEPLOYING)
+    cancelled.transition(JobStatus.RUNNING)
+    cancelled.transition(JobStatus.RECOVERING, "worker lost")
+    cancelled.transition(JobStatus.CANCELLING)
+    cancelled.transition(JobStatus.CANCELLED)
+    assert cancelled.status is JobStatus.CANCELLED
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
@@ -115,6 +135,33 @@ def test_task_assignment_状态转换和清理位置():
     assert task.slot_index is None
     with pytest.raises(InvalidStateTransition, match="只有 CREATED"):
         task.assign("worker-b", 0)
+
+
+def test_task_reset_for_attempt_要求释放资源并严格递增():
+    task = TaskInstance(
+        task_id="job:map:0",
+        job_id="job",
+        operator_id="map",
+        operator_type=OperatorType.MAP,
+        subtask_index=0,
+        parallelism=1,
+    )
+    task.assign("worker-a", 0)
+    task.transition(TaskStatus.DEPLOYING)
+    task.transition(TaskStatus.FAILED, "lost")
+
+    with pytest.raises(InvalidStateTransition, match="释放"):
+        task.reset_for_attempt(1, 3)
+
+    task.clear_assignment()
+    task.reset_for_attempt(1, 3)
+
+    assert task.status is TaskStatus.CREATED
+    assert task.attempt_id == 1
+    assert task.restored_checkpoint_id == 3
+    assert task.error is None
+    with pytest.raises(InvalidStateTransition, match="严格递增"):
+        task.reset_for_attempt(1, 3)
 
 
 def test_execution_graph_展开并发度_通道和下游优先顺序(linear_graph: StreamGraph):

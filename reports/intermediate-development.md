@@ -78,7 +78,7 @@
 
 ## 2026-07-29T08:08:39Z - Task 5-6 Checkpoint Store 与停流协调基础
 
-- 状态：实现完成，待提交
+- 状态：完成并推送
 - 变更：
   - 新增版本化 JSON TaskSnapshot/Manifest、SHA-256、64 MiB 上限和原子写
   - manifest-last 校验执行图任务全集，损坏高版本自动回退到前一合法版本
@@ -115,5 +115,49 @@
   - attempt 递增、整作业重调度和 Worker 重注册恢复尚未实现
   - 当前追加 File Sink 仍允许故障边界重复，不宣称 Exactly-once
 - 上一回退点：`0ca56cf`
+- 结果提交：`0c2acb6` (`feat: add coordinated checkpoints`)
+- 审查回执：Git note 已关联提交并推送 `refs/notes/commits`
+- 回退提交：`git revert 0c2acb6`
+
+## 2026-07-29T09:02:53Z - Task 6-7 Source 状态合并与整作业自动恢复
+
+- 状态：实现完成，待提交
+- 变更：
+  - Task/部署/状态上报/stop/Checkpoint API 全链路增加 attempt fencing
+  - Worker 对低 attempt 拒绝、同 attempt 幂等、高 attempt 停旧换新
+  - 部署 DTO 携带已验证的 restore descriptors
+  - TaskRuntime 在建立输出连接前恢复 Source、Operator 和每输入 Watermark
+  - Source 按 operator 合并旧 subtasks 的 partition offset/event-time 状态
+  - JobManager 增加 `RECOVERING -> DEPLOYING -> RUNNING` 整作业恢复循环
+  - 恢复执行停止旧任务、释放 slot、延迟、扫描最高合法 manifest 和下游优先重部署
+  - 重试耗尽进入 FAILED，RECOVERING 中 cancel 取消 sleep/部署并阻止后续 attempt
+- 正确性规则：
+  - 旧 attempt HELLO、状态上报、stop 和 Checkpoint 请求不得影响新 attempt
+  - 同一逻辑 Source task 使用自身旧 Watermark 基线，同时可恢复其他 subtask 的 partition
+  - assignment 到首条消息才稳定时先 seek 并跳过预取消息，避免 Watermark 提前推进
+  - 每个 recovery 只允许一个 leader；并发失败更新原因但不创建第二个循环
+  - 无完整 manifest 从初始状态恢复；有 manifest 时全图使用同一 checkpoint_id
+- 验证：
+  - 恢复载荷、Worker fencing、Runtime restore 专项：`91 passed`
+  - 控制面完整专项（含恢复、耗尽、取消和初始部署失败）：`52 passed`
+  - 扩展恢复专项：`112 passed`
+  - Source 延迟 assignment/offset 恢复专项：`34 passed`
+  - 全仓：`354 passed`，总覆盖率 `84.50%`
+  - Ruff lint：通过
+  - Ruff format：79 个文件通过
+  - `git diff --check`：通过
+- 故障路径覆盖：
+  - 旧 attempt 状态上报被忽略
+  - 旧 stop 不停止高 attempt Runtime
+  - null offset 且延迟 assignment 时不丢首条消息
+  - 当前 Task 失败后恢复到最近完整 Checkpoint
+  - 初次部署失败进入 Recovery 后成功
+  - 连续恢复部署失败耗尽重试
+  - Recovery delay 期间 cancel
+- 未完成边界：
+  - Compose SIGKILL、Worker 容器自动拉起和 restart count 证据留到 Task 8
+  - Kafka/文件 Sink 实际 E2E 的无丢失与允许重复证明留到 Task 8
+  - JobManager 重启恢复仍不在中级范围
+- 上一回退点：`0c2acb6`
 - 结果提交：本条随本里程碑提交，SHA 将在提交后回填并写入 Git note
 - 回退提交：提交后使用 `git revert <本里程碑 SHA>`

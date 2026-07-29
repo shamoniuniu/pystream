@@ -23,7 +23,7 @@ class StubRegistration:
     def __init__(self) -> None:
         self.registrations: list[dict[str, object]] = []
         self.heartbeats: list[str] = []
-        self.failures: list[tuple[str, str, str]] = []
+        self.failures: list[tuple[str, str, int, str]] = []
 
     async def register(self, **values) -> None:
         self.registrations.append(values)
@@ -31,8 +31,14 @@ class StubRegistration:
     async def heartbeat(self, worker_id: str) -> None:
         self.heartbeats.append(worker_id)
 
-    async def report_task_failed(self, job_id: str, task_id: str, error: str) -> None:
-        self.failures.append((job_id, task_id, error))
+    async def report_task_failed(
+        self,
+        job_id: str,
+        task_id: str,
+        attempt_id: int,
+        error: str,
+    ) -> None:
+        self.failures.append((job_id, task_id, attempt_id, error))
 
 
 class StubManager:
@@ -66,7 +72,12 @@ class StubManager:
         self._snapshots[task.task_id] = snapshot
         return snapshot
 
-    async def stop(self, task_id: str) -> RuntimeSnapshot | None:
+    async def stop(
+        self,
+        task_id: str,
+        attempt_id: int | None = None,
+    ) -> RuntimeSnapshot | None:
+        del attempt_id
         self.stopped.append(task_id)
         snapshot = self._snapshots.get(task_id)
         if snapshot is None:
@@ -75,29 +86,51 @@ class StubManager:
         self._snapshots[task_id] = stopped
         return stopped
 
-    async def arm_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+    async def arm_checkpoint(
+        self,
+        task_id: str,
+        attempt_id: int,
+        checkpoint_id: int,
+    ) -> None:
+        del attempt_id
         self.checkpoint_actions.append(("arm", task_id, checkpoint_id))
 
     async def trigger_checkpoint(
         self,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
+        del attempt_id
         self.checkpoint_actions.append(("trigger", task_id, checkpoint_id))
         return self._descriptor(task_id, checkpoint_id)
 
     async def wait_checkpoint(
         self,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
+        del attempt_id
         self.checkpoint_actions.append(("wait", task_id, checkpoint_id))
         return self._descriptor(task_id, checkpoint_id)
 
-    async def complete_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+    async def complete_checkpoint(
+        self,
+        task_id: str,
+        attempt_id: int,
+        checkpoint_id: int,
+    ) -> None:
+        del attempt_id
         self.checkpoint_actions.append(("complete", task_id, checkpoint_id))
 
-    async def abort_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+    async def abort_checkpoint(
+        self,
+        task_id: str,
+        attempt_id: int,
+        checkpoint_id: int,
+    ) -> None:
+        del attempt_id
         self.checkpoint_actions.append(("abort", task_id, checkpoint_id))
 
     @staticmethod
@@ -180,19 +213,25 @@ async def test_worker_http_注册心跳_部署查询停止() -> None:
         assert (await client.get(f"/tasks/{task_id}")).status == 200
         assert (await client.get("/tasks/missing")).status == 404
 
-        arm = await client.post(f"/tasks/{task_id}/checkpoints/1/arm")
+        arm = await client.post(f"/tasks/{task_id}/checkpoints/1/arm?attempt_id=0")
         assert (await arm.json())["status"] == "armed"
-        trigger = await client.post(f"/tasks/{task_id}/checkpoints/1/trigger")
+        trigger = await client.post(f"/tasks/{task_id}/checkpoints/1/trigger?attempt_id=0")
         assert (await trigger.json())["checkpoint_id"] == 1
-        wait = await client.get(f"/tasks/{task_id}/checkpoints/1")
+        wait = await client.get(f"/tasks/{task_id}/checkpoints/1?attempt_id=0")
         assert (await wait.json())["task_id"] == task_id
-        assert (await client.post(f"/tasks/{task_id}/checkpoints/1/complete")).status == 204
-        assert (await client.post(f"/tasks/{task_id}/checkpoints/2/abort")).status == 204
-        assert (await client.post(f"/tasks/{task_id}/checkpoints/not-int/arm")).status == 400
+        assert (
+            await client.post(f"/tasks/{task_id}/checkpoints/1/complete?attempt_id=0")
+        ).status == 204
+        assert (
+            await client.post(f"/tasks/{task_id}/checkpoints/2/abort?attempt_id=0")
+        ).status == 204
+        assert (
+            await client.post(f"/tasks/{task_id}/checkpoints/not-int/arm?attempt_id=0")
+        ).status == 400
 
-        stopped = await client.delete(f"/tasks/{task_id}")
+        stopped = await client.delete(f"/tasks/{task_id}?attempt_id=0")
         assert (await stopped.json())["state"] == "STOPPED"
-        assert (await client.delete("/tasks/missing")).status == 204
+        assert (await client.delete("/tasks/missing?attempt_id=0")).status == 204
     finally:
         await client.close()
     assert manager.closed
@@ -227,20 +266,22 @@ async def test_http_worker_gateway_调用真实worker路由() -> None:
     deployment = sample_deployment()
     try:
         await gateway.deploy_task(worker, deployment)
-        await gateway.arm_checkpoint(worker, deployment.task.task_id, 3)
+        await gateway.arm_checkpoint(worker, deployment.task.task_id, 0, 3)
         triggered = await gateway.trigger_checkpoint(
             worker,
             deployment.task.task_id,
+            0,
             3,
         )
         waited = await gateway.wait_checkpoint(
             worker,
             deployment.task.task_id,
+            0,
             3,
         )
-        await gateway.complete_checkpoint(worker, deployment.task.task_id, 3)
-        await gateway.abort_checkpoint(worker, deployment.task.task_id, 4)
-        await gateway.stop_task(worker, deployment.task.task_id)
+        await gateway.complete_checkpoint(worker, deployment.task.task_id, 0, 3)
+        await gateway.abort_checkpoint(worker, deployment.task.task_id, 0, 4)
+        await gateway.stop_task(worker, deployment.task.task_id, 0)
     finally:
         await gateway.close()
         await server.close()

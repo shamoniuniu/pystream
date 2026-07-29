@@ -144,6 +144,12 @@ class KafkaJsonSource:
         self._partition_event_times: dict[tuple[str, int], _PartitionEventTimeState] = {}
         self._last_watermark: datetime | None = None
         self._next_offsets: dict[tuple[str, int], int] = {}
+        self._checkpoint_partitions: tuple[object, ...] = ()
+        self._pending_restore: dict[
+            tuple[str, int],
+            tuple[int | None, datetime | None],
+        ] = {}
+        self._restore_applied: set[tuple[str, int]] = set()
         self._paused = False
         self._resume_event = asyncio.Event()
         self._resume_event.set()
@@ -199,8 +205,12 @@ class KafkaJsonSource:
         consumer = self._require_open()
         if self._event_time_strategy is None:
             try:
+                self._refresh_assignment(consumer)
                 async for message in consumer:
                     await self._resume_event.wait()
+                    restored = self._refresh_assignment(consumer)
+                    if (message.topic, message.partition) in restored:
+                        continue
                     self._record_consumed(message)
                     record = self._decode(message)
                     if record is not None:
@@ -236,7 +246,9 @@ class KafkaJsonSource:
                 finally:
                     pending = None
                 await self._resume_event.wait()
-                self._refresh_assignment(consumer)
+                restored = self._refresh_assignment(consumer)
+                if (message.topic, message.partition) in restored:
+                    continue
                 self._record_consumed(message)
                 record = self._decode(message)
                 if record is not None:
@@ -276,6 +288,7 @@ class KafkaJsonSource:
         partitions = tuple(assignment())
         if partitions:
             pause(*partitions)
+        self._checkpoint_partitions = partitions
         self._paused = True
         self._resume_event.clear()
 
@@ -289,6 +302,7 @@ class KafkaJsonSource:
         partitions = tuple(assignment())
         if partitions:
             resume(*partitions)
+        self._checkpoint_partitions = ()
         self._paused = False
         self._resume_event.set()
 
@@ -297,13 +311,20 @@ class KafkaJsonSource:
         if not self._paused:
             raise KafkaSourceError("Kafka Source 只有在 pause 后才能 snapshot")
         partitions = []
-        for (topic, partition), next_offset in sorted(self._next_offsets.items()):
-            event_state = self._partition_event_times.get((topic, partition))
+        assigned = sorted(
+            self._checkpoint_partitions,
+            key=lambda item: (item.topic, item.partition),
+        )
+        for assigned_partition in assigned:
+            topic = assigned_partition.topic
+            partition = assigned_partition.partition
+            key = (topic, partition)
+            event_state = self._partition_event_times.get(key)
             partitions.append(
                 {
                     "topic": topic,
                     "partition": partition,
-                    "next_offset": next_offset,
+                    "next_offset": self._next_offsets.get(key),
                     "max_event_time": (
                         event_state.max_event_time.isoformat()
                         if event_state is not None and event_state.max_event_time is not None
@@ -336,7 +357,7 @@ class KafkaJsonSource:
         raw_partitions = state["partitions"]
         if not isinstance(raw_partitions, list):
             raise KafkaSourceError("Kafka Source snapshot partitions 必须是 array")
-        restored: dict[tuple[str, int], tuple[int, datetime | None]] = {}
+        restored: dict[tuple[str, int], tuple[int | None, datetime | None]] = {}
         for index, item in enumerate(raw_partitions):
             if not isinstance(item, dict) or set(item) != {
                 "topic",
@@ -353,9 +374,14 @@ class KafkaJsonSource:
                 or isinstance(partition, bool)
                 or not isinstance(partition, int)
                 or partition < 0
-                or isinstance(next_offset, bool)
-                or not isinstance(next_offset, int)
-                or next_offset < 0
+                or (
+                    next_offset is not None
+                    and (
+                        isinstance(next_offset, bool)
+                        or not isinstance(next_offset, int)
+                        or next_offset < 0
+                    )
+                )
             ):
                 raise KafkaSourceError(f"Kafka Source partitions[{index}] 身份或 offset 非法")
             raw_max_event_time = item["max_event_time"]
@@ -374,31 +400,10 @@ class KafkaJsonSource:
             if raw_watermark is None
             else _parse_snapshot_datetime(raw_watermark, "last_watermark")
         )
-        assignment = getattr(consumer, "assignment", None)
-        seek = getattr(consumer, "seek", None)
-        if not callable(assignment) or not callable(seek):
-            raise KafkaSourceError("Kafka consumer 不支持 assignment/seek")
-        assigned = tuple(assignment())
-        assigned_keys = {
-            (getattr(item, "topic", None), getattr(item, "partition", None)) for item in assigned
-        }
-        missing = assigned_keys - restored.keys()
-        if missing:
-            raise KafkaSourceError(
-                "Kafka Source snapshot 缺少当前 assignment: "
-                + ", ".join(f"{topic}:{partition}" for topic, partition in sorted(missing))
-            )
-        now = self.context.clock.monotonic()
-        for partition in assigned:
-            key = (partition.topic, partition.partition)
-            next_offset, max_event_time = restored[key]
-            seek(partition, next_offset)
-            self._next_offsets[key] = next_offset
-            self._partition_event_times[key] = _PartitionEventTimeState(
-                last_activity=now,
-                max_event_time=max_event_time,
-            )
+        self._pending_restore = restored
+        self._restore_applied.clear()
         self._last_watermark = last_watermark
+        self._refresh_assignment(consumer)
 
     async def commit_checkpoint(self) -> None:
         """提交 snapshot 中记录的精确 next offsets。"""
@@ -413,11 +418,11 @@ class KafkaJsonSource:
             from aiokafka.structs import OffsetAndMetadata
         except ImportError:  # pragma: no cover - 生产依赖包含 aiokafka
             OffsetAndMetadata = None  # type: ignore[assignment,misc]
-        for partition in assignment():
+        for partition in self._checkpoint_partitions:
             key = (partition.topic, partition.partition)
-            if key not in self._next_offsets:
-                raise KafkaSourceError(f"Checkpoint 缺少 partition offset: {key}")
-            offset = self._next_offsets[key]
+            offset = self._next_offsets.get(key)
+            if offset is None:
+                continue
             mapping[partition] = (
                 OffsetAndMetadata(offset, "") if OffsetAndMetadata is not None else offset
             )
@@ -507,25 +512,52 @@ class KafkaJsonSource:
             )
             return None
 
-    def _refresh_assignment(self, consumer: AsyncKafkaConsumer) -> None:
+    def _refresh_assignment(
+        self,
+        consumer: AsyncKafkaConsumer,
+    ) -> set[tuple[str, int]]:
         assignment = getattr(consumer, "assignment", None)
         if not callable(assignment):
-            return
+            return set()
         now = self.context.clock.monotonic()
-        assigned: set[tuple[str, int]] = set()
+        assigned: dict[tuple[str, int], object] = {}
         for partition in assignment():
             topic = getattr(partition, "topic", None)
             index = getattr(partition, "partition", None)
-            if isinstance(topic, str) and isinstance(index, int):
-                assigned.add((topic, index))
+            if isinstance(topic, str) and isinstance(index, int) and not isinstance(index, bool):
+                assigned[(topic, index)] = partition
                 self._partition_event_times.setdefault(
                     (topic, index),
                     _PartitionEventTimeState(last_activity=now),
                 )
-        if assigned:
-            for key in tuple(self._partition_event_times):
-                if key not in assigned:
-                    del self._partition_event_times[key]
+        checkpoint_keys = {
+            (partition.topic, partition.partition) for partition in self._checkpoint_partitions
+        }
+        for key in tuple(self._partition_event_times):
+            if key not in assigned and key not in checkpoint_keys:
+                del self._partition_event_times[key]
+                self._next_offsets.pop(key, None)
+
+        restored: set[tuple[str, int]] = set()
+        seek = getattr(consumer, "seek", None)
+        for key, partition in assigned.items():
+            if key not in self._pending_restore or key in self._restore_applied:
+                continue
+            next_offset, max_event_time = self._pending_restore[key]
+            if next_offset is not None:
+                if not callable(seek):
+                    raise KafkaSourceError("Kafka consumer 不支持 restore seek")
+                seek(partition, next_offset)
+                self._next_offsets[key] = next_offset
+                restored.add(key)
+            else:
+                self._next_offsets.pop(key, None)
+            self._partition_event_times[key] = _PartitionEventTimeState(
+                last_activity=now,
+                max_event_time=max_event_time,
+            )
+            self._restore_applied.add(key)
+        return restored
 
     def _observe_event_time(
         self,

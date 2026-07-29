@@ -232,9 +232,26 @@ class WorkerHttpService:
         return web.json_response(_snapshot_to_dict(snapshot))
 
     async def _stop(self, request: web.Request) -> web.Response:
-        snapshot = await self.manager.stop(request.match_info["task_id"])
+        attempt_id = _attempt_id(request)
+        snapshot = await self.manager.stop(
+            request.match_info["task_id"],
+            attempt_id,
+        )
         if snapshot is None:
             return web.Response(status=204)
+        if snapshot.attempt_id != attempt_id:
+            self._log(
+                logging.WARNING,
+                "stale_attempt_stop_ignored",
+                "Worker 已忽略旧 attempt 的停止请求",
+                job_id=snapshot.job_id,
+                operator_id=snapshot.operator_id,
+                subtask=snapshot.subtask_index,
+                task_id=snapshot.task_id,
+                request_attempt_id=attempt_id,
+                current_attempt_id=snapshot.attempt_id,
+            )
+            return web.json_response(_snapshot_to_dict(snapshot))
         self._log(
             logging.INFO,
             "task_stopped",
@@ -247,39 +264,39 @@ class WorkerHttpService:
         return web.json_response(_snapshot_to_dict(snapshot))
 
     async def _checkpoint_arm(self, request: web.Request) -> web.Response:
-        task_id, checkpoint_id = _checkpoint_coordinates(request)
+        task_id, attempt_id, checkpoint_id = _checkpoint_coordinates(request)
         await self._checkpoint_action(
-            self.manager.arm_checkpoint(task_id, checkpoint_id),
+            self.manager.arm_checkpoint(task_id, attempt_id, checkpoint_id),
         )
         return web.json_response(
             {"task_id": task_id, "checkpoint_id": checkpoint_id, "status": "armed"}
         )
 
     async def _checkpoint_trigger(self, request: web.Request) -> web.Response:
-        task_id, checkpoint_id = _checkpoint_coordinates(request)
+        task_id, attempt_id, checkpoint_id = _checkpoint_coordinates(request)
         descriptor = await self._checkpoint_action(
-            self.manager.trigger_checkpoint(task_id, checkpoint_id),
+            self.manager.trigger_checkpoint(task_id, attempt_id, checkpoint_id),
         )
         return web.json_response(descriptor.to_dict())
 
     async def _checkpoint_wait(self, request: web.Request) -> web.Response:
-        task_id, checkpoint_id = _checkpoint_coordinates(request)
+        task_id, attempt_id, checkpoint_id = _checkpoint_coordinates(request)
         descriptor = await self._checkpoint_action(
-            self.manager.wait_checkpoint(task_id, checkpoint_id),
+            self.manager.wait_checkpoint(task_id, attempt_id, checkpoint_id),
         )
         return web.json_response(descriptor.to_dict())
 
     async def _checkpoint_complete(self, request: web.Request) -> web.Response:
-        task_id, checkpoint_id = _checkpoint_coordinates(request)
+        task_id, attempt_id, checkpoint_id = _checkpoint_coordinates(request)
         await self._checkpoint_action(
-            self.manager.complete_checkpoint(task_id, checkpoint_id),
+            self.manager.complete_checkpoint(task_id, attempt_id, checkpoint_id),
         )
         return web.Response(status=204)
 
     async def _checkpoint_abort(self, request: web.Request) -> web.Response:
-        task_id, checkpoint_id = _checkpoint_coordinates(request)
+        task_id, attempt_id, checkpoint_id = _checkpoint_coordinates(request)
         await self._checkpoint_action(
-            self.manager.abort_checkpoint(task_id, checkpoint_id),
+            self.manager.abort_checkpoint(task_id, attempt_id, checkpoint_id),
         )
         return web.Response(status=204)
 
@@ -385,11 +402,16 @@ class HttpJobManagerClient(_HttpClientBase, RegistrationClient):
         self,
         job_id: str,
         task_id: str,
+        attempt_id: int,
         error: str,
     ) -> None:
         await self._post(
             f"/jobs/{quote(job_id, safe='')}/tasks/{quote(task_id, safe='')}/status",
-            {"status": TaskStatus.FAILED.value, "error": error},
+            {
+                "status": TaskStatus.FAILED.value,
+                "attempt_id": attempt_id,
+                "error": error,
+            },
         )
 
     async def _post(self, path: str, document: dict[str, Any]) -> None:
@@ -421,10 +443,16 @@ class HttpWorkerGateway(_HttpClientBase):
                 body = await response.text()
                 raise WorkerTaskError(f"Worker 部署失败 {response.status}: {body}") from exc
 
-    async def stop_task(self, worker: WorkerNode, task_id: str) -> None:
+    async def stop_task(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        attempt_id: int,
+    ) -> None:
         session = await self._get_session()
         async with session.delete(
             f"{worker.control_address.rstrip('/')}/tasks/{quote(task_id, safe='')}"
+            f"?attempt_id={attempt_id}"
         ) as response:
             try:
                 response.raise_for_status()
@@ -436,19 +464,28 @@ class HttpWorkerGateway(_HttpClientBase):
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> None:
-        await self._checkpoint_request(worker, task_id, checkpoint_id, "arm")
+        await self._checkpoint_request(
+            worker,
+            task_id,
+            attempt_id,
+            checkpoint_id,
+            "arm",
+        )
 
     async def trigger_checkpoint(
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
         document = await self._checkpoint_request(
             worker,
             task_id,
+            attempt_id,
             checkpoint_id,
             "trigger",
         )
@@ -458,11 +495,13 @@ class HttpWorkerGateway(_HttpClientBase):
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
         document = await self._checkpoint_request(
             worker,
             task_id,
+            attempt_id,
             checkpoint_id,
             None,
         )
@@ -472,22 +511,37 @@ class HttpWorkerGateway(_HttpClientBase):
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> None:
-        await self._checkpoint_request(worker, task_id, checkpoint_id, "complete")
+        await self._checkpoint_request(
+            worker,
+            task_id,
+            attempt_id,
+            checkpoint_id,
+            "complete",
+        )
 
     async def abort_checkpoint(
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> None:
-        await self._checkpoint_request(worker, task_id, checkpoint_id, "abort")
+        await self._checkpoint_request(
+            worker,
+            task_id,
+            attempt_id,
+            checkpoint_id,
+            "abort",
+        )
 
     async def _checkpoint_request(
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
         action: str | None,
     ) -> object:
@@ -497,6 +551,7 @@ class HttpWorkerGateway(_HttpClientBase):
         )
         if action is not None:
             path += f"/{action}"
+        path += f"?attempt_id={attempt_id}"
         session = await self._get_session()
         method = session.get if action is None else session.post
         # Checkpoint 的总超时由 JobManager coordinator 控制; 不能被 Gateway
@@ -520,7 +575,7 @@ def _snapshot_to_dict(snapshot: RuntimeSnapshot) -> dict[str, Any]:
     return document
 
 
-def _checkpoint_coordinates(request: web.Request) -> tuple[str, int]:
+def _checkpoint_coordinates(request: web.Request) -> tuple[str, int, int]:
     task_id = request.match_info["task_id"]
     try:
         checkpoint_id = int(request.match_info["checkpoint_id"])
@@ -528,7 +583,17 @@ def _checkpoint_coordinates(request: web.Request) -> tuple[str, int]:
         raise web.HTTPBadRequest(text="checkpoint_id 必须是非负整数") from exc
     if checkpoint_id < 0:
         raise web.HTTPBadRequest(text="checkpoint_id 必须是非负整数")
-    return task_id, checkpoint_id
+    return task_id, _attempt_id(request), checkpoint_id
+
+
+def _attempt_id(request: web.Request) -> int:
+    try:
+        attempt_id = int(request.query["attempt_id"])
+    except (KeyError, ValueError) as exc:
+        raise web.HTTPBadRequest(text="attempt_id 必须是非负整数") from exc
+    if attempt_id < 0:
+        raise web.HTTPBadRequest(text="attempt_id 必须是非负整数")
+    return attempt_id
 
 
 __all__ = [

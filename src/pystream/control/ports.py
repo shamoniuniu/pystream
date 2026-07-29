@@ -41,6 +41,7 @@ class TaskDeployment:
     artifact: ArtifactDescriptor
     incoming_channels: tuple[PhysicalChannel, ...]
     outgoing_channels: tuple[PhysicalChannel, ...]
+    restore_descriptors: tuple[TaskSnapshotDescriptor, ...] = ()
 
 
 class WorkerGateway(Protocol):
@@ -49,13 +50,19 @@ class WorkerGateway(Protocol):
     async def deploy_task(self, worker: WorkerNode, deployment: TaskDeployment) -> None:
         """部署并启动一个物理任务。"""
 
-    async def stop_task(self, worker: WorkerNode, task_id: str) -> None:
+    async def stop_task(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        attempt_id: int,
+    ) -> None:
         """停止物理任务；Worker 端实现应保持幂等。"""
 
     async def arm_checkpoint(
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> None:
         """准备 Task 的 Checkpoint 状态机。"""
@@ -64,6 +71,7 @@ class WorkerGateway(Protocol):
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
         """触发 Source Task 停流和快照。"""
@@ -72,6 +80,7 @@ class WorkerGateway(Protocol):
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> TaskSnapshotDescriptor:
         """等待普通 Task 收齐 DRAIN 并完成快照。"""
@@ -80,6 +89,7 @@ class WorkerGateway(Protocol):
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> None:
         """确认全图 manifest 已完成。"""
@@ -88,6 +98,7 @@ class WorkerGateway(Protocol):
         self,
         worker: WorkerNode,
         task_id: str,
+        attempt_id: int,
         checkpoint_id: int,
     ) -> None:
         """中止 Task 的活动 Checkpoint。"""
