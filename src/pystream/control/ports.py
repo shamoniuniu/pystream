@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from pystream.checkpoint import TaskSnapshotDescriptor
 from pystream.control.models import (
     ArtifactDescriptor,
     PhysicalChannel,
@@ -50,6 +51,46 @@ class WorkerGateway(Protocol):
 
     async def stop_task(self, worker: WorkerNode, task_id: str) -> None:
         """停止物理任务；Worker 端实现应保持幂等。"""
+
+    async def arm_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> None:
+        """准备 Task 的 Checkpoint 状态机。"""
+
+    async def trigger_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> TaskSnapshotDescriptor:
+        """触发 Source Task 停流和快照。"""
+
+    async def wait_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> TaskSnapshotDescriptor:
+        """等待普通 Task 收齐 DRAIN 并完成快照。"""
+
+    async def complete_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> None:
+        """确认全图 manifest 已完成。"""
+
+    async def abort_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> None:
+        """中止 Task 的活动 Checkpoint。"""
 
 
 __all__ = ["ArtifactRepository", "TaskDeployment", "WorkerGateway"]

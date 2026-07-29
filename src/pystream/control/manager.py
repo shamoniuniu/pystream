@@ -6,11 +6,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
-from dataclasses import dataclass
+from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from pystream.api import StreamGraph
+from pystream.checkpoint import CheckpointManifest, LocalCheckpointStore
+from pystream.control.checkpoint import (
+    CheckpointCoordinationError,
+    CheckpointCoordinator,
+)
 from pystream.control.errors import (
     ControlPlaneError,
     DeploymentError,
@@ -28,6 +36,7 @@ from pystream.control.models import (
 )
 from pystream.control.ports import ArtifactRepository, TaskDeployment, WorkerGateway
 from pystream.control.scheduler import SlotScheduler, WorkerRegistry
+from pystream.observability import log_event
 
 
 @dataclass(slots=True)
@@ -38,6 +47,15 @@ class JobRun:
     execution_graph: ExecutionGraph
     artifact: ArtifactDescriptor | None = None
     deployed_task_ids: list[str] | None = None
+    attempt_id: int = 0
+    next_checkpoint_id: int = 1
+    last_completed_checkpoint_id: int | None = None
+    consecutive_checkpoint_failures: int = 0
+    checkpoint_interval: float | None = None
+    checkpoint_timeout: float = 30.0
+    max_consecutive_checkpoint_failures: int = 3
+    checkpoint_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    checkpoint_task: asyncio.Task[None] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.deployed_task_ids is None:
@@ -55,11 +73,22 @@ class JobManager:
         heartbeat_timeout: timedelta = timedelta(seconds=15),
         registry: WorkerRegistry | None = None,
         scheduler: SlotScheduler | None = None,
+        checkpoint_store: LocalCheckpointStore | None = None,
     ) -> None:
         self.artifact_repository = artifact_repository
         self.worker_gateway = worker_gateway
         self.registry = registry or WorkerRegistry(heartbeat_timeout)
         self.scheduler = scheduler or SlotScheduler()
+        self.checkpoint_store = checkpoint_store
+        self.checkpoint_coordinator = (
+            CheckpointCoordinator(
+                checkpoint_store,
+                worker_gateway,
+                self.registry.get,
+            )
+            if checkpoint_store is not None
+            else None
+        )
         self._runs: dict[str, JobRun] = {}
 
     def register_worker(
@@ -116,6 +145,16 @@ class JobManager:
             "name": run.job.name,
             "status": run.job.status.value,
             "error": run.job.error,
+            "attempt_id": run.attempt_id,
+            "checkpoint": (
+                None
+                if run.checkpoint_interval is None
+                else {
+                    "next_id": run.next_checkpoint_id,
+                    "last_completed_id": run.last_completed_checkpoint_id,
+                    "consecutive_failures": run.consecutive_checkpoint_failures,
+                }
+            ),
             "tasks": [
                 {
                     "task_id": task.task_id,
@@ -145,11 +184,26 @@ class JobManager:
 
         job = Job(job_id=resolved_job_id, name=graph.definition.job.name)
         execution_graph = build_execution_graph(resolved_job_id, graph)
-        run = JobRun(job=job, execution_graph=execution_graph)
+        execution = graph.definition.execution
+        run = JobRun(
+            job=job,
+            execution_graph=execution_graph,
+            checkpoint_interval=(
+                execution.checkpoint.interval_seconds if execution is not None else None
+            ),
+            checkpoint_timeout=(
+                execution.checkpoint.timeout_seconds if execution is not None else 30.0
+            ),
+            max_consecutive_checkpoint_failures=(
+                execution.checkpoint.max_consecutive_failures if execution is not None else 3
+            ),
+        )
         self._runs[resolved_job_id] = run
         job.transition(JobStatus.VALIDATING)
 
         try:
+            if execution is not None and self.checkpoint_coordinator is None:
+                raise ControlPlaneError("中级作业需要配置共享 Checkpoint Store")
             run.artifact = self.artifact_repository.put(
                 resolved_job_id,
                 artifact_content,
@@ -176,7 +230,95 @@ class JobManager:
             raise DeploymentError(f"作业 {resolved_job_id} 部署失败并已回滚: {exc}") from exc
 
         job.transition(JobStatus.RUNNING)
+        if run.checkpoint_interval is not None:
+            run.checkpoint_task = asyncio.create_task(
+                self._checkpoint_loop(run),
+                name=f"pystream-checkpoint-{resolved_job_id}",
+            )
         return job
+
+    async def trigger_checkpoint(self, job_id: str) -> CheckpointManifest:
+        """立即执行一次串行 Checkpoint，供周期任务和确定性测试复用。"""
+        run = self._runs[job_id]
+        coordinator = self.checkpoint_coordinator
+        if run.checkpoint_interval is None or coordinator is None:
+            raise CheckpointCoordinationError(f"作业 {job_id} 未启用 Checkpoint")
+        async with run.checkpoint_lock:
+            if run.job.status is not JobStatus.RUNNING:
+                raise CheckpointCoordinationError(
+                    f"作业 {job_id} 状态 {run.job.status.value} 不能执行 Checkpoint"
+                )
+            checkpoint_id = run.next_checkpoint_id
+            run.next_checkpoint_id += 1
+            self._log_checkpoint(
+                logging.INFO,
+                "checkpoint_started",
+                "JobManager 开始协调 Checkpoint",
+                run,
+                checkpoint_id,
+            )
+            try:
+                manifest = await coordinator.run(
+                    run.execution_graph,
+                    checkpoint_id=checkpoint_id,
+                    attempt_id=run.attempt_id,
+                    timeout=run.checkpoint_timeout,
+                )
+            except Exception as exc:
+                run.consecutive_checkpoint_failures += 1
+                self._log_checkpoint(
+                    logging.ERROR,
+                    "checkpoint_failed",
+                    "JobManager Checkpoint 协调失败",
+                    run,
+                    checkpoint_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                    exc_info=exc,
+                )
+                if run.consecutive_checkpoint_failures >= run.max_consecutive_checkpoint_failures:
+                    await self._fail_run(
+                        run,
+                        "Checkpoint 连续失败达到上限: "
+                        f"{run.consecutive_checkpoint_failures}; "
+                        f"last_error={type(exc).__name__}: {exc}",
+                    )
+                raise
+            run.last_completed_checkpoint_id = checkpoint_id
+            run.consecutive_checkpoint_failures = 0
+            self._log_checkpoint(
+                logging.INFO,
+                "checkpoint_completed",
+                "JobManager Checkpoint 已完成",
+                run,
+                checkpoint_id,
+                snapshots=len(manifest.snapshots),
+            )
+            return manifest
+
+    async def close(self) -> None:
+        """停止全部周期 Checkpoint 协程。"""
+        for run in self._runs.values():
+            await self._cancel_checkpoint_loop(run)
+
+    async def _checkpoint_loop(self, run: JobRun) -> None:
+        interval = run.checkpoint_interval
+        if interval is None:  # pragma: no cover - 只为启用作业创建
+            return
+        try:
+            while run.job.status is JobStatus.RUNNING:
+                await asyncio.sleep(interval)
+                if run.job.status is not JobStatus.RUNNING:
+                    return
+                try:
+                    await self.trigger_checkpoint(run.job.job_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    if run.job.status is not JobStatus.RUNNING:
+                        return
+        finally:
+            if run.checkpoint_task is asyncio.current_task():
+                run.checkpoint_task = None
 
     def _deployment(self, run: JobRun, task: TaskInstance) -> TaskDeployment:
         if run.artifact is None:  # pragma: no cover - submit 顺序保证
@@ -191,16 +333,18 @@ class JobManager:
     async def cancel_job(self, job_id: str) -> Job:
         """停止 RUNNING 作业并释放全部 slot。"""
         run = self._runs[job_id]
-        run.job.transition(JobStatus.CANCELLING)
-        errors = await self._stop_tasks(run, reversed(run.deployed_task_ids))
-        self._cancel_scheduled_tasks(run)
-        self.scheduler.release(run.execution_graph, self.registry)
-        if errors:
-            run.job.transition(JobStatus.FAILING, "; ".join(errors))
-            run.job.transition(JobStatus.FAILED, "; ".join(errors))
-            raise DeploymentError(f"取消作业 {job_id} 时发生错误: {'; '.join(errors)}")
-        run.job.transition(JobStatus.CANCELLED)
-        return run.job
+        await self._cancel_checkpoint_loop(run)
+        async with run.checkpoint_lock:
+            run.job.transition(JobStatus.CANCELLING)
+            errors = await self._stop_tasks(run, reversed(run.deployed_task_ids))
+            self._cancel_scheduled_tasks(run)
+            self.scheduler.release(run.execution_graph, self.registry)
+            if errors:
+                run.job.transition(JobStatus.FAILING, "; ".join(errors))
+                run.job.transition(JobStatus.FAILED, "; ".join(errors))
+                raise DeploymentError(f"取消作业 {job_id} 时发生错误: {'; '.join(errors)}")
+            run.job.transition(JobStatus.CANCELLED)
+            return run.job
 
     async def report_task_status(
         self,
@@ -215,7 +359,9 @@ class JobManager:
         if task.status is status:
             return run.job
         if status is TaskStatus.FAILED:
-            await self._fail_run(run, error or f"任务 {task_id} 失败", failed_task=task)
+            await self._cancel_checkpoint_loop(run)
+            async with run.checkpoint_lock:
+                await self._fail_run(run, error or f"任务 {task_id} 失败", failed_task=task)
             return run.job
 
         task.transition(status, error)
@@ -242,11 +388,13 @@ class JobManager:
                 None,
             )
             if failed_task is not None:
-                await self._fail_run(
-                    run,
-                    f"Worker {failed_task.worker_id} 心跳超时",
-                    failed_task=failed_task,
-                )
+                await self._cancel_checkpoint_loop(run)
+                async with run.checkpoint_lock:
+                    await self._fail_run(
+                        run,
+                        f"Worker {failed_task.worker_id} 心跳超时",
+                        failed_task=failed_task,
+                    )
                 failed_jobs.append(run.job.job_id)
         return tuple(failed_jobs)
 
@@ -265,6 +413,7 @@ class JobManager:
         *,
         failed_task: TaskInstance | None = None,
     ) -> None:
+        await self._cancel_checkpoint_loop(run)
         if run.job.status in {JobStatus.DEPLOYING, JobStatus.RUNNING, JobStatus.CANCELLING}:
             run.job.transition(JobStatus.FAILING, reason)
         if failed_task is not None and failed_task.status not in {
@@ -283,6 +432,42 @@ class JobManager:
         self.scheduler.release(run.execution_graph, self.registry)
         final_reason = reason if not errors else f"{reason}; 回滚错误: {'; '.join(errors)}"
         run.job.transition(JobStatus.FAILED, final_reason)
+
+    async def _cancel_checkpoint_loop(self, run: JobRun) -> None:
+        task = run.checkpoint_task
+        if task is None:
+            return
+        if task is asyncio.current_task():
+            run.checkpoint_task = None
+            return
+        run.checkpoint_task = None
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    @staticmethod
+    def _log_checkpoint(
+        level: int,
+        event: str,
+        message: str,
+        run: JobRun,
+        checkpoint_id: int,
+        *,
+        exc_info: BaseException | bool | None = None,
+        **fields,
+    ) -> None:
+        log_event(
+            logging.getLogger(__name__),
+            level,
+            event,
+            message,
+            component="job_manager",
+            job_id=run.job.job_id,
+            checkpoint_id=checkpoint_id,
+            attempt_id=run.attempt_id,
+            exc_info=exc_info,
+            **fields,
+        )
 
     async def _stop_tasks(self, run: JobRun, task_ids) -> list[str]:
         errors: list[str] = []

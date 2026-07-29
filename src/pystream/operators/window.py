@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from pystream.common import ChangeKind
+from pystream.checkpoint import CheckpointError, decode_state, encode_state
+from pystream.common import ChangeKind, RecordEnvelope
 from pystream.operators.base import (
     BaseOperator,
     JsonValue,
@@ -306,6 +307,128 @@ class ReduceWindowOperator(BaseOperator):
             del self._windows[state_key]
         return outputs
 
+    def snapshot_state(self) -> bytes:
+        """序列化窗口、聚合值、Watermark 和 Changelog 计数。"""
+        self._require_open()
+        windows: list[dict[str, Any]] = []
+        for (window, key_token), state in sorted(
+            self._windows.items(),
+            key=lambda item: (item[0][0].start, item[0][1]),
+        ):
+            if not isinstance(state.representative, RecordEnvelope):
+                raise RecordValidationError("Reduce snapshot 只支持 RecordEnvelope")
+            windows.append(
+                {
+                    "window_start": window.start.isoformat(),
+                    "window_end": window.end.isoformat(),
+                    "key_token": key_token,
+                    "key": copy.deepcopy(state.key),
+                    "accumulator": copy.deepcopy(state.accumulator),
+                    "representative": state.representative.to_dict(),
+                }
+            )
+        return encode_state(
+            "reduce-window",
+            {
+                "time_characteristic": self._time_characteristic,
+                "emit_mode": self._emit_mode,
+                "current_watermark": (
+                    self._current_watermark.isoformat()
+                    if self._current_watermark is not None
+                    else None
+                ),
+                "late_records": self._late_records,
+                "changelog_records": self._changelog_records,
+                "retractions_applied": self._retractions_applied,
+                "retract_state_deletes": self._retract_state_deletes,
+                "windows": windows,
+            },
+        )
+
+    def restore_state(self, snapshot: bytes) -> None:
+        """严格恢复与当前算子配置匹配的窗口状态。"""
+        self._require_open()
+        if self._windows:
+            raise RecordValidationError("恢复前 Reduce 状态必须为空")
+        try:
+            state = decode_state(snapshot, "reduce-window")
+        except CheckpointError as exc:
+            raise RecordValidationError(f"Reduce snapshot 非法: {exc}") from exc
+        expected_fields = {
+            "time_characteristic",
+            "emit_mode",
+            "current_watermark",
+            "late_records",
+            "changelog_records",
+            "retractions_applied",
+            "retract_state_deletes",
+            "windows",
+        }
+        if set(state) != expected_fields:
+            raise RecordValidationError("Reduce snapshot 字段集合不匹配")
+        if state["time_characteristic"] != self._time_characteristic:
+            raise RecordValidationError("Reduce snapshot time_characteristic 不匹配")
+        if state["emit_mode"] != self._emit_mode:
+            raise RecordValidationError("Reduce snapshot emit_mode 不匹配")
+        counters: dict[str, int] = {}
+        for field_name in (
+            "late_records",
+            "changelog_records",
+            "retractions_applied",
+            "retract_state_deletes",
+        ):
+            value = state[field_name]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise RecordValidationError(f"Reduce snapshot {field_name} 必须是非负整数")
+            counters[field_name] = value
+        raw_watermark = state["current_watermark"]
+        if raw_watermark is None:
+            watermark = None
+        elif isinstance(raw_watermark, str):
+            watermark = _parse_snapshot_time(raw_watermark, "current_watermark")
+        else:
+            raise RecordValidationError("Reduce snapshot current_watermark 必须是字符串或 null")
+        raw_windows = state["windows"]
+        if not isinstance(raw_windows, list):
+            raise RecordValidationError("Reduce snapshot windows 必须是 array")
+        restored: dict[tuple[TimeWindow, str], _WindowState] = {}
+        for index, document in enumerate(raw_windows):
+            if not isinstance(document, dict) or set(document) != {
+                "window_start",
+                "window_end",
+                "key_token",
+                "key",
+                "accumulator",
+                "representative",
+            }:
+                raise RecordValidationError(f"Reduce snapshot windows[{index}] 字段集合不匹配")
+            start = _parse_snapshot_time(document["window_start"], "window_start")
+            end = _parse_snapshot_time(document["window_end"], "window_end")
+            key_token = document["key_token"]
+            if not isinstance(key_token, str) or key_token != canonical_json(document["key"]):
+                raise RecordValidationError(f"Reduce snapshot windows[{index}] key_token 不匹配")
+            try:
+                representative = RecordEnvelope.from_dict(document["representative"])
+            except Exception as exc:
+                raise RecordValidationError(
+                    f"Reduce snapshot windows[{index}] representative 非法: {exc}"
+                ) from exc
+            validate_json_value(document["accumulator"], field="snapshot accumulator")
+            state_key = (TimeWindow(start, end), key_token)
+            if state_key in restored:
+                raise RecordValidationError("Reduce snapshot 包含重复 window/key")
+            restored[state_key] = _WindowState(
+                key=copy.deepcopy(document["key"]),
+                accumulator=copy.deepcopy(document["accumulator"]),
+                representative=representative,
+            )
+        self._windows = restored
+        self._current_watermark = watermark
+        self._late_records = counters["late_records"]
+        self._changelog_records = counters["changelog_records"]
+        self._retractions_applied = counters["retractions_applied"]
+        self._retract_state_deletes = counters["retract_state_deletes"]
+
     def close(self) -> None:
         """释放第一阶段的全部内存状态并关闭算子。"""
         self._windows.clear()
@@ -315,6 +438,16 @@ class ReduceWindowOperator(BaseOperator):
 def _format_window_time(value: datetime) -> str:
     """按文件 Sink 契约格式化 UTC 窗口边界。"""
     return require_utc(value).strftime("%Y/%m/%dT%H:%M:%S")
+
+
+def _parse_snapshot_time(value: object, field_name: str) -> datetime:
+    if not isinstance(value, str):
+        raise RecordValidationError(f"Reduce snapshot {field_name} 必须是字符串")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RecordValidationError(f"Reduce snapshot {field_name} 不是合法 ISO-8601 时间") from exc
+    return require_utc(parsed, field=field_name)
 
 
 __all__ = [

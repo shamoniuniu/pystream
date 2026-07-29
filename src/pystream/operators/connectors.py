@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Protocol, TextIO, cast
 
 from pystream.api import EventTimeExecutionConfig, FileSinkConfig, KafkaSourceConfig
+from pystream.checkpoint import CheckpointError, decode_state, encode_state
 from pystream.common import (
     JsonPointerError,
     JsonValue,
@@ -70,7 +71,7 @@ class AsyncKafkaConsumer(Protocol):
     async def stop(self) -> None:
         """离开消费组并释放网络资源。"""
 
-    async def commit(self) -> None:
+    async def commit(self, offsets: dict[object, object] | None = None) -> None:
         """提交当前已消费 offset。"""
 
     def __aiter__(self) -> AsyncIterator[KafkaMessage]:
@@ -142,6 +143,10 @@ class KafkaJsonSource:
         self._watermarks_emitted = 0
         self._partition_event_times: dict[tuple[str, int], _PartitionEventTimeState] = {}
         self._last_watermark: datetime | None = None
+        self._next_offsets: dict[tuple[str, int], int] = {}
+        self._paused = False
+        self._resume_event = asyncio.Event()
+        self._resume_event.set()
         if (config.event_time is None) != (event_time_strategy is None):
             raise ValueError("Source event_time 提取器与 execution.event_time 策略必须同时配置")
 
@@ -195,6 +200,8 @@ class KafkaJsonSource:
         if self._event_time_strategy is None:
             try:
                 async for message in consumer:
+                    await self._resume_event.wait()
+                    self._record_consumed(message)
                     record = self._decode(message)
                     if record is not None:
                         self._records_read += 1
@@ -228,7 +235,9 @@ class KafkaJsonSource:
                     return
                 finally:
                     pending = None
+                await self._resume_event.wait()
                 self._refresh_assignment(consumer)
+                self._record_consumed(message)
                 record = self._decode(message)
                 if record is not None:
                     self._records_read += 1
@@ -256,6 +265,166 @@ class KafkaJsonSource:
             await consumer.commit()
         except Exception as exc:
             raise KafkaSourceError(f"提交 Kafka offset 失败: {exc}") from exc
+
+    async def pause(self) -> None:
+        """暂停当前 assignment，供停流 Checkpoint 排空数据。"""
+        consumer = self._require_open()
+        assignment = getattr(consumer, "assignment", None)
+        pause = getattr(consumer, "pause", None)
+        if not callable(assignment) or not callable(pause):
+            raise KafkaSourceError("Kafka consumer 不支持 pause/assignment")
+        partitions = tuple(assignment())
+        if partitions:
+            pause(*partitions)
+        self._paused = True
+        self._resume_event.clear()
+
+    async def resume(self) -> None:
+        """恢复当前 assignment 的消费。"""
+        consumer = self._require_open()
+        assignment = getattr(consumer, "assignment", None)
+        resume = getattr(consumer, "resume", None)
+        if not callable(assignment) or not callable(resume):
+            raise KafkaSourceError("Kafka consumer 不支持 resume/assignment")
+        partitions = tuple(assignment())
+        if partitions:
+            resume(*partitions)
+        self._paused = False
+        self._resume_event.set()
+
+    def snapshot_state(self) -> bytes:
+        """返回分区 next offset 和 Watermark 基线。"""
+        if not self._paused:
+            raise KafkaSourceError("Kafka Source 只有在 pause 后才能 snapshot")
+        partitions = []
+        for (topic, partition), next_offset in sorted(self._next_offsets.items()):
+            event_state = self._partition_event_times.get((topic, partition))
+            partitions.append(
+                {
+                    "topic": topic,
+                    "partition": partition,
+                    "next_offset": next_offset,
+                    "max_event_time": (
+                        event_state.max_event_time.isoformat()
+                        if event_state is not None and event_state.max_event_time is not None
+                        else None
+                    ),
+                }
+            )
+        return encode_state(
+            "kafka-source",
+            {
+                "topic": self.config.topic,
+                "partitions": partitions,
+                "last_watermark": (
+                    self._last_watermark.isoformat() if self._last_watermark is not None else None
+                ),
+            },
+        )
+
+    async def restore_state(self, snapshot: bytes) -> None:
+        """按当前 consumer assignment 恢复分区位置和事件时间状态。"""
+        consumer = self._require_open()
+        try:
+            state = decode_state(snapshot, "kafka-source")
+        except CheckpointError as exc:
+            raise KafkaSourceError(f"Kafka Source snapshot 非法: {exc}") from exc
+        if set(state) != {"topic", "partitions", "last_watermark"}:
+            raise KafkaSourceError("Kafka Source snapshot 字段集合不匹配")
+        if state["topic"] != self.config.topic:
+            raise KafkaSourceError("Kafka Source snapshot topic 不匹配")
+        raw_partitions = state["partitions"]
+        if not isinstance(raw_partitions, list):
+            raise KafkaSourceError("Kafka Source snapshot partitions 必须是 array")
+        restored: dict[tuple[str, int], tuple[int, datetime | None]] = {}
+        for index, item in enumerate(raw_partitions):
+            if not isinstance(item, dict) or set(item) != {
+                "topic",
+                "partition",
+                "next_offset",
+                "max_event_time",
+            }:
+                raise KafkaSourceError(f"Kafka Source partitions[{index}] 字段错误")
+            topic = item["topic"]
+            partition = item["partition"]
+            next_offset = item["next_offset"]
+            if (
+                not isinstance(topic, str)
+                or isinstance(partition, bool)
+                or not isinstance(partition, int)
+                or partition < 0
+                or isinstance(next_offset, bool)
+                or not isinstance(next_offset, int)
+                or next_offset < 0
+            ):
+                raise KafkaSourceError(f"Kafka Source partitions[{index}] 身份或 offset 非法")
+            raw_max_event_time = item["max_event_time"]
+            max_event_time = (
+                None
+                if raw_max_event_time is None
+                else _parse_snapshot_datetime(raw_max_event_time, "max_event_time")
+            )
+            key = (topic, partition)
+            if key in restored:
+                raise KafkaSourceError("Kafka Source snapshot 包含重复 partition")
+            restored[key] = (next_offset, max_event_time)
+        raw_watermark = state["last_watermark"]
+        last_watermark = (
+            None
+            if raw_watermark is None
+            else _parse_snapshot_datetime(raw_watermark, "last_watermark")
+        )
+        assignment = getattr(consumer, "assignment", None)
+        seek = getattr(consumer, "seek", None)
+        if not callable(assignment) or not callable(seek):
+            raise KafkaSourceError("Kafka consumer 不支持 assignment/seek")
+        assigned = tuple(assignment())
+        assigned_keys = {
+            (getattr(item, "topic", None), getattr(item, "partition", None)) for item in assigned
+        }
+        missing = assigned_keys - restored.keys()
+        if missing:
+            raise KafkaSourceError(
+                "Kafka Source snapshot 缺少当前 assignment: "
+                + ", ".join(f"{topic}:{partition}" for topic, partition in sorted(missing))
+            )
+        now = self.context.clock.monotonic()
+        for partition in assigned:
+            key = (partition.topic, partition.partition)
+            next_offset, max_event_time = restored[key]
+            seek(partition, next_offset)
+            self._next_offsets[key] = next_offset
+            self._partition_event_times[key] = _PartitionEventTimeState(
+                last_activity=now,
+                max_event_time=max_event_time,
+            )
+        self._last_watermark = last_watermark
+
+    async def commit_checkpoint(self) -> None:
+        """提交 snapshot 中记录的精确 next offsets。"""
+        consumer = self._require_open()
+        if not self._paused:
+            raise KafkaSourceError("Kafka Source 只有在 pause 后才能提交 Checkpoint")
+        assignment = getattr(consumer, "assignment", None)
+        if not callable(assignment):
+            raise KafkaSourceError("Kafka consumer 不支持 assignment")
+        mapping: dict[object, object] = {}
+        try:
+            from aiokafka.structs import OffsetAndMetadata
+        except ImportError:  # pragma: no cover - 生产依赖包含 aiokafka
+            OffsetAndMetadata = None  # type: ignore[assignment,misc]
+        for partition in assignment():
+            key = (partition.topic, partition.partition)
+            if key not in self._next_offsets:
+                raise KafkaSourceError(f"Checkpoint 缺少 partition offset: {key}")
+            offset = self._next_offsets[key]
+            mapping[partition] = (
+                OffsetAndMetadata(offset, "") if OffsetAndMetadata is not None else offset
+            )
+        try:
+            await consumer.commit(mapping)
+        except Exception as exc:
+            raise KafkaSourceError(f"提交 Checkpoint Kafka offset 失败: {exc}") from exc
 
     async def close(self) -> None:
         """停止 consumer；重复关闭保持安全。"""
@@ -374,6 +543,16 @@ class KafkaJsonSource:
         if state.max_event_time is None or record.event_time > state.max_event_time:
             state.max_event_time = record.event_time
 
+    def _record_consumed(self, message: KafkaMessage) -> None:
+        key = (message.topic, message.partition)
+        next_offset = message.offset + 1
+        previous = self._next_offsets.get(key)
+        if previous is not None and next_offset <= previous:
+            raise KafkaSourceError(
+                f"Kafka partition offset 未严格递增: {key} {next_offset} <= {previous}"
+            )
+        self._next_offsets[key] = next_offset
+
     def _next_watermark(self) -> RecordEnvelope | None:
         strategy = self._event_time_strategy
         if strategy is None or not self._partition_event_times:
@@ -426,6 +605,20 @@ def _parse_rfc3339(value: str) -> datetime:
         raise ValueError("event_time 不是合法 RFC3339 时间") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("event_time 必须包含时区")
+    return parsed.astimezone(UTC)
+
+
+def _parse_snapshot_datetime(value: object, field_name: str) -> datetime:
+    if not isinstance(value, str):
+        raise KafkaSourceError(f"Kafka Source snapshot {field_name} 必须是字符串")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise KafkaSourceError(
+            f"Kafka Source snapshot {field_name} 不是合法 ISO-8601 时间"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise KafkaSourceError(f"Kafka Source snapshot {field_name} 必须包含时区")
     return parsed.astimezone(UTC)
 
 

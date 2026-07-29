@@ -13,6 +13,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from pystream.checkpoint import LocalCheckpointStore
 from pystream.control import JobManager, JobManagerHttpService, LocalArtifactRepository
 from pystream.observability import configure_logging
 from pystream.runtime import DataPlaneServer
@@ -38,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     jobmanager.add_argument("--host", default="0.0.0.0")
     jobmanager.add_argument("--port", type=int, default=8080)
     jobmanager.add_argument("--artifact-root", type=Path, default=Path("/data/artifacts"))
+    jobmanager.add_argument("--checkpoint-root", type=Path, default=Path("/data/checkpoints"))
     jobmanager.add_argument("--heartbeat-timeout", type=float, default=15.0)
     jobmanager.add_argument("--reconcile-interval", type=float, default=5.0)
     jobmanager.set_defaults(app_factory=_create_jobmanager_app)
@@ -54,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--heartbeat-interval", type=float, default=5.0)
     worker.add_argument("--jobmanager-url", default="http://jobmanager:8080")
     worker.add_argument("--work-root", type=Path, default=Path("/data/work"))
+    worker.add_argument("--checkpoint-root", type=Path, default=Path("/data/checkpoints"))
     worker.set_defaults(app_factory=_create_worker_app)
     return parser
 
@@ -68,6 +71,7 @@ def _create_jobmanager_app(args: argparse.Namespace) -> web.Application:
         LocalArtifactRepository(args.artifact_root),
         gateway,
         heartbeat_timeout=timedelta(seconds=args.heartbeat_timeout),
+        checkpoint_store=LocalCheckpointStore(args.checkpoint_root),
     )
     service = JobManagerHttpService(
         manager,
@@ -92,6 +96,7 @@ def _create_worker_app(args: argparse.Namespace) -> web.Application:
         data_server,
         artifact_fetcher,
         status_reporter=jobmanager_client,
+        checkpoint_root=args.checkpoint_root,
     )
     service = WorkerHttpService(
         WorkerServiceConfig(

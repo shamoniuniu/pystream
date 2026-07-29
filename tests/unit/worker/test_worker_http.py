@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+from pystream.checkpoint import TaskSnapshotDescriptor
 from pystream.control import TaskDeployment, WorkerNode
 from pystream.runtime import DataPlaneServer, RuntimeSnapshot, TaskRuntimeState
 from pystream.worker import (
@@ -38,6 +39,7 @@ class StubManager:
     def __init__(self) -> None:
         self.deployed: list[TaskDeployment] = []
         self.stopped: list[str] = []
+        self.checkpoint_actions: list[tuple[str, str, int]] = []
         self.closed = False
         self._snapshots: dict[str, RuntimeSnapshot] = {}
 
@@ -72,6 +74,44 @@ class StubManager:
         stopped = replace(snapshot, state=TaskRuntimeState.STOPPED)
         self._snapshots[task_id] = stopped
         return stopped
+
+    async def arm_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+        self.checkpoint_actions.append(("arm", task_id, checkpoint_id))
+
+    async def trigger_checkpoint(
+        self,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> TaskSnapshotDescriptor:
+        self.checkpoint_actions.append(("trigger", task_id, checkpoint_id))
+        return self._descriptor(task_id, checkpoint_id)
+
+    async def wait_checkpoint(
+        self,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> TaskSnapshotDescriptor:
+        self.checkpoint_actions.append(("wait", task_id, checkpoint_id))
+        return self._descriptor(task_id, checkpoint_id)
+
+    async def complete_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+        self.checkpoint_actions.append(("complete", task_id, checkpoint_id))
+
+    async def abort_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+        self.checkpoint_actions.append(("abort", task_id, checkpoint_id))
+
+    @staticmethod
+    def _descriptor(task_id: str, checkpoint_id: int) -> TaskSnapshotDescriptor:
+        return TaskSnapshotDescriptor(
+            job_id="job-1",
+            checkpoint_id=checkpoint_id,
+            attempt_id=0,
+            task_id=task_id,
+            operator_id="words",
+            relative_path=f"job-1/checkpoint-{checkpoint_id}/task.json",
+            sha256="0" * 64,
+            size=100,
+        )
 
     def get(self, task_id: str) -> RuntimeSnapshot:
         from pystream.worker import WorkerTaskError
@@ -139,6 +179,17 @@ async def test_worker_http_注册心跳_部署查询停止() -> None:
         assert (await (await client.get("/tasks")).json())["tasks"][0]["task_id"] == task_id
         assert (await client.get(f"/tasks/{task_id}")).status == 200
         assert (await client.get("/tasks/missing")).status == 404
+
+        arm = await client.post(f"/tasks/{task_id}/checkpoints/1/arm")
+        assert (await arm.json())["status"] == "armed"
+        trigger = await client.post(f"/tasks/{task_id}/checkpoints/1/trigger")
+        assert (await trigger.json())["checkpoint_id"] == 1
+        wait = await client.get(f"/tasks/{task_id}/checkpoints/1")
+        assert (await wait.json())["task_id"] == task_id
+        assert (await client.post(f"/tasks/{task_id}/checkpoints/1/complete")).status == 204
+        assert (await client.post(f"/tasks/{task_id}/checkpoints/2/abort")).status == 204
+        assert (await client.post(f"/tasks/{task_id}/checkpoints/not-int/arm")).status == 400
+
         stopped = await client.delete(f"/tasks/{task_id}")
         assert (await stopped.json())["state"] == "STOPPED"
         assert (await client.delete("/tasks/missing")).status == 204
@@ -176,10 +227,31 @@ async def test_http_worker_gateway_调用真实worker路由() -> None:
     deployment = sample_deployment()
     try:
         await gateway.deploy_task(worker, deployment)
+        await gateway.arm_checkpoint(worker, deployment.task.task_id, 3)
+        triggered = await gateway.trigger_checkpoint(
+            worker,
+            deployment.task.task_id,
+            3,
+        )
+        waited = await gateway.wait_checkpoint(
+            worker,
+            deployment.task.task_id,
+            3,
+        )
+        await gateway.complete_checkpoint(worker, deployment.task.task_id, 3)
+        await gateway.abort_checkpoint(worker, deployment.task.task_id, 4)
         await gateway.stop_task(worker, deployment.task.task_id)
     finally:
         await gateway.close()
         await server.close()
 
     assert manager.deployed == [deployment]
+    assert triggered == waited
+    assert manager.checkpoint_actions == [
+        ("arm", deployment.task.task_id, 3),
+        ("trigger", deployment.task.task_id, 3),
+        ("wait", deployment.task.task_id, 3),
+        ("complete", deployment.task.task_id, 3),
+        ("abort", deployment.task.task_id, 4),
+    ]
     assert manager.stopped == [deployment.task.task_id]

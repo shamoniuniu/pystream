@@ -16,9 +16,10 @@ from urllib.parse import quote
 
 from aiohttp import ClientResponseError, ClientSession, ClientTimeout, web
 
+from pystream.checkpoint import TaskSnapshotDescriptor
 from pystream.control import ArtifactDescriptor, TaskDeployment, TaskStatus, WorkerNode
 from pystream.observability import log_event
-from pystream.runtime import DataPlaneServer, RuntimeSnapshot
+from pystream.runtime import DataPlaneServer, RuntimeErrorBase, RuntimeSnapshot
 from pystream.worker.manager import (
     ArtifactFetcher,
     StatusReporter,
@@ -92,6 +93,26 @@ class WorkerHttpService:
         app.router.add_get("/health", self._health)
         app.router.add_post("/tasks/deploy", self._deploy)
         app.router.add_get("/tasks", self._tasks)
+        app.router.add_post(
+            "/tasks/{task_id}/checkpoints/{checkpoint_id}/arm",
+            self._checkpoint_arm,
+        )
+        app.router.add_post(
+            "/tasks/{task_id}/checkpoints/{checkpoint_id}/trigger",
+            self._checkpoint_trigger,
+        )
+        app.router.add_get(
+            "/tasks/{task_id}/checkpoints/{checkpoint_id}",
+            self._checkpoint_wait,
+        )
+        app.router.add_post(
+            "/tasks/{task_id}/checkpoints/{checkpoint_id}/complete",
+            self._checkpoint_complete,
+        )
+        app.router.add_post(
+            "/tasks/{task_id}/checkpoints/{checkpoint_id}/abort",
+            self._checkpoint_abort,
+        )
         app.router.add_get("/tasks/{task_id}", self._task)
         app.router.add_delete("/tasks/{task_id}", self._stop)
         app.on_startup.append(self._startup)
@@ -224,6 +245,50 @@ class WorkerHttpService:
             task_id=snapshot.task_id,
         )
         return web.json_response(_snapshot_to_dict(snapshot))
+
+    async def _checkpoint_arm(self, request: web.Request) -> web.Response:
+        task_id, checkpoint_id = _checkpoint_coordinates(request)
+        await self._checkpoint_action(
+            self.manager.arm_checkpoint(task_id, checkpoint_id),
+        )
+        return web.json_response(
+            {"task_id": task_id, "checkpoint_id": checkpoint_id, "status": "armed"}
+        )
+
+    async def _checkpoint_trigger(self, request: web.Request) -> web.Response:
+        task_id, checkpoint_id = _checkpoint_coordinates(request)
+        descriptor = await self._checkpoint_action(
+            self.manager.trigger_checkpoint(task_id, checkpoint_id),
+        )
+        return web.json_response(descriptor.to_dict())
+
+    async def _checkpoint_wait(self, request: web.Request) -> web.Response:
+        task_id, checkpoint_id = _checkpoint_coordinates(request)
+        descriptor = await self._checkpoint_action(
+            self.manager.wait_checkpoint(task_id, checkpoint_id),
+        )
+        return web.json_response(descriptor.to_dict())
+
+    async def _checkpoint_complete(self, request: web.Request) -> web.Response:
+        task_id, checkpoint_id = _checkpoint_coordinates(request)
+        await self._checkpoint_action(
+            self.manager.complete_checkpoint(task_id, checkpoint_id),
+        )
+        return web.Response(status=204)
+
+    async def _checkpoint_abort(self, request: web.Request) -> web.Response:
+        task_id, checkpoint_id = _checkpoint_coordinates(request)
+        await self._checkpoint_action(
+            self.manager.abort_checkpoint(task_id, checkpoint_id),
+        )
+        return web.Response(status=204)
+
+    @staticmethod
+    async def _checkpoint_action(operation):
+        try:
+            return await operation
+        except (WorkerTaskError, RuntimeErrorBase, ValueError) as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
 
     def _log(
         self,
@@ -367,11 +432,103 @@ class HttpWorkerGateway(_HttpClientBase):
                 body = await response.text()
                 raise WorkerTaskError(f"Worker 停止失败 {response.status}: {body}") from exc
 
+    async def arm_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> None:
+        await self._checkpoint_request(worker, task_id, checkpoint_id, "arm")
+
+    async def trigger_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> TaskSnapshotDescriptor:
+        document = await self._checkpoint_request(
+            worker,
+            task_id,
+            checkpoint_id,
+            "trigger",
+        )
+        return TaskSnapshotDescriptor.from_dict(document)
+
+    async def wait_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> TaskSnapshotDescriptor:
+        document = await self._checkpoint_request(
+            worker,
+            task_id,
+            checkpoint_id,
+            None,
+        )
+        return TaskSnapshotDescriptor.from_dict(document)
+
+    async def complete_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> None:
+        await self._checkpoint_request(worker, task_id, checkpoint_id, "complete")
+
+    async def abort_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> None:
+        await self._checkpoint_request(worker, task_id, checkpoint_id, "abort")
+
+    async def _checkpoint_request(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+        action: str | None,
+    ) -> object:
+        path = (
+            f"{worker.control_address.rstrip('/')}/tasks/{quote(task_id, safe='')}"
+            f"/checkpoints/{checkpoint_id}"
+        )
+        if action is not None:
+            path += f"/{action}"
+        session = await self._get_session()
+        method = session.get if action is None else session.post
+        # Checkpoint 的总超时由 JobManager coordinator 控制; 不能被 Gateway
+        # 的普通 10 秒请求超时提前截断。
+        async with method(path, timeout=ClientTimeout(total=None)) as response:
+            try:
+                response.raise_for_status()
+            except ClientResponseError as exc:
+                body = await response.text()
+                raise WorkerTaskError(
+                    f"Worker Checkpoint 请求失败 {response.status}: {body}"
+                ) from exc
+            if response.status == 204:
+                return {}
+            return await response.json()
+
 
 def _snapshot_to_dict(snapshot: RuntimeSnapshot) -> dict[str, Any]:
     document = asdict(snapshot)
     document["state"] = snapshot.state.value
     return document
+
+
+def _checkpoint_coordinates(request: web.Request) -> tuple[str, int]:
+    task_id = request.match_info["task_id"]
+    try:
+        checkpoint_id = int(request.match_info["checkpoint_id"])
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text="checkpoint_id 必须是非负整数") from exc
+    if checkpoint_id < 0:
+        raise web.HTTPBadRequest(text="checkpoint_id 必须是非负整数")
+    return task_id, checkpoint_id
 
 
 __all__ = [

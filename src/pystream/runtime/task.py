@@ -20,6 +20,7 @@ from typing import Protocol
 
 from pystream.api import Partitioning
 from pystream.artifact import UDFLoader
+from pystream.checkpoint import LocalCheckpointStore, TaskSnapshotDescriptor
 from pystream.common import MessageType, RecordEnvelope, utc_now
 from pystream.control import PhysicalChannel, TaskDeployment
 from pystream.observability import log_event
@@ -46,6 +47,18 @@ class AsyncRecordSource(Protocol):
 
     async def commit(self) -> None:
         """提交已经成功发送到下游通道的输入位置。"""
+
+    async def pause(self) -> None:
+        """暂停外部输入并阻止产生新的记录。"""
+
+    async def resume(self) -> None:
+        """恢复外部输入。"""
+
+    def snapshot_state(self) -> bytes:
+        """返回版本化 Source 状态。"""
+
+    async def commit_checkpoint(self) -> None:
+        """提交最近一次已暂停快照中的精确输入位置。"""
 
     async def close(self) -> None:
         """释放输入连接。"""
@@ -143,6 +156,7 @@ class TaskRuntime:
         watermark_idle_timeout: float | None = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
         checkpoint_enabled: bool = False,
+        checkpoint_store: LocalCheckpointStore | None = None,
     ) -> None:
         if (source is None) == (operator is None):
             raise ValueError("TaskRuntime 必须且只能配置 source 或 operator")
@@ -165,6 +179,7 @@ class TaskRuntime:
         self._watermark_idle_timeout = watermark_idle_timeout
         self._monotonic_clock = monotonic_clock
         self._checkpoint_enabled = checkpoint_enabled
+        self._checkpoint_store = checkpoint_store
         self._input_queue: asyncio.Queue[_InputRecord | _InputEnded] = asyncio.Queue(
             maxsize=input_queue_capacity
         )
@@ -201,6 +216,14 @@ class TaskRuntime:
         }
         self._idle_inputs: set[ChannelIdentity] = set()
         self._last_output_watermark: datetime | None = None
+        self._checkpoint_lock = asyncio.Lock()
+        self._active_checkpoint_id: int | None = None
+        self._checkpoint_drains: set[ChannelIdentity] = set()
+        self._checkpoint_descriptor: TaskSnapshotDescriptor | None = None
+        self._checkpoint_ready = asyncio.Event()
+        self._last_closed_checkpoint_id = -1
+        self._source_idle = asyncio.Event()
+        self._source_idle.set()
         if any(
             identity.downstream_task_id != task.task_id for identity in self._incoming_identities
         ):
@@ -323,6 +346,107 @@ class TaskRuntime:
             )
         await self._emit_many(outputs)
 
+    async def arm_checkpoint(self, checkpoint_id: int) -> None:
+        """为一个严格递增的 Checkpoint 准备本地状态机。"""
+        self._require_checkpoint_runtime()
+        _require_checkpoint_id(checkpoint_id)
+        async with self._checkpoint_lock:
+            if self._state is not TaskRuntimeState.RUNNING:
+                raise RuntimeLifecycleError(f"目标任务未运行: {self._state}")
+            if checkpoint_id <= self._last_closed_checkpoint_id:
+                raise RuntimeLifecycleError(
+                    f"Checkpoint {checkpoint_id} 不大于已关闭编号 {self._last_closed_checkpoint_id}"
+                )
+            if self._active_checkpoint_id is not None:
+                raise RuntimeLifecycleError(f"任务已有活动 Checkpoint {self._active_checkpoint_id}")
+            self._active_checkpoint_id = checkpoint_id
+            self._checkpoint_drains.clear()
+            self._checkpoint_descriptor = None
+            self._checkpoint_ready.clear()
+            self._log(
+                logging.INFO,
+                "checkpoint_armed",
+                "Task 已准备 Checkpoint",
+                checkpoint_id=checkpoint_id,
+            )
+
+    async def trigger_checkpoint(self, checkpoint_id: int) -> TaskSnapshotDescriptor:
+        """暂停 Source，写入快照，并在全部前序 DATA 后广播 DRAIN。"""
+        self._require_checkpoint_runtime()
+        if self.source is None:
+            raise RuntimeLifecycleError("只有 Source Task 可以触发 Checkpoint")
+        async with self._checkpoint_lock:
+            self._require_active_checkpoint(checkpoint_id)
+            if self._checkpoint_descriptor is not None:
+                return self._checkpoint_descriptor
+            await self.source.pause()
+            await self._source_idle.wait()
+            descriptor = await self._write_checkpoint_snapshot(checkpoint_id)
+            await self._emit_control(_checkpoint_drain(self.task_id, checkpoint_id))
+            self._checkpoint_descriptor = descriptor
+            self._checkpoint_ready.set()
+            self._log(
+                logging.INFO,
+                "checkpoint_task_snapshot",
+                "Source Task 快照已写入并发送 DRAIN",
+                checkpoint_id=checkpoint_id,
+                snapshot_size=descriptor.size,
+            )
+            return descriptor
+
+    async def wait_checkpoint(self, checkpoint_id: int) -> TaskSnapshotDescriptor:
+        """等待当前 Task 写完快照并成功转发 DRAIN。"""
+        self._require_checkpoint_runtime()
+        self._require_active_checkpoint(checkpoint_id)
+        await self._checkpoint_ready.wait()
+        descriptor = self._checkpoint_descriptor
+        if descriptor is None:  # pragma: no cover - Event 与 descriptor 同步设置
+            raise RuntimeLifecycleError("Checkpoint ready 但缺少 Task snapshot descriptor")
+        return descriptor
+
+    async def complete_checkpoint(self, checkpoint_id: int) -> None:
+        """确认 manifest 已完成；Source 提交精确 offset 后恢复消费。"""
+        self._require_checkpoint_runtime()
+        async with self._checkpoint_lock:
+            if (
+                self._active_checkpoint_id is None
+                and checkpoint_id == self._last_closed_checkpoint_id
+            ):
+                return
+            self._require_active_checkpoint(checkpoint_id)
+            if self._checkpoint_descriptor is None:
+                raise RuntimeLifecycleError("Task snapshot 尚未完成")
+            if self.source is not None:
+                await self.source.commit_checkpoint()
+                await self.source.resume()
+            self._close_checkpoint(checkpoint_id)
+            self._log(
+                logging.INFO,
+                "checkpoint_completed",
+                "Task 已完成 Checkpoint",
+                checkpoint_id=checkpoint_id,
+            )
+
+    async def abort_checkpoint(self, checkpoint_id: int) -> None:
+        """中止活动 Checkpoint；Source 不提交 offset 并恢复消费。"""
+        self._require_checkpoint_runtime()
+        async with self._checkpoint_lock:
+            if (
+                self._active_checkpoint_id is None
+                and checkpoint_id == self._last_closed_checkpoint_id
+            ):
+                return
+            self._require_active_checkpoint(checkpoint_id)
+            if self.source is not None:
+                await self.source.resume()
+            self._close_checkpoint(checkpoint_id)
+            self._log(
+                logging.WARNING,
+                "checkpoint_aborted",
+                "Task 已中止 Checkpoint",
+                checkpoint_id=checkpoint_id,
+            )
+
     async def accept_records(
         self,
         identity: ChannelIdentity,
@@ -366,17 +490,21 @@ class TaskRuntime:
         try:
             if self.source is not None:
                 async for record in self.source.records():
-                    if record.message_type is not MessageType.DATA:
-                        if record.message_type is not MessageType.WATERMARK:
-                            raise RuntimeTaskError(
-                                f"Source 不支持控制消息 {record.message_type.value}"
-                            )
-                        await self._emit_control(record)
-                        continue
-                    self._records_in += 1
-                    await self._emit(record)
-                    if not self._checkpoint_enabled:
-                        await self.source.commit()
+                    self._source_idle.clear()
+                    try:
+                        if record.message_type is not MessageType.DATA:
+                            if record.message_type is not MessageType.WATERMARK:
+                                raise RuntimeTaskError(
+                                    f"Source 不支持控制消息 {record.message_type.value}"
+                                )
+                            await self._emit_control(record)
+                            continue
+                        self._records_in += 1
+                        await self._emit(record)
+                        if not self._checkpoint_enabled:
+                            await self.source.commit()
+                    finally:
+                        self._source_idle.set()
             else:
                 await self._run_operator()
             await self._cleanup(graceful=True)
@@ -483,6 +611,9 @@ class TaskRuntime:
         identity: ChannelIdentity,
         record: RecordEnvelope,
     ) -> None:
+        if record.message_type is MessageType.CHECKPOINT_DRAIN:
+            await self._handle_checkpoint_drain(identity, record)
+            return
         if record.message_type is not MessageType.WATERMARK:
             raise RuntimeTaskError(f"中级运行时尚未处理控制消息 {record.message_type.value}")
         if record.event_time is None:
@@ -495,6 +626,119 @@ class TaskRuntime:
             )
         self._input_watermarks[identity] = record.event_time
         await self._advance_watermark()
+
+    async def _handle_checkpoint_drain(
+        self,
+        identity: ChannelIdentity,
+        record: RecordEnvelope,
+    ) -> None:
+        checkpoint_id = record.checkpoint_id
+        if checkpoint_id is None:
+            raise RuntimeTaskError("CHECKPOINT_DRAIN 必须包含 checkpoint_id")
+        self._require_checkpoint_runtime()
+        async with self._checkpoint_lock:
+            if checkpoint_id <= self._last_closed_checkpoint_id:
+                self._log(
+                    logging.WARNING,
+                    "checkpoint_drain_ignored",
+                    "忽略已关闭 Checkpoint 的延迟 DRAIN",
+                    checkpoint_id=checkpoint_id,
+                    upstream_task_id=identity.upstream_task_id,
+                )
+                return
+            self._require_active_checkpoint(checkpoint_id)
+            if identity in self._checkpoint_drains:
+                raise RuntimeTaskError(
+                    f"Checkpoint {checkpoint_id} 收到重复 DRAIN: {identity.upstream_task_id}"
+                )
+            self._checkpoint_drains.add(identity)
+            if self._checkpoint_drains != set(self._incoming_identities):
+                return
+            descriptor = await self._write_checkpoint_snapshot(checkpoint_id)
+            await self._emit_control(_checkpoint_drain(self.task_id, checkpoint_id))
+            self._checkpoint_descriptor = descriptor
+            self._checkpoint_ready.set()
+            self._log(
+                logging.INFO,
+                "checkpoint_task_snapshot",
+                "Task 已收齐 DRAIN 并写入快照",
+                checkpoint_id=checkpoint_id,
+                input_drains=len(self._checkpoint_drains),
+                snapshot_size=descriptor.size,
+            )
+
+    async def _write_checkpoint_snapshot(
+        self,
+        checkpoint_id: int,
+    ) -> TaskSnapshotDescriptor:
+        store = self._checkpoint_store
+        if store is None:  # pragma: no cover - _require_checkpoint_runtime 保证
+            raise RuntimeLifecycleError("Checkpoint Store 未配置")
+        target = self.source if self.source is not None else self.operator
+        if target is None:  # pragma: no cover - 构造器保证
+            raise RuntimeLifecycleError("Task 缺少可快照的 Source 或 Operator")
+        try:
+            snapshot = target.snapshot_state()
+            snapshot_text = snapshot.decode("utf-8")
+        except (AttributeError, UnicodeDecodeError) as exc:
+            raise RuntimeTaskError(f"Task 状态快照不是版本化 UTF-8 JSON: {exc}") from exc
+        input_watermarks = [
+            {
+                "upstream_task_id": identity.upstream_task_id,
+                "watermark": watermark.isoformat() if watermark is not None else None,
+            }
+            for identity, watermark in sorted(
+                self._input_watermarks.items(),
+                key=lambda item: item[0].upstream_task_id,
+            )
+        ]
+        state = {
+            "kind": "source" if self.source is not None else "operator",
+            "snapshot": snapshot_text,
+            "input_watermarks": input_watermarks,
+            "last_output_watermark": (
+                self._last_output_watermark.isoformat()
+                if self._last_output_watermark is not None
+                else None
+            ),
+        }
+        task = self.deployment.task
+        write_task = asyncio.create_task(
+            asyncio.to_thread(
+                store.write_task_snapshot,
+                job_id=task.job_id,
+                checkpoint_id=checkpoint_id,
+                attempt_id=getattr(task, "attempt_id", 0),
+                task_id=task.task_id,
+                operator_id=task.operator_id,
+                state=state,
+            )
+        )
+        try:
+            return await asyncio.shield(write_task)
+        except asyncio.CancelledError:
+            await write_task
+            raise
+
+    def _require_checkpoint_runtime(self) -> None:
+        if not self._checkpoint_enabled:
+            raise RuntimeLifecycleError("任务未启用 Checkpoint")
+        if self._checkpoint_store is None:
+            raise RuntimeLifecycleError("任务未配置 Checkpoint Store")
+
+    def _require_active_checkpoint(self, checkpoint_id: int) -> None:
+        _require_checkpoint_id(checkpoint_id)
+        if self._active_checkpoint_id != checkpoint_id:
+            raise RuntimeLifecycleError(
+                f"Checkpoint {checkpoint_id} 未 arm, 当前活动编号为 {self._active_checkpoint_id}"
+            )
+
+    def _close_checkpoint(self, checkpoint_id: int) -> None:
+        self._last_closed_checkpoint_id = checkpoint_id
+        self._active_checkpoint_id = None
+        self._checkpoint_drains.clear()
+        self._checkpoint_descriptor = None
+        self._checkpoint_ready.clear()
 
     def _mark_input_active(self, identity: ChannelIdentity) -> None:
         self._last_input_activity[identity] = self._monotonic_clock()
@@ -723,6 +967,21 @@ class TaskRuntime:
             task_id=task.task_id,
             **fields,
         )
+
+
+def _require_checkpoint_id(checkpoint_id: int) -> None:
+    if isinstance(checkpoint_id, bool) or not isinstance(checkpoint_id, int) or checkpoint_id < 0:
+        raise RuntimeLifecycleError("checkpoint_id 必须是非负整数")
+
+
+def _checkpoint_drain(task_id: str, checkpoint_id: int) -> RecordEnvelope:
+    return RecordEnvelope(
+        record_id=f"checkpoint-drain:{task_id}:{checkpoint_id}",
+        payload={},
+        processing_time=utc_now(),
+        message_type=MessageType.CHECKPOINT_DRAIN,
+        checkpoint_id=checkpoint_id,
+    )
 
 
 def _task_coordinates(task_id: str) -> tuple[str, int]:

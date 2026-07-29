@@ -22,6 +22,7 @@ from pystream.api import (
     load_stream_graph,
 )
 from pystream.artifact import UDFKind, UDFLoader, extract_job_bundle, verify_job_bundle
+from pystream.checkpoint import LocalCheckpointStore, TaskSnapshotDescriptor
 from pystream.control import ArtifactDescriptor, TaskDeployment
 from pystream.operators import (
     FileSinkOperator,
@@ -73,6 +74,7 @@ class WorkerTaskManager:
         consumer_factory: KafkaConsumerFactory | None = None,
         clock_factory: Callable[[], Any] = SystemClock,
         runtime_options: dict[str, Any] | None = None,
+        checkpoint_root: str | Path | None = None,
     ) -> None:
         if not worker_id:
             raise ValueError("worker_id 不能为空")
@@ -85,6 +87,9 @@ class WorkerTaskManager:
         self.consumer_factory = consumer_factory
         self.clock_factory = clock_factory
         self.runtime_options = dict(runtime_options or {})
+        self.checkpoint_store = LocalCheckpointStore(
+            checkpoint_root or self.work_root / "checkpoints"
+        )
         self._runtimes: dict[str, TaskRuntime] = {}
         self._deployment_lock = asyncio.Lock()
         self._artifact_locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -185,6 +190,8 @@ class WorkerTaskManager:
                 runtime_arguments = dict(self.runtime_options)
                 runtime_arguments.setdefault("monotonic_clock", context.clock.monotonic)
                 runtime_arguments.setdefault("checkpoint_enabled", execution is not None)
+                if execution is not None:
+                    runtime_arguments.setdefault("checkpoint_store", self.checkpoint_store)
                 if event_time_strategy is not None:
                     runtime_arguments.setdefault(
                         "watermark_idle_timeout",
@@ -216,10 +223,44 @@ class WorkerTaskManager:
         await runtime.stop()
         return runtime.snapshot
 
+    async def arm_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+        """为本地 Task 准备 Checkpoint。"""
+        await self._runtime(task_id).arm_checkpoint(checkpoint_id)
+
+    async def trigger_checkpoint(
+        self,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> TaskSnapshotDescriptor:
+        """触发本地 Source Task 快照。"""
+        return await self._runtime(task_id).trigger_checkpoint(checkpoint_id)
+
+    async def wait_checkpoint(
+        self,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> TaskSnapshotDescriptor:
+        """等待本地 Task 收齐 DRAIN 并完成快照。"""
+        return await self._runtime(task_id).wait_checkpoint(checkpoint_id)
+
+    async def complete_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+        """通知本地 Task 全图 manifest 已完成。"""
+        await self._runtime(task_id).complete_checkpoint(checkpoint_id)
+
+    async def abort_checkpoint(self, task_id: str, checkpoint_id: int) -> None:
+        """中止本地 Task 的活动 Checkpoint。"""
+        await self._runtime(task_id).abort_checkpoint(checkpoint_id)
+
     def get(self, task_id: str) -> RuntimeSnapshot:
         """查询单个本地任务。"""
         try:
             return self._runtimes[task_id].snapshot
+        except KeyError as exc:
+            raise WorkerTaskError(f"未知任务 {task_id!r}") from exc
+
+    def _runtime(self, task_id: str) -> TaskRuntime:
+        try:
+            return self._runtimes[task_id]
         except KeyError as exc:
             raise WorkerTaskError(f"未知任务 {task_id!r}") from exc
 

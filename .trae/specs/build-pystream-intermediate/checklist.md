@@ -10,7 +10,7 @@
 
 ## API 与兼容性
 
-- [ ] 原 `pystream/v1` WordCount 无修改解析和运行
+- [x] 原 `pystream/v1` WordCount 无修改解析和运行
 - [x] 未知字段继续拒绝并给出路径
 - [x] 事件时间配置、持续时间、JSON Pointer 严格校验
 - [x] changelog/retract DAG 能力传播和错误配置拒绝
@@ -37,13 +37,13 @@
 ## Checkpoint
 
 - [x] CONTROL 不进入 UDF且不越过前序 DATA
-- [ ] WATERMARK/DRAIN 广播全部物理通道
-- [ ] Source pause 后 snapshot 精确 partition next offsets
-- [ ] 全部入通道 DRAIN 到达后才写 Task snapshot
-- [ ] manifest 覆盖执行图全部当前 attempt Task
-- [ ] 无 manifest、损坏、超限、旧 attempt 快照不恢复
-- [ ] manifest 完成后才 commit offsets/resume
-- [ ] timeout abort 后 Source 可继续运行
+- [x] WATERMARK/DRAIN 广播全部物理通道
+- [x] Source pause 后 snapshot 精确 partition next offsets
+- [x] 全部入通道 DRAIN 到达后才写 Task snapshot
+- [x] manifest 覆盖执行图全部当前 attempt Task
+- [x] 无 manifest、损坏、超限、旧 attempt 快照不恢复
+- [x] manifest 完成后才 commit offsets/resume
+- [x] timeout abort 后 Source 可继续运行
 
 ## 自动恢复
 
@@ -60,10 +60,10 @@
 
 ## 质量门
 
-- [ ] Python 3.11 Ruff check 通过
-- [ ] Python 3.11 Ruff format check 通过
-- [ ] 全量 pytest 通过且无 skip
-- [ ] 分支覆盖率 >= 80%
+- [x] Python 3.11 Ruff check 通过
+- [x] Python 3.11 Ruff format check 通过
+- [x] 全量 pytest 通过且无 skip
+- [x] 分支覆盖率 >= 80%
 - [ ] 初级 WordCount Docker E2E 通过
 - [ ] 中级 event-time/retract Docker E2E 通过
 - [ ] Worker 故障恢复 Docker E2E 通过

@@ -54,7 +54,7 @@
 
 ## 2026-07-29T07:07:29Z - Task 4 Changelog/Retract
 
-- 状态：实现完成，待提交
+- 状态：完成并推送
 - 变更：
   - Reduce `emit_mode=changelog` 产生 INSERT/UPDATE_BEFORE/UPDATE_AFTER
   - 消费 Changelog 的 Reduce 使用 retract_udf 撤回旧 key/window 贡献
@@ -73,4 +73,47 @@
   - UPDATE_BEFORE/UPDATE_AFTER 可按新旧 key 路由到不同下游 task
   - File Sink 仍为非事务追加写
 - 上一回退点：`7ae0cae`
-- 结果提交：本条随本里程碑提交，SHA 记录在下一条日志和 Git note。
+- 结果提交：`0ca56cf` (`feat: add retract changelog processing`)
+- 回退提交：`git revert 0ca56cf`
+
+## 2026-07-29T08:08:39Z - Task 5-6 Checkpoint Store 与停流协调基础
+
+- 状态：实现完成，待提交
+- 变更：
+  - 新增版本化 JSON TaskSnapshot/Manifest、SHA-256、64 MiB 上限和原子写
+  - manifest-last 校验执行图任务全集，损坏高版本自动回退到前一合法版本
+  - Source pause 后保存 partition next offset、事件时间基线和 Watermark
+  - TaskRuntime 收齐全部物理输入 DRAIN 后写状态并广播全部输出通道
+  - Worker 增加 arm/trigger/wait/complete/abort HTTP API
+  - JobManager 增加单作业串行协调、超时 abort、连续失败阈值和周期触发
+  - JobManager/Worker 共享 `/data/checkpoints` 命名卷
+- 正确性规则：
+  - 未收齐全部输入 DRAIN 不得写 Task snapshot
+  - 未收齐执行图全部当前 attempt descriptor 不得写 manifest
+  - manifest 写入前不得提交 Source offset 或恢复消费
+  - 超时和响应丢失视为未知结果；已落 manifest 保留为合法恢复点
+  - Checkpoint ID 严格递增，失败编号不复用，延迟旧 DRAIN 不污染下一轮
+- 验证：
+  - Source/Store/Operator 专项：`66 passed`
+  - Runtime/Worker/Coordinator 专项：`76 + 5 + 2 + 4 passed`
+  - 控制面集成专项：`16 passed`
+  - 部署参数与 Compose 契约：`9 passed`，`docker compose config --quiet` 通过
+  - 全仓：`341 passed`，总覆盖率 `84.89%`
+  - Ruff lint：通过
+  - Ruff format：79 个文件通过
+  - `git diff --check`：通过
+- 问题与处理：
+  - 局部 pytest 首次导入镜像内旧包：后续固定设置 `PYTHONPATH=/workspace/src`
+  - 空 assignment 不调用 consumer pause：删除错误 FakeConsumer 断言，保留内部暂停和
+    complete 前后精确 commit 断言
+  - 识别到 to_thread 取消竞态：取消时等待原子写线程结束，再执行 abort 清理
+  - staged review 发现 manifest 重试时间戳、arm 未知结果和 HTTP 超时边界：
+    改为 manifest 幂等返回、请求前登记可能已 arm Task、由 Coordinator 统一控制超时
+  - Windows 绑定卷下个别 Ruff 容器输出后未退出：终止会话并用 `timeout 30s` 独立复跑
+- 未完成边界：
+  - 恢复时跨旧 Source subtask 合并 partition 状态留到 Task 7
+  - attempt 递增、整作业重调度和 Worker 重注册恢复尚未实现
+  - 当前追加 File Sink 仍允许故障边界重复，不宣称 Exactly-once
+- 上一回退点：`0ca56cf`
+- 结果提交：本条随本里程碑提交，SHA 将在提交后回填并写入 Git note
+- 回退提交：提交后使用 `git revert <本里程碑 SHA>`

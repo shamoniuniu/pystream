@@ -23,6 +23,8 @@ class BlockingConsumer:
         self.fail = fail
         self.started = False
         self.stopped = False
+        self.paused = False
+        self.commits: list[dict[object, object] | None] = []
         self._wait = asyncio.Event()
 
     async def start(self) -> None:
@@ -32,8 +34,22 @@ class BlockingConsumer:
         self.stopped = True
         self._wait.set()
 
-    async def commit(self) -> None:
-        return None
+    async def commit(self, offsets: dict[object, object] | None = None) -> None:
+        self.commits.append(offsets)
+
+    def assignment(self) -> set[object]:
+        return set()
+
+    def pause(self, *partitions: object) -> None:
+        del partitions
+        self.paused = True
+
+    def resume(self, *partitions: object) -> None:
+        del partitions
+        self.paused = False
+
+    def seek(self, partition: object, offset: int) -> None:
+        del partition, offset
 
     def __aiter__(self):
         return self
@@ -95,6 +111,7 @@ def build_source_bundle(
     *,
     validator: str | None = None,
     bad_record_policy: str = "fail",
+    checkpoint: bool = False,
 ) -> tuple[bytes, ArtifactDescriptor]:
     source = tmp_path / "source"
     source.mkdir()
@@ -129,6 +146,15 @@ def build_source_bundle(
         ],
         "edges": [{"from": "words", "to": "output"}],
     }
+    if checkpoint:
+        document["execution"] = {
+            "checkpoint": {
+                "interval": "10s",
+                "timeout": "30s",
+                "max_consecutive_failures": 3,
+            },
+            "restart": {"max_attempts": 3, "delay": "2s"},
+        }
     (source / "job.yaml").write_text(
         yaml.safe_dump(document, sort_keys=False),
         encoding="utf-8",
@@ -197,6 +223,47 @@ async def test_manager_下载解压一次_启动停止并隔离工作目录(tmp_
 
     await manager.close()
     await server.close()
+
+
+@pytest.mark.asyncio
+async def test_manager_转发checkpoint生命周期并复用共享store(tmp_path: Path) -> None:
+    content, descriptor = build_source_bundle(tmp_path, checkpoint=True)
+    consumer = BlockingConsumer()
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    manager = WorkerTaskManager(
+        "worker-1",
+        tmp_path / "work",
+        server,
+        MemoryFetcher(content),
+        consumer_factory=lambda *args, **kwargs: consumer,
+        checkpoint_root=tmp_path / "shared-checkpoints",
+    )
+    deployment = source_deployment(descriptor)
+    task_id = deployment.task.task_id
+    try:
+        await manager.deploy(deployment)
+        await manager.arm_checkpoint(task_id, 1)
+        descriptor = await manager.trigger_checkpoint(task_id, 1)
+        assert await manager.wait_checkpoint(task_id, 1) == descriptor
+        assert consumer.commits == []
+
+        manager.checkpoint_store.complete_checkpoint(
+            job_id="job-1",
+            checkpoint_id=1,
+            attempt_id=0,
+            expected_task_ids={task_id},
+            snapshots=(descriptor,),
+        )
+        await manager.complete_checkpoint(task_id, 1)
+        assert consumer.commits == [{}]
+
+        await manager.arm_checkpoint(task_id, 2)
+        await manager.abort_checkpoint(task_id, 2)
+        assert consumer.commits == [{}]
+    finally:
+        await manager.close()
+        await server.close()
 
 
 @pytest.mark.asyncio

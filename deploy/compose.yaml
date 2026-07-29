@@ -144,6 +144,7 @@ services:
       - "8080:8080"
     volumes:
       - pystream-artifacts:/data/artifacts
+      - pystream-checkpoints:/data/checkpoints
     healthcheck:
       test:
         - CMD
@@ -186,6 +187,7 @@ services:
       - --work-root
       - /data/work
     volumes:
+      - pystream-checkpoints:/data/checkpoints
       - pystream-output:/data/output
       - pystream-worker-1:/data/work
 
@@ -212,6 +214,7 @@ services:
       - --work-root
       - /data/work
     volumes:
+      - pystream-checkpoints:/data/checkpoints
       - pystream-output:/data/output
       - pystream-worker-2:/data/work
 
@@ -238,6 +241,7 @@ services:
       - --work-root
       - /data/work
     volumes:
+      - pystream-checkpoints:/data/checkpoints
       - pystream-output:/data/output
       - pystream-worker-3:/data/work
 
@@ -284,6 +288,7 @@ networks:
 
 volumes:
   pystream-artifacts:
+  pystream-checkpoints:
   pystream-kafka:
   pystream-output:
   pystream-worker-1:

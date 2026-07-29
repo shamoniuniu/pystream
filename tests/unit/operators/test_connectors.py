@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from pystream.api import EventTimeExecutionConfig, FileSinkConfig, KafkaSourceConfig
+from pystream.checkpoint import decode_state
 from pystream.common import ChangeKind, MessageType, RecordEnvelope
 from pystream.operators import (
     BadRecordError,
@@ -53,17 +54,27 @@ class FakeConsumer:
         self,
         messages: list[FakeMessage] | None = None,
         *,
+        assigned_partitions: set[FakePartition] | None = None,
         start_error: Exception | None = None,
         commit_error: Exception | None = None,
         stop_error: Exception | None = None,
     ) -> None:
         self.messages = messages or []
+        self.assigned_partitions = (
+            assigned_partitions
+            if assigned_partitions is not None
+            else {FakePartition(message.topic, message.partition) for message in self.messages}
+        )
         self.start_error = start_error
         self.commit_error = commit_error
         self.stop_error = stop_error
         self.started = False
         self.stopped = False
         self.commits = 0
+        self.commit_payloads: list[dict[object, object] | None] = []
+        self.paused: list[tuple[FakePartition, ...]] = []
+        self.resumed: list[tuple[FakePartition, ...]] = []
+        self.seek_calls: list[tuple[FakePartition, int]] = []
 
     async def start(self) -> None:
         if self.start_error is not None:
@@ -75,14 +86,24 @@ class FakeConsumer:
         if self.stop_error is not None:
             raise self.stop_error
 
-    async def commit(self) -> None:
+    async def commit(self, offsets: dict[object, object] | None = None) -> None:
         self.commits += 1
+        self.commit_payloads.append(offsets)
         if self.commit_error is not None:
             raise self.commit_error
 
     def assignment(self) -> set[FakePartition]:
         """返回消息集中全部分区，便于 Watermark 在首条记录前建模。"""
-        return {FakePartition(message.topic, message.partition) for message in self.messages}
+        return set(self.assigned_partitions)
+
+    def pause(self, *partitions: FakePartition) -> None:
+        self.paused.append(partitions)
+
+    def resume(self, *partitions: FakePartition) -> None:
+        self.resumed.append(partitions)
+
+    def seek(self, partition: FakePartition, offset: int) -> None:
+        self.seek_calls.append((partition, offset))
 
     def __aiter__(self):
         async def iterate():
@@ -178,6 +199,133 @@ async def test_source_subtasks_share_group_disable_auto_commit_and_use_distinct_
     assert first.commits == 1
     assert first.stopped and second.stopped
     assert source0.state is OperatorState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_source_checkpoint_pauses_snapshots_exact_offsets_and_resumes() -> None:
+    consumer = FakeConsumer(
+        [
+            FakeMessage(b'{"word":"apple","count":1}', partition=0, offset=3),
+            FakeMessage(b'{"word":"pie","count":1}', partition=1, offset=7),
+        ]
+    )
+    source = KafkaJsonSource(
+        fixed_context(),
+        job_id="job-1",
+        config=source_config(),
+        consumer_factory=RecordingConsumerFactory(consumer),
+    )
+    await source.open()
+    records = [record async for record in source.records()]
+    assert len(records) == 2
+
+    with pytest.raises(KafkaSourceError, match="pause"):
+        source.snapshot_state()
+    with pytest.raises(KafkaSourceError, match="pause"):
+        await source.commit_checkpoint()
+
+    await source.pause()
+    assert set(consumer.paused[-1]) == {
+        FakePartition("words", 0),
+        FakePartition("words", 1),
+    }
+    state = decode_state(source.snapshot_state(), "kafka-source")
+    assert state == {
+        "topic": "words",
+        "partitions": [
+            {
+                "topic": "words",
+                "partition": 0,
+                "next_offset": 4,
+                "max_event_time": None,
+            },
+            {
+                "topic": "words",
+                "partition": 1,
+                "next_offset": 8,
+                "max_event_time": None,
+            },
+        ],
+        "last_watermark": None,
+    }
+
+    await source.commit_checkpoint()
+    committed = consumer.commit_payloads[-1]
+    assert committed is not None
+    assert {
+        (partition.topic, partition.partition): getattr(value, "offset", value)
+        for partition, value in committed.items()
+    } == {("words", 0): 4, ("words", 1): 8}
+
+    await source.resume()
+    assert set(consumer.resumed[-1]) == {
+        FakePartition("words", 0),
+        FakePartition("words", 1),
+    }
+    await source.close()
+
+
+@pytest.mark.asyncio
+async def test_source_restore_seeks_current_assignment_and_preserves_watermark_baseline() -> None:
+    config = source_config(event_time={"pointer": "/event_time"})
+    strategy = EventTimeExecutionConfig(
+        max_out_of_orderness="2s",
+        idle_timeout="30s",
+    )
+    original = KafkaJsonSource(
+        fixed_context(),
+        job_id="job-1",
+        config=config,
+        event_time_strategy=strategy,
+        consumer_factory=RecordingConsumerFactory(
+            FakeConsumer(
+                [
+                    FakeMessage(
+                        b'{"word":"apple","event_time":"2026-07-26T12:00:05Z"}',
+                        partition=0,
+                        offset=3,
+                    ),
+                    FakeMessage(
+                        b'{"word":"pie","event_time":"2026-07-26T12:00:07Z"}',
+                        partition=1,
+                        offset=7,
+                    ),
+                ]
+            )
+        ),
+    )
+    await original.open()
+    _ = [record async for record in original.records()]
+    await original.pause()
+    snapshot = original.snapshot_state()
+    await original.close()
+
+    restored_consumer = FakeConsumer(
+        [
+            FakeMessage(
+                b'{"word":"older","event_time":"2026-07-26T12:00:02Z"}',
+                partition=1,
+                offset=8,
+            )
+        ],
+        assigned_partitions={FakePartition("words", 1)},
+    )
+    restored = KafkaJsonSource(
+        fixed_context(),
+        job_id="job-1",
+        config=config,
+        event_time_strategy=strategy,
+        consumer_factory=RecordingConsumerFactory(restored_consumer),
+    )
+    await restored.open()
+    await restored.restore_state(snapshot)
+
+    assert restored_consumer.seek_calls == [(FakePartition("words", 1), 8)]
+    records = [record async for record in restored.records()]
+    assert [
+        record.event_time for record in records if record.message_type is MessageType.WATERMARK
+    ] == [datetime(2026, 7, 26, 12, 0, 5, tzinfo=UTC)]
+    await restored.close()
 
 
 @pytest.mark.asyncio

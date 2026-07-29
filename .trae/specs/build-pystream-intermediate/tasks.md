@@ -47,20 +47,20 @@
   - [x] 通用 File Sink columns
   - [x] 中级二级聚合 UDF 与算子测试
 
-- [ ] Task 5: 实现版本化 Checkpoint Store
-  - [ ] TaskSnapshot/Manifest 模型
-  - [ ] 规范 JSON、SHA、大小上限、原子写
-  - [ ] 完整 manifest 扫描与损坏回退
-  - [ ] attempt 目录隔离和旧写入拒绝
-  - [ ] Store 单元测试
+- [x] Task 5: 实现版本化 Checkpoint Store
+  - [x] TaskSnapshot/Manifest 模型
+  - [x] 规范 JSON、SHA、大小上限、原子写
+  - [x] 完整 manifest 扫描与损坏回退
+  - [x] attempt 目录隔离和旧写入拒绝
+  - [x] Store 单元测试
 
 - [ ] Task 6: 实现停流协调 Checkpoint
-  - [ ] Worker arm/trigger/status/complete/abort API
-  - [ ] Source pause、partition snapshot、精确 commit/resume
-  - [ ] CHECKPOINT_DRAIN 多输入收齐和状态写入
+  - [x] Worker arm/trigger/status/complete/abort API
+  - [x] Source pause、partition snapshot、精确 commit/resume
+  - [x] CHECKPOINT_DRAIN 多输入收齐和状态写入
   - [ ] Source operator partition 状态合并
-  - [ ] timeout/abort/连续失败
-  - [ ] Coordinator 和多 Runtime 集成测试
+  - [x] timeout/abort/连续失败
+  - [x] Coordinator 和多 Runtime 集成测试
 
 - [ ] Task 7: 实现整作业自动恢复
   - [ ] Job/Task RECOVERING 与 attempt 状态机

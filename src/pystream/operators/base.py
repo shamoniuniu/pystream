@@ -14,12 +14,12 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
+from pystream.checkpoint import decode_state, encode_state
 from pystream.common import ChangeKind
 from pystream.operators.clock import Clock, SystemClock
 from pystream.operators.errors import (
     OperatorLifecycleError,
     RecordValidationError,
-    UnsupportedStateOperation,
 )
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
@@ -86,6 +86,12 @@ class OperatorTask(Protocol[RecordT]):
     def close(self) -> None:
         """释放资源并进入 CLOSED。"""
 
+    def snapshot_state(self) -> bytes:
+        """返回版本化状态快照。"""
+
+    def restore_state(self, snapshot: bytes) -> None:
+        """从版本化快照恢复状态。"""
+
 
 class BaseOperator(ABC):
     """带严格生命周期检查的算子基类。"""
@@ -129,13 +135,15 @@ class BaseOperator(ABC):
         return []
 
     def snapshot_state(self) -> bytes:
-        """为后续 Checkpoint 保留接口；第一阶段明确不支持。"""
-        raise UnsupportedStateOperation("第一阶段不支持算子状态快照")
+        """返回无状态算子的版本化空快照。"""
+        self._require_open()
+        return encode_state("stateless-operator", {})
 
     def restore_state(self, snapshot: bytes) -> None:
-        """为后续恢复保留接口；第一阶段明确不支持。"""
-        del snapshot
-        raise UnsupportedStateOperation("第一阶段不支持算子状态恢复")
+        """校验无状态算子的快照。"""
+        self._require_open()
+        if decode_state(snapshot, "stateless-operator"):
+            raise RecordValidationError("无状态算子 snapshot state 必须为空")
 
 
 def validate_json_value(value: Any, *, field: str) -> None:

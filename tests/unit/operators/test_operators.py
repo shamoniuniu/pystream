@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from pystream.checkpoint import CheckpointError
 from pystream.common import ChangeKind, RecordEnvelope
 from pystream.operators import (
     KeyByOperator,
@@ -18,7 +19,6 @@ from pystream.operators import (
     RecordValidationError,
     ReduceWindowOperator,
     TumblingProcessingTimeWindowAssigner,
-    UnsupportedStateOperation,
 )
 
 
@@ -75,12 +75,15 @@ def test_lifecycle_rejects_processing_before_open_and_after_close() -> None:
         operator.open()
 
 
-def test_first_phase_snapshot_and_restore_are_explicitly_unsupported() -> None:
+def test_stateless_operator_snapshot_roundtrip_and_lifecycle() -> None:
     operator = MapOperator(context(), lambda value: value)
 
-    with pytest.raises(UnsupportedStateOperation):
+    with pytest.raises(OperatorLifecycleError):
         operator.snapshot_state()
-    with pytest.raises(UnsupportedStateOperation):
+    operator.open()
+    snapshot = operator.snapshot_state()
+    operator.restore_state(snapshot)
+    with pytest.raises(CheckpointError):
         operator.restore_state(b"snapshot")
 
 
@@ -409,6 +412,61 @@ def test_retract_to_null_deletes_state_and_missing_state_fails() -> None:
     )
     assert operator.state_size == 0
     assert operator.state_metrics["retract_state_deletes"] == 1
+
+
+def test_reduce_snapshot_roundtrip_restores_window_watermark_and_accumulator() -> None:
+    source_clock = ManualClock(at(13))
+    source = ReduceWindowOperator(
+        context(source_clock),
+        add_counts,
+        window_size_seconds=5,
+        time_characteristic="event",
+    )
+    source.open()
+    source.process(
+        record(
+            {"word": "apple", "count": 1},
+            key="apple",
+            event_time=at(12, 0, 1),
+        )
+    )
+    source.on_watermark(at(12, 0, 2))
+    snapshot = source.snapshot_state()
+
+    restored_clock = ManualClock(at(13))
+    restored = ReduceWindowOperator(
+        context(restored_clock),
+        add_counts,
+        window_size_seconds=5,
+        time_characteristic="event",
+    )
+    restored.open()
+    restored.restore_state(snapshot)
+    restored.process(
+        record(
+            {"word": "apple", "count": 2},
+            key="apple",
+            event_time=at(12, 0, 3),
+            record_id="words:0:2",
+        )
+    )
+    outputs = restored.on_watermark(at(12, 0, 5))
+
+    assert [item.payload for item in outputs] == [{"word": "apple", "count": 3}]
+    assert restored.state_size == 0
+
+
+def test_reduce_snapshot_rejects_mode_mismatch_and_corruption() -> None:
+    source = ReduceWindowOperator(context(), add_counts, time_characteristic="event")
+    source.open()
+    snapshot = source.snapshot_state()
+    target = ReduceWindowOperator(context(), add_counts, time_characteristic="processing")
+    target.open()
+
+    with pytest.raises(RecordValidationError, match="time_characteristic"):
+        target.restore_state(snapshot)
+    with pytest.raises(RecordValidationError, match="snapshot"):
+        target.restore_state(b"not-json")
 
 
 def test_records_on_window_boundary_do_not_accumulate_across_windows() -> None:

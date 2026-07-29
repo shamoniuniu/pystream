@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from pystream.api import FileSinkConfig, OperatorType, Partitioning
+from pystream.checkpoint import LocalCheckpointStore, encode_state
 from pystream.common import MessageType, RecordEnvelope
 from pystream.control import (
     ArtifactDescriptor,
@@ -76,6 +77,31 @@ class CommitFailingSource(MemorySource):
 
     async def commit(self) -> None:
         raise ConnectionError("commit unavailable")
+
+
+class CheckpointMemorySource(MemorySource):
+    """记录停流 Checkpoint 生命周期的内存 Source。"""
+
+    def __init__(self, records: list[RecordEnvelope]) -> None:
+        super().__init__(records)
+        self.paused = False
+        self.resumes = 0
+        self.checkpoint_commits = 0
+
+    async def pause(self) -> None:
+        self.paused = True
+
+    async def resume(self) -> None:
+        self.paused = False
+        self.resumes += 1
+
+    def snapshot_state(self) -> bytes:
+        assert self.paused
+        return encode_state("memory-source", {"records": len(self._records)})
+
+    async def commit_checkpoint(self) -> None:
+        assert self.paused
+        self.checkpoint_commits += 1
 
 
 class SlowFlushFile:
@@ -158,6 +184,16 @@ def sink_record(index: int) -> RecordEnvelope:
         processing_time=AT_WINDOW_END,
         key=f"word-{index}",
         headers={"window_end": "2026/07/26T12:00:01"},
+    )
+
+
+def checkpoint_drain(checkpoint_id: int, source_task_id: str) -> RecordEnvelope:
+    return RecordEnvelope(
+        record_id=f"checkpoint-drain:{source_task_id}:{checkpoint_id}",
+        payload={},
+        processing_time=AT_WINDOW_START,
+        message_type=MessageType.CHECKPOINT_DRAIN,
+        checkpoint_id=checkpoint_id,
     )
 
 
@@ -336,6 +372,148 @@ async def test_source_提交_offset_失败使_taskruntime_失败并上报() -> N
         assert runtime.state is TaskRuntimeState.FAILED
         assert failures == ["commit unavailable"]
         assert source.closed
+    finally:
+        await runtime.stop()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_checkpoint按data_drain顺序完成全链路快照和source提交(
+    tmp_path: Path,
+) -> None:
+    source_server = DataPlaneServer("127.0.0.1", 0)
+    target_server = DataPlaneServer("127.0.0.1", 0)
+    await source_server.start()
+    await target_server.start()
+    source_task = task("words", OperatorType.SOURCE)
+    target_task = task("normalize", OperatorType.MAP)
+    source_to_target = channel(
+        source_task,
+        target_task,
+        Partitioning.FORWARD,
+        target_server,
+    )
+    store = LocalCheckpointStore(tmp_path / "checkpoints")
+    source = CheckpointMemorySource([record("words:0:0", "APPLE")])
+    target_runtime = TaskRuntime(
+        deployment(target_task, incoming=(source_to_target,)),
+        target_server,
+        operator=MapOperator(
+            OperatorContext("normalize"),
+            lambda payload: {
+                "word": payload["word"].lower(),
+                "count": payload["count"],
+            },
+        ),
+        checkpoint_enabled=True,
+        checkpoint_store=store,
+    )
+    source_runtime = TaskRuntime(
+        deployment(source_task, outgoing=(source_to_target,)),
+        source_server,
+        source=source,
+        checkpoint_enabled=True,
+        checkpoint_store=store,
+    )
+    try:
+        await target_runtime.start()
+        await source_runtime.start()
+        await wait_until(lambda: target_runtime.snapshot.records_in == 1)
+
+        await target_runtime.arm_checkpoint(1)
+        await source_runtime.arm_checkpoint(1)
+        source_descriptor = await source_runtime.trigger_checkpoint(1)
+        target_descriptor = await asyncio.wait_for(
+            target_runtime.wait_checkpoint(1),
+            timeout=2,
+        )
+
+        source_state = store.read_task_snapshot(source_descriptor)
+        target_state = store.read_task_snapshot(target_descriptor)
+        assert source_state["kind"] == "source"
+        assert target_state["kind"] == "operator"
+        assert target_state["input_watermarks"] == [
+            {"upstream_task_id": source_task.task_id, "watermark": None}
+        ]
+        manifest = store.complete_checkpoint(
+            job_id="job-1",
+            checkpoint_id=1,
+            attempt_id=0,
+            expected_task_ids={source_task.task_id, target_task.task_id},
+            snapshots=(source_descriptor, target_descriptor),
+        )
+        assert {item.task_id for item in manifest.snapshots} == {
+            source_task.task_id,
+            target_task.task_id,
+        }
+
+        await target_runtime.complete_checkpoint(1)
+        await source_runtime.complete_checkpoint(1)
+        assert source.checkpoint_commits == 1
+        assert source.resumes == 1
+        assert not source.paused
+
+        source.release.set()
+        await asyncio.gather(source_runtime.wait(), target_runtime.wait())
+    finally:
+        await source_runtime.stop()
+        await target_runtime.stop()
+        await source_server.close()
+        await target_server.close()
+
+
+@pytest.mark.asyncio
+async def test_checkpoint多输入收齐与abort后的延迟drain隔离(tmp_path: Path) -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    left = task("left", OperatorType.MAP)
+    right = task("right", OperatorType.MAP)
+    target = task("target", OperatorType.MAP)
+    incoming = (
+        channel(left, target, Partitioning.REBALANCE, server),
+        channel(right, target, Partitioning.REBALANCE, server),
+    )
+    runtime = TaskRuntime(
+        deployment(target, incoming=incoming),
+        server,
+        operator=MapOperator(OperatorContext("target"), lambda payload: payload),
+        checkpoint_enabled=True,
+        checkpoint_store=LocalCheckpointStore(tmp_path / "checkpoints"),
+    )
+    identities = tuple(
+        ChannelIdentity("job-1", item.source_task_id, target.task_id) for item in incoming
+    )
+    try:
+        await runtime.start()
+        await runtime.arm_checkpoint(1)
+        await runtime.accept_control(
+            identities[0],
+            checkpoint_drain(1, left.task_id),
+        )
+        await wait_until(lambda: identities[0] in runtime._checkpoint_drains)
+        assert not runtime._checkpoint_ready.is_set()
+
+        await runtime.abort_checkpoint(1)
+        await runtime.accept_control(
+            identities[1],
+            checkpoint_drain(1, right.task_id),
+        )
+        await runtime._input_queue.join()
+        assert runtime.state is TaskRuntimeState.RUNNING
+
+        await runtime.arm_checkpoint(2)
+        await runtime.accept_control(
+            identities[0],
+            checkpoint_drain(2, left.task_id),
+        )
+        await runtime.accept_control(
+            identities[1],
+            checkpoint_drain(2, right.task_id),
+        )
+        descriptor = await asyncio.wait_for(runtime.wait_checkpoint(2), timeout=2)
+        assert descriptor.checkpoint_id == 2
+        await runtime.complete_checkpoint(2)
+        assert runtime.state is TaskRuntimeState.RUNNING
     finally:
         await runtime.stop()
         await server.close()

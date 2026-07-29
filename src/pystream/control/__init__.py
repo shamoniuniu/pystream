@@ -5,6 +5,10 @@
 """
 
 from pystream.control.artifacts import LocalArtifactRepository
+from pystream.control.checkpoint import (
+    CheckpointCoordinationError,
+    CheckpointCoordinator,
+)
 from pystream.control.errors import (
     ArtifactError,
     ControlPlaneError,
@@ -35,6 +39,8 @@ __all__ = [
     "ArtifactDescriptor",
     "ArtifactError",
     "ArtifactRepository",
+    "CheckpointCoordinationError",
+    "CheckpointCoordinator",
     "ControlPlaneError",
     "DeploymentError",
     "ExecutionGraph",

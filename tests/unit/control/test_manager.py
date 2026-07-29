@@ -7,9 +7,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from pystream.api import StreamGraph
+from pystream.api import CheckpointConfig, ExecutionConfig, StreamGraph
+from pystream.checkpoint import LocalCheckpointStore, TaskSnapshotDescriptor
 from pystream.control import (
     ArtifactError,
+    CheckpointCoordinationError,
     ControlPlaneError,
     DeploymentError,
     InsufficientSlots,
@@ -30,12 +32,16 @@ class RecordingGateway:
         *,
         fail_deploy_at: int | None = None,
         fail_stop_task: str | None = None,
+        fail_checkpoint: bool = False,
     ) -> None:
         self.fail_deploy_at = fail_deploy_at
         self.fail_stop_task = fail_stop_task
+        self.fail_checkpoint = fail_checkpoint
+        self.checkpoint_store: LocalCheckpointStore | None = None
         self.deploy_calls: list[tuple[str, str]] = []
         self.deployments: list[TaskDeployment] = []
         self.stop_calls: list[tuple[str, str]] = []
+        self.checkpoint_calls: list[tuple[str, str, int]] = []
 
     async def deploy_task(self, worker: WorkerNode, deployment: TaskDeployment) -> None:
         call_number = len(self.deploy_calls) + 1
@@ -49,6 +55,67 @@ class RecordingGateway:
         if task_id == self.fail_stop_task:
             raise ConnectionError("simulated stop failure")
 
+    async def arm_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> None:
+        del worker
+        self.checkpoint_calls.append(("arm", task_id, checkpoint_id))
+
+    async def trigger_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> TaskSnapshotDescriptor:
+        del worker
+        self.checkpoint_calls.append(("trigger", task_id, checkpoint_id))
+        if self.fail_checkpoint:
+            raise ConnectionError("simulated checkpoint failure")
+        return self._snapshot(task_id, checkpoint_id)
+
+    async def wait_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> TaskSnapshotDescriptor:
+        del worker
+        self.checkpoint_calls.append(("wait", task_id, checkpoint_id))
+        return self._snapshot(task_id, checkpoint_id)
+
+    async def complete_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> None:
+        del worker
+        self.checkpoint_calls.append(("complete", task_id, checkpoint_id))
+
+    async def abort_checkpoint(
+        self,
+        worker: WorkerNode,
+        task_id: str,
+        checkpoint_id: int,
+    ) -> None:
+        del worker
+        self.checkpoint_calls.append(("abort", task_id, checkpoint_id))
+
+    def _snapshot(self, task_id: str, checkpoint_id: int) -> TaskSnapshotDescriptor:
+        if self.checkpoint_store is None:
+            raise AssertionError("测试 Gateway 缺少 Checkpoint Store")
+        return self.checkpoint_store.write_task_snapshot(
+            job_id=task_id.split(":", 1)[0],
+            checkpoint_id=checkpoint_id,
+            attempt_id=0,
+            task_id=task_id,
+            operator_id=task_id.rsplit(":", 2)[1],
+            state={"kind": "test", "snapshot": "{}"},
+        )
+
 
 def manager_with_workers(
     tmp_path,
@@ -59,10 +126,13 @@ def manager_with_workers(
     heartbeat_at: datetime | None = None,
 ) -> JobManager:
     """创建带本地制品仓库和固定 Worker 的 JobManager。"""
+    checkpoint_store = LocalCheckpointStore(tmp_path / "checkpoints")
+    gateway.checkpoint_store = checkpoint_store
     manager = JobManager(
         LocalArtifactRepository(tmp_path / "artifacts"),
         gateway,
         heartbeat_timeout=timedelta(seconds=10),
+        checkpoint_store=checkpoint_store,
     )
     for index in range(worker_count):
         manager.register_worker(
@@ -74,6 +144,25 @@ def manager_with_workers(
             heartbeat_at,
         )
     return manager
+
+
+def checkpoint_graph(
+    graph: StreamGraph,
+    *,
+    max_consecutive_failures: int = 3,
+) -> StreamGraph:
+    definition = graph.definition.model_copy(
+        update={
+            "execution": ExecutionConfig(
+                checkpoint=CheckpointConfig(
+                    interval="3600s",
+                    timeout="2s",
+                    max_consecutive_failures=max_consecutive_failures,
+                )
+            )
+        }
+    )
+    return StreamGraph(definition)
 
 
 @pytest.mark.asyncio
@@ -271,3 +360,54 @@ async def test_duplicate_job_id_和错误下载摘要被拒绝(tmp_path, two_tas
         await manager.submit_job(two_task_graph, b"other", job_id="job-1")
     with pytest.raises(ControlPlaneError, match="不匹配"):
         manager.download_artifact("job-1", "0" * 64)
+
+
+@pytest.mark.asyncio
+async def test_jobmanager手动checkpoint更新状态并保留周期任务(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway()
+    manager = manager_with_workers(tmp_path, gateway, worker_count=2, slots=2)
+    graph = checkpoint_graph(two_task_graph)
+    try:
+        await manager.submit_job(graph, b"bundle", job_id="job-checkpoint")
+
+        manifest = await manager.trigger_checkpoint("job-checkpoint")
+
+        assert manifest.checkpoint_id == 1
+        checkpoint = manager.status_view("job-checkpoint")["checkpoint"]
+        assert checkpoint == {
+            "next_id": 2,
+            "last_completed_id": 1,
+            "consecutive_failures": 0,
+        }
+        assert manager._runs["job-checkpoint"].checkpoint_task is not None
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_checkpoint连续失败达到阈值后整作业失败且编号不复用(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway(fail_checkpoint=True)
+    manager = manager_with_workers(tmp_path, gateway, worker_count=2, slots=2)
+    graph = checkpoint_graph(two_task_graph, max_consecutive_failures=2)
+    await manager.submit_job(graph, b"bundle", job_id="job-checkpoint-fail")
+
+    with pytest.raises(CheckpointCoordinationError, match="simulated checkpoint failure"):
+        await manager.trigger_checkpoint("job-checkpoint-fail")
+    assert manager.get_job("job-checkpoint-fail").status is JobStatus.RUNNING
+
+    with pytest.raises(CheckpointCoordinationError, match="simulated checkpoint failure"):
+        await manager.trigger_checkpoint("job-checkpoint-fail")
+
+    assert manager.get_job("job-checkpoint-fail").status is JobStatus.FAILED
+    assert "连续失败达到上限" in (manager.get_job("job-checkpoint-fail").error or "")
+    assert {
+        checkpoint_id for action, _, checkpoint_id in gateway.checkpoint_calls if action == "arm"
+    } == {1, 2}
+    assert all(view.used_slots == 0 for view in manager.resources())
+    await manager.close()

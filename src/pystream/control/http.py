@@ -127,6 +127,7 @@ class JobManagerHttpService:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        await self.manager.close()
 
     async def _reconcile_loop(self) -> None:
         while True:
