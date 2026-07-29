@@ -27,11 +27,11 @@
 
 ## Retract
 
-- [ ] 首次状态产生 INSERT
-- [ ] 更新严格产生 UPDATE_BEFORE 后 UPDATE_AFTER
-- [ ] Map/KeyBy/Shuffle 保留 change_kind
-- [ ] 下游 Reduce 正确 add/retract
-- [ ] retract 返回 null 删除状态
+- [x] 首次状态产生 INSERT
+- [x] 更新严格产生 UPDATE_BEFORE 后 UPDATE_AFTER
+- [x] Map/KeyBy/Shuffle 保留 change_kind
+- [x] 下游 Reduce 正确 add/retract
+- [x] retract 返回 null 删除状态
 - [ ] 二级 count distribution demo 结果正确
 
 ## Checkpoint

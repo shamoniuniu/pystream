@@ -40,6 +40,54 @@ def test_wordcount_样例契约和_udf(tmp_path: Path) -> None:
         assert reduce(first, second) == {"word": "apple", "count": 2}
 
 
+def test_intermediate_样例契约和_retract_udf(tmp_path: Path) -> None:
+    job_root = tmp_path / "intermediate"
+    shutil.copytree(
+        ROOT / "examples" / "intermediate",
+        job_root,
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    graph = load_stream_graph(job_root / "job.yaml")
+
+    assert graph.definition.job.name == "event-time-retract"
+    assert graph.total_parallelism == 12
+    assert graph.operator("word_totals").emit_mode == "changelog"
+    assert graph.data_stream("word_totals").changelog is True
+    assert graph.operator("count_distribution").retract_udf is not None
+
+    with UDFLoader(job_root, job_id="intermediate-contract") as loader:
+        normalize = loader.load(
+            "event_time_retract_udfs:normalize",
+            UDFKind.MAP,
+        )
+        add_word_counts = loader.load(
+            "event_time_retract_udfs:add_word_counts",
+            UDFKind.REDUCE,
+        )
+        to_bucket = loader.load(
+            "event_time_retract_udfs:to_count_bucket",
+            UDFKind.MAP,
+        )
+        add_bucket = loader.load(
+            "event_time_retract_udfs:add_bucket",
+            UDFKind.REDUCE,
+        )
+        remove_bucket = loader.load(
+            "event_time_retract_udfs:remove_bucket",
+            UDFKind.RETRACT,
+        )
+        first = normalize({"word": "APPLE", "count": 1, "event_time": "2026-07-26T12:00:01Z"})
+        total = add_word_counts(first, {"word": "apple", "count": 1})
+        contribution = to_bucket(total)
+
+        assert total == {"word": "apple", "count": 2}
+        assert add_bucket(contribution, contribution) == {
+            "count": 2,
+            "word_count": 2,
+        }
+        assert remove_bucket(contribution, contribution) is None
+
+
 def test_service_入口参数覆盖jobmanager和worker() -> None:
     parser = build_parser()
     manager = parser.parse_args(["jobmanager", "--artifact-root", "/tmp/artifacts"])

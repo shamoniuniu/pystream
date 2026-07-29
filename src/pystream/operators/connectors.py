@@ -480,24 +480,37 @@ class FileSinkOperator(BaseOperator):
         super().open()
 
     def process(self, record: RecordT) -> list[RecordT]:
-        """校验并写入 ``window_end,word,count``，每条记录立即 flush。"""
+        """按配置列写 CSV；缺省保持 ``window_end,word,count``。"""
         self._require_open()
-        payload = record.payload
-        if not isinstance(payload, dict):
-            raise RecordValidationError("文件 Sink payload 必须是 JSON object")
-        window_end = record.headers.get("window_end")
-        word = payload.get("word")
-        count = payload.get("count")
-        if not isinstance(window_end, str) or not window_end:
-            raise RecordValidationError("文件 Sink 记录缺少非空 headers.window_end")
-        if not isinstance(word, str) or not word:
-            raise RecordValidationError("文件 Sink 记录缺少非空 payload.word")
-        if isinstance(count, bool) or not isinstance(count, int):
-            raise RecordValidationError("文件 Sink payload.count 必须是整数")
         if self._writer is None or self._file is None:  # pragma: no cover - 生命周期保证
             raise FileSinkError("文件 Sink 资源尚未初始化")
+        if self.config.columns is None:
+            payload = record.payload
+            if not isinstance(payload, dict):
+                raise RecordValidationError("文件 Sink payload 必须是 JSON object")
+            window_end = record.headers.get("window_end")
+            word = payload.get("word")
+            count = payload.get("count")
+            if not isinstance(window_end, str) or not window_end:
+                raise RecordValidationError("文件 Sink 记录缺少非空 headers.window_end")
+            if not isinstance(word, str) or not word:
+                raise RecordValidationError("文件 Sink 记录缺少非空 payload.word")
+            if isinstance(count, bool) or not isinstance(count, int):
+                raise RecordValidationError("文件 Sink payload.count 必须是整数")
+            row: tuple[object, ...] = (window_end, word, count)
+        else:
+            if not isinstance(record, RecordEnvelope):
+                raise RecordValidationError("配置 columns 的文件 Sink 只接受 RecordEnvelope")
+            document = cast(JsonValue, record.to_dict())
+            try:
+                row = tuple(
+                    _csv_cell(resolve_json_pointer(document, pointer))
+                    for pointer in self.config.columns
+                )
+            except JsonPointerError as exc:
+                raise RecordValidationError(f"文件 Sink columns 解析失败: {exc}") from exc
         try:
-            self._writer.writerow((window_end, word, count))
+            self._writer.writerow(row)
             self._file.flush()
         except (OSError, csv.Error) as exc:
             raise FileSinkError(f"写入文件 Sink {self._output_path} 失败: {exc}") from exc
@@ -534,6 +547,19 @@ class FileSinkOperator(BaseOperator):
     def abort_transaction(self) -> None:
         """预留第三阶段事务边界；第一阶段明确不支持。"""
         raise UnsupportedStateOperation("第一阶段文件 Sink 不支持事务 abort")
+
+
+def _csv_cell(value: JsonValue) -> object:
+    """把 JSON 值稳定转换为单个 CSV 单元格。"""
+    if isinstance(value, (dict, list, bool)) or value is None:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    return value
 
 
 __all__ = [

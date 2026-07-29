@@ -414,9 +414,11 @@ class TaskRuntime:
                 self._records_in += 1
                 if self.operator is None:  # pragma: no cover - 构造器保证
                     raise RuntimeTaskError("普通任务缺少算子")
-                late_before = self._operator_late_records()
-                await self._emit_many(self.operator.process(record))
-                if self._operator_late_records() > late_before:
+                metrics_before = self._operator_metrics()
+                outputs = self.operator.process(record)
+                await self._emit_many(outputs)
+                metrics_after = self._operator_metrics()
+                if metrics_after.get("late_records", 0) > metrics_before.get("late_records", 0):
                     self._log(
                         logging.WARNING,
                         "late_record_dropped",
@@ -425,6 +427,33 @@ class TaskRuntime:
                         event_time=(
                             record.event_time.isoformat() if record.event_time is not None else None
                         ),
+                    )
+                if metrics_after.get("changelog_records", 0) > metrics_before.get(
+                    "changelog_records", 0
+                ):
+                    self._log(
+                        logging.INFO,
+                        "changelog_emitted",
+                        "Reduce 已产生 Changelog",
+                        emitted_records=len(outputs),
+                    )
+                if metrics_after.get("retractions_applied", 0) > metrics_before.get(
+                    "retractions_applied", 0
+                ):
+                    self._log(
+                        logging.INFO,
+                        "retract_applied",
+                        "Reduce 已撤回旧贡献",
+                        record_id=record.record_id,
+                    )
+                if metrics_after.get("retract_state_deletes", 0) > metrics_before.get(
+                    "retract_state_deletes", 0
+                ):
+                    self._log(
+                        logging.INFO,
+                        "retract_state_deleted",
+                        "Reduce 撤回后删除空状态",
+                        record_id=record.record_id,
                     )
                 await self.trigger_timers()
             finally:
@@ -669,10 +698,6 @@ class TaskRuntime:
                     if isinstance(metric, int) and not isinstance(metric, bool)
                 }
         return {}
-
-    def _operator_late_records(self) -> int:
-        metrics = self._operator_metrics()
-        return metrics.get("late_records", 0)
 
     def _log(
         self,

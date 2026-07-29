@@ -164,6 +164,11 @@ class WorkerTaskManager:
                         operator = KeyByOperator(context, udf)
                     elif operator_spec.type is OperatorType.REDUCE:
                         udf = loader.load(operator_spec.udf, UDFKind.REDUCE)
+                        retract_udf = (
+                            loader.load(operator_spec.retract_udf, UDFKind.RETRACT)
+                            if operator_spec.retract_udf is not None
+                            else None
+                        )
                         if operator_spec.window is None:  # pragma: no cover - API 模型保证
                             raise WorkerTaskError("Reduce 缺少窗口配置")
                         operator = ReduceWindowOperator(
@@ -171,6 +176,8 @@ class WorkerTaskManager:
                             udf,
                             window_size_seconds=operator_spec.window.size_seconds,
                             time_characteristic=operator_spec.window.time_characteristic,
+                            emit_mode=operator_spec.emit_mode,
+                            retract_function=retract_udf,
                         )
                     else:  # pragma: no cover - StrEnum 完整处理
                         raise WorkerTaskError(f"不支持算子 {operator_spec.type}")

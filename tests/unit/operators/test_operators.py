@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from pystream.common import RecordEnvelope
+from pystream.common import ChangeKind, RecordEnvelope
 from pystream.operators import (
     KeyByOperator,
     ManualClock,
@@ -32,6 +32,7 @@ def record(
     *,
     processing_time: datetime | None = None,
     event_time: datetime | None = None,
+    change_kind: ChangeKind = ChangeKind.INSERT,
     key: Any = None,
     record_id: str = "words:0:1",
 ) -> RecordEnvelope:
@@ -41,6 +42,7 @@ def record(
         payload=payload,
         processing_time=processing_time or at(12),
         event_time=event_time,
+        change_kind=change_kind,
         key=key,
     )
 
@@ -95,6 +97,24 @@ def test_map_normalizes_word_without_mutating_input() -> None:
     assert outputs[0].payload == {"word": "apple", "count": 1}
     assert source.payload == {"word": "APPLE", "count": 1}
     assert outputs[0].record_id == source.record_id
+
+
+def test_map_and_keyby_preserve_changelog_kind() -> None:
+    mapper = MapOperator(context(), lambda payload: {**payload, "normalized": True})
+    key_by = KeyByOperator(context(), lambda payload: payload["word"])
+    mapper.open()
+    key_by.open()
+    source = record(
+        {"word": "apple", "count": 1},
+        change_kind=ChangeKind.UPDATE_BEFORE,
+    )
+
+    mapped = mapper.process(source)[0]
+    keyed = key_by.process(mapped)[0]
+
+    assert mapped.change_kind is ChangeKind.UPDATE_BEFORE
+    assert keyed.change_kind is ChangeKind.UPDATE_BEFORE
+    assert keyed.key == "apple"
 
 
 def test_map_none_explicitly_drops_record() -> None:
@@ -274,6 +294,121 @@ def test_event_time_window_requires_event_time() -> None:
 
     with pytest.raises(RecordValidationError, match="event_time"):
         operator.process(record({"word": "apple", "count": 1}, key="apple"))
+
+
+def test_changelog_reduce_emits_insert_then_before_after_and_cleans_on_window_end() -> None:
+    clock = ManualClock(at(12))
+    operator = ReduceWindowOperator(
+        context(clock),
+        add_counts,
+        window_size_seconds=5,
+        emit_mode="changelog",
+    )
+    operator.open()
+
+    first = operator.process(record({"word": "apple", "count": 1}, key="apple"))
+    update = operator.process(
+        record(
+            {"word": "apple", "count": 1},
+            key="apple",
+            record_id="words:0:2",
+        )
+    )
+
+    assert [(item.change_kind, item.payload) for item in first] == [
+        (ChangeKind.INSERT, {"word": "apple", "count": 1})
+    ]
+    assert [(item.change_kind, item.payload) for item in update] == [
+        (ChangeKind.UPDATE_BEFORE, {"word": "apple", "count": 1}),
+        (ChangeKind.UPDATE_AFTER, {"word": "apple", "count": 2}),
+    ]
+    assert operator.state_metrics["changelog_records"] == 3
+    clock.set(at(12, 0, 5))
+    assert operator.on_timer() == []
+    assert operator.state_size == 0
+
+
+def test_retract_reduce_updates_old_bucket_and_new_bucket() -> None:
+    clock = ManualClock(at(12))
+
+    def add_bucket(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
+        return {"count": left["count"], "word_count": left["word_count"] + right["word_count"]}
+
+    def remove_bucket(left: dict[str, int], right: dict[str, int]):
+        remaining = left["word_count"] - right["word_count"]
+        return None if remaining == 0 else {"count": left["count"], "word_count": remaining}
+
+    operator = ReduceWindowOperator(
+        context(clock),
+        add_bucket,
+        window_size_seconds=5,
+        retract_function=remove_bucket,
+    )
+    operator.open()
+    operator.process(record({"count": 1, "word_count": 1}, key=1))
+    operator.process(
+        record(
+            {"count": 1, "word_count": 1},
+            key=1,
+            record_id="words:0:2",
+        )
+    )
+    operator.process(
+        record(
+            {"count": 1, "word_count": 1},
+            key=1,
+            record_id="words:0:3",
+            change_kind=ChangeKind.UPDATE_BEFORE,
+        )
+    )
+    operator.process(
+        record(
+            {"count": 2, "word_count": 1},
+            key=2,
+            record_id="words:0:3",
+            change_kind=ChangeKind.UPDATE_AFTER,
+        )
+    )
+
+    assert operator.state_metrics["retractions_applied"] == 1
+    clock.set(at(12, 0, 5))
+    outputs = operator.on_timer()
+    assert [(item.key, item.payload) for item in outputs] == [
+        (1, {"count": 1, "word_count": 1}),
+        (2, {"count": 2, "word_count": 1}),
+    ]
+
+
+def test_retract_to_null_deletes_state_and_missing_state_fails() -> None:
+    operator = ReduceWindowOperator(
+        context(),
+        add_counts,
+        retract_function=lambda _left, _right: None,
+    )
+    operator.open()
+
+    with pytest.raises(RecordValidationError, match="不存在"):
+        operator.process(
+            record(
+                {"word": "apple", "count": 1},
+                key="apple",
+                change_kind=ChangeKind.DELETE,
+            )
+        )
+
+    operator.process(record({"word": "apple", "count": 1}, key="apple"))
+    assert (
+        operator.process(
+            record(
+                {"word": "apple", "count": 1},
+                key="apple",
+                change_kind=ChangeKind.UPDATE_BEFORE,
+            )
+        )
+        == []
+    )
+    assert operator.state_size == 0
+    assert operator.state_metrics["retract_state_deletes"] == 1
 
 
 def test_records_on_window_boundary_do_not_accumulate_across_windows() -> None:

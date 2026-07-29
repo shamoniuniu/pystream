@@ -40,12 +40,12 @@
   - [x] attempt_id HELLO fencing
   - [x] 协议、Channel、Runtime 集成测试
 
-- [ ] Task 4: 实现 Changelog/Retract
-  - [ ] changelog Reduce 产生 INSERT/UPDATE_BEFORE/UPDATE_AFTER
-  - [ ] 下游 Reduce add/retract/delete state
-  - [ ] Map/KeyBy/Shuffle 保留 change_kind
-  - [ ] 通用 File Sink columns
-  - [ ] 中级二级聚合 UDF 与算子测试
+- [x] Task 4: 实现 Changelog/Retract
+  - [x] changelog Reduce 产生 INSERT/UPDATE_BEFORE/UPDATE_AFTER
+  - [x] 下游 Reduce add/retract/delete state
+  - [x] Map/KeyBy/Shuffle 保留 change_kind
+  - [x] 通用 File Sink columns
+  - [x] 中级二级聚合 UDF 与算子测试
 
 - [ ] Task 5: 实现版本化 Checkpoint Store
   - [ ] TaskSnapshot/Manifest 模型

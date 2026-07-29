@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from pystream.api import EventTimeExecutionConfig, FileSinkConfig, KafkaSourceConfig
-from pystream.common import MessageType, RecordEnvelope
+from pystream.common import ChangeKind, MessageType, RecordEnvelope
 from pystream.operators import (
     BadRecordError,
     FileSinkError,
@@ -534,6 +534,57 @@ def test_file_sink_writes_unheaded_csv_and_flushes_immediately(tmp_path: Path) -
     with sink.output_path.open(encoding="utf-8", newline="") as file_handle:
         assert list(csv.reader(file_handle)) == [["2026/07/26T12:05:00", "apple,pie", "3"]]
     assert sink.metrics == {"records_written": 1}
+    sink.close()
+
+
+def test_file_sink_columns_支持通用changelog输出(tmp_path: Path) -> None:
+    config = FileSinkConfig(
+        connector="file",
+        format="csv",
+        output_path=str(tmp_path),
+        columns=[
+            "/headers/window_end",
+            "/payload/count",
+            "/payload/word_count",
+            "/change_kind",
+        ],
+    )
+    sink = FileSinkOperator(
+        fixed_context(operator_id="output"),
+        job_id="job-1",
+        config=config,
+    )
+    sink.open()
+    generic = RecordEnvelope(
+        record_id="words:0:1",
+        payload={"count": 2, "word_count": 1},
+        processing_time=datetime(2026, 7, 26, 12, 5, tzinfo=UTC),
+        key=2,
+        change_kind=ChangeKind.UPDATE_AFTER,
+        headers={"window_end": "2026/07/26T12:05:00"},
+    )
+
+    assert sink.process(generic) == []
+    sink.close()
+
+    with sink.output_path.open(encoding="utf-8", newline="") as file_handle:
+        assert list(csv.reader(file_handle)) == [["2026/07/26T12:05:00", "2", "1", "UPDATE_AFTER"]]
+
+
+def test_file_sink_columns_路径不存在时失败(tmp_path: Path) -> None:
+    sink = FileSinkOperator(
+        fixed_context(operator_id="output"),
+        job_id="job-1",
+        config=FileSinkConfig(
+            connector="file",
+            output_path=str(tmp_path),
+            columns=["/payload/missing"],
+        ),
+    )
+    sink.open()
+
+    with pytest.raises(RecordValidationError, match="columns"):
+        sink.process(sink_record())
     sink.close()
 
 

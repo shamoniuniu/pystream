@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
+from pystream.common import ChangeKind
 from pystream.operators.base import (
     BaseOperator,
     JsonValue,
@@ -95,16 +96,27 @@ class ReduceWindowOperator(BaseOperator):
         *,
         window_size_seconds: float = 300,
         time_characteristic: Literal["processing", "event"] = "processing",
+        emit_mode: Literal["final", "changelog"] = "final",
+        retract_function: Callable[[Any, Any], Any] | None = None,
     ) -> None:
         super().__init__(context)
         if not callable(reduce_function):
             raise TypeError("reduce_function 必须可调用")
+        if emit_mode not in {"final", "changelog"}:
+            raise ValueError("emit_mode 必须是 final 或 changelog")
+        if retract_function is not None and not callable(retract_function):
+            raise TypeError("retract_function 必须可调用")
         self._reduce_function = reduce_function
+        self._retract_function = retract_function
         self._assigner = TumblingProcessingTimeWindowAssigner.from_seconds(window_size_seconds)
         self._time_characteristic = time_characteristic
+        self._emit_mode = emit_mode
         self._windows: dict[tuple[TimeWindow, str], _WindowState] = {}
         self._current_watermark: datetime | None = None
         self._late_records = 0
+        self._changelog_records = 0
+        self._retractions_applied = 0
+        self._retract_state_deletes = 0
 
     @property
     def window_size(self) -> timedelta:
@@ -122,6 +134,11 @@ class ReduceWindowOperator(BaseOperator):
         return len({window for window, _ in self._windows})
 
     @property
+    def emit_mode(self) -> Literal["final", "changelog"]:
+        """返回当前 Reduce 的输出模式。"""
+        return self._emit_mode
+
+    @property
     def state_metrics(self) -> dict[str, int]:
         """返回可由运行时写入日志或指标系统的状态规模。"""
         metrics = {
@@ -130,6 +147,14 @@ class ReduceWindowOperator(BaseOperator):
         }
         if self._time_characteristic == "event":
             metrics["late_records"] = self._late_records
+        if self._emit_mode == "changelog" or self._retract_function is not None:
+            metrics.update(
+                {
+                    "changelog_records": self._changelog_records,
+                    "retractions_applied": self._retractions_applied,
+                    "retract_state_deletes": self._retract_state_deletes,
+                }
+            )
         return metrics
 
     def process(self, record: RecordT) -> list[RecordT]:
@@ -149,23 +174,83 @@ class ReduceWindowOperator(BaseOperator):
         window = self._assigner.assign(timestamp)
         state_key = (window, key_token)
         current = self._windows.get(state_key)
+        is_retraction = record.change_kind in {
+            ChangeKind.UPDATE_BEFORE,
+            ChangeKind.DELETE,
+        }
 
         if current is None:
+            if is_retraction:
+                raise RecordValidationError("不能撤回不存在的 Reduce 状态")
             validate_json_value(record.payload, field="Reduce 输入 payload")
-            self._windows[state_key] = _WindowState(
+            state = _WindowState(
                 key=copy.deepcopy(record.key),
                 accumulator=copy.deepcopy(record.payload),
                 representative=record,
             )
+            self._windows[state_key] = state
+            if self._emit_mode == "changelog":
+                self._changelog_records += 1
+                return [
+                    clone_record(
+                        record,
+                        payload=copy.deepcopy(state.accumulator),
+                        key=copy.deepcopy(state.key),
+                        change_kind=ChangeKind.INSERT,
+                    )
+                ]
             return []
 
-        accumulator = self._reduce_function(
-            copy.deepcopy(current.accumulator),
-            copy.deepcopy(record.payload),
-        )
+        previous_payload = copy.deepcopy(current.accumulator)
+        if is_retraction:
+            if self._retract_function is None:
+                raise RecordValidationError("Reduce 收到撤回消息但没有 retract_udf")
+            accumulator = self._retract_function(
+                copy.deepcopy(current.accumulator),
+                copy.deepcopy(record.payload),
+            )
+            self._retractions_applied += 1
+        else:
+            accumulator = self._reduce_function(
+                copy.deepcopy(current.accumulator),
+                copy.deepcopy(record.payload),
+            )
         validate_json_value(accumulator, field="Reduce UDF 返回值")
+
+        if accumulator is None:
+            del self._windows[state_key]
+            self._retract_state_deletes += 1
+            if self._emit_mode == "changelog":
+                self._changelog_records += 1
+                return [
+                    clone_record(
+                        record,
+                        payload=previous_payload,
+                        key=copy.deepcopy(current.key),
+                        change_kind=ChangeKind.DELETE,
+                    )
+                ]
+            return []
+
         current.accumulator = copy.deepcopy(accumulator)
-        return []
+        current.representative = record
+        if self._emit_mode != "changelog":
+            return []
+        self._changelog_records += 2
+        return [
+            clone_record(
+                record,
+                payload=previous_payload,
+                key=copy.deepcopy(current.key),
+                change_kind=ChangeKind.UPDATE_BEFORE,
+            ),
+            clone_record(
+                record,
+                payload=copy.deepcopy(current.accumulator),
+                key=copy.deepcopy(current.key),
+                change_kind=ChangeKind.UPDATE_AFTER,
+            ),
+        ]
 
     def on_timer(self) -> list[RecordT]:
         """输出 Clock 已结束的非空窗口，并在输出构造后清理其状态。"""
@@ -195,25 +280,27 @@ class ReduceWindowOperator(BaseOperator):
             key=lambda item: (item[0].end, item[1]),
         )
         outputs: list[RecordT] = []
-        for state_key in due_keys:
-            window, _ = state_key
-            state = self._windows[state_key]
-            headers = dict(state.representative.headers)
-            headers.update(
-                {
-                    "window_start": _format_window_time(window.start),
-                    "window_end": _format_window_time(window.end),
-                }
-            )
-            outputs.append(
-                clone_record(
-                    state.representative,
-                    payload=copy.deepcopy(state.accumulator),
-                    key=copy.deepcopy(state.key),
-                    processing_time=self.context.clock.now(),
-                    headers=headers,
+        if self._emit_mode == "final":
+            for state_key in due_keys:
+                window, _ = state_key
+                state = self._windows[state_key]
+                headers = dict(state.representative.headers)
+                headers.update(
+                    {
+                        "window_start": _format_window_time(window.start),
+                        "window_end": _format_window_time(window.end),
+                    }
                 )
-            )
+                outputs.append(
+                    clone_record(
+                        state.representative,
+                        payload=copy.deepcopy(state.accumulator),
+                        key=copy.deepcopy(state.key),
+                        processing_time=self.context.clock.now(),
+                        change_kind=ChangeKind.INSERT,
+                        headers=headers,
+                    )
+                )
 
         for state_key in due_keys:
             del self._windows[state_key]

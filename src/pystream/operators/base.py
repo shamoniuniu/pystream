@@ -14,6 +14,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
+from pystream.common import ChangeKind
 from pystream.operators.clock import Clock, SystemClock
 from pystream.operators.errors import (
     OperatorLifecycleError,
@@ -33,6 +34,7 @@ class RecordLike(Protocol):
     key: JsonValue
     processing_time: datetime
     event_time: datetime | None
+    change_kind: ChangeKind
     headers: dict[str, JsonValue]
 
 
