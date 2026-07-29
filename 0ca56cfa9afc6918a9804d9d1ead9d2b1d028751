@@ -1,0 +1,1 @@
+commit-review|task=4|verdict=ready|tests=322+63|ruff=pass|format=pass|blockers=none|rollback=git-revert-0ca56cf
