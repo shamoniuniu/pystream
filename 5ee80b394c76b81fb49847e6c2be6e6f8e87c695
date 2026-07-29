@@ -1,0 +1,6 @@
+review-receipt: 15727f367a5457cba7aa1a8e67a317ef14cdf951
+task: 6-7 automatic job recovery
+verdict: ready
+tree: 61bccc9f1c8195342320b336404bc57f29d2a256
+verification: 354 passed; coverage 84.50%; ruff lint/format pass; git diff --cached --check pass
+rollback: git revert 5ee80b3
