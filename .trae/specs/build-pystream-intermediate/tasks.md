@@ -16,29 +16,29 @@
   - [x] 固化 spec、tasks、checklist 和开发计划
   - [x] 创建开发日志并提交首个远端回退点
 
-- [ ] Task 1: 扩展 YAML/API 与公共契约
-  - [ ] 增加 execution/event-time/checkpoint/restart 配置
-  - [ ] 增加 event-time window、emit_mode、retract_udf、Sink columns
-  - [ ] DataStream 传播 changelog 属性并校验消费能力
-  - [ ] 增加 RFC 6901 JSON Pointer
-  - [ ] 增加 UDFKind.RETRACT
-  - [ ] 完成配置、DAG、UDF 与兼容性契约测试
+- [x] Task 1: 扩展 YAML/API 与公共契约
+  - [x] 增加 execution/event-time/checkpoint/restart 配置
+  - [x] 增加 event-time window、emit_mode、retract_udf、Sink columns
+  - [x] DataStream 传播 changelog 属性并校验消费能力
+  - [x] 增加 RFC 6901 JSON Pointer
+  - [x] 增加 UDFKind.RETRACT
+  - [x] 完成配置、DAG、UDF 与兼容性契约测试
 
-- [ ] Task 2: 实现事件时间和 Watermark
-  - [ ] Source 提取/校验 RFC3339 时间
-  - [ ] Source 按 partition 生成有限乱序 Watermark
-  - [ ] Clock 增加单调时间
-  - [ ] 事件时间窗口按 Watermark 触发
-  - [ ] 迟到记录丢弃、指标和日志
-  - [ ] 多输入 Watermark min、idle/active 切换测试
+- [x] Task 2: 实现事件时间和 Watermark
+  - [x] Source 提取/校验 RFC3339 时间
+  - [x] Source 按 partition 生成有限乱序 Watermark
+  - [x] Clock 增加单调时间
+  - [x] 事件时间窗口按 Watermark 触发
+  - [x] 迟到记录丢弃、指标和日志
+  - [x] 多输入 Watermark min、idle/active 切换测试
 
-- [ ] Task 3: 实现控制消息数据面
-  - [ ] 协议升级 v2 和 CONTROL frame
-  - [ ] DATA/CONTROL 顺序与背压
-  - [ ] 控制消息广播全部物理通道
-  - [ ] DataPlaneServer 分离 DATA/CONTROL
-  - [ ] attempt_id HELLO fencing
-  - [ ] 协议、Channel、Runtime 集成测试
+- [x] Task 3: 实现控制消息数据面
+  - [x] 协议升级 v2 和 CONTROL frame
+  - [x] DATA/CONTROL 顺序与背压
+  - [x] 控制消息广播全部物理通道
+  - [x] DataPlaneServer 分离 DATA/CONTROL
+  - [x] attempt_id HELLO fencing
+  - [x] 协议、Channel、Runtime 集成测试
 
 - [ ] Task 4: 实现 Changelog/Retract
   - [ ] changelog Reduce 产生 INSERT/UPDATE_BEFORE/UPDATE_AFTER

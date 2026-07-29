@@ -345,12 +345,13 @@ async def test_source_提交_offset_失败使_taskruntime_失败并上报() -> N
 @pytest.mark.parametrize(
     "message_type",
     [
-        MessageType.WATERMARK,
         MessageType.BARRIER,
         MessageType.CHECKPOINT_COMPLETE,
     ],
 )
-async def test_控制消息经通道传输后不会进入业务_udf(message_type: MessageType) -> None:
+async def test_未启用控制消息经独立帧传输后不会进入业务_udf(
+    message_type: MessageType,
+) -> None:
     server = DataPlaneServer("127.0.0.1", 0)
     await server.start()
     upstream = task("upstream", OperatorType.MAP)
@@ -391,9 +392,124 @@ async def test_控制消息经通道传输后不会进入业务_udf(message_type
         assert udf_calls == []
         assert runtime.state is TaskRuntimeState.FAILED
         assert runtime.snapshot.error is not None
-        assert f"第一阶段不支持控制消息 {message_type.value}" in runtime.snapshot.error
+        assert f"尚未处理控制消息 {message_type.value}" in runtime.snapshot.error
     finally:
         await output.abort()
+        await runtime.stop()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_watermark经control帧推进且不进入业务_udf() -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    upstream = task("upstream", OperatorType.MAP)
+    target = task("target", OperatorType.MAP)
+    incoming = channel(upstream, target, Partitioning.FORWARD, server)
+    udf_calls: list[object] = []
+    runtime = TaskRuntime(
+        deployment(target, incoming=(incoming,)),
+        server,
+        operator=MapOperator(
+            OperatorContext("target"),
+            lambda payload: udf_calls.append(payload) or payload,
+        ),
+    )
+    await runtime.start()
+    _, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+    output = BoundedDataChannel(
+        writer,
+        ChannelIdentity("job-1", upstream.task_id, target.task_id),
+        queue_capacity=1,
+        batch_size=1,
+    )
+    await output.start()
+    watermark = RecordEnvelope(
+        record_id="watermark-1",
+        payload={},
+        processing_time=AT_WINDOW_START,
+        event_time=AT_WINDOW_START,
+        message_type=MessageType.WATERMARK,
+    )
+
+    try:
+        await output.send(watermark)
+        await wait_until(lambda: runtime._last_output_watermark == AT_WINDOW_START)
+
+        assert udf_calls == []
+        assert runtime.state is TaskRuntimeState.RUNNING
+    finally:
+        await output.abort()
+        await runtime.stop()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_multi_input_watermark取活跃最小值并排除idle输入() -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    left = task("left", OperatorType.MAP)
+    right = task("right", OperatorType.MAP)
+    target = task("target", OperatorType.REDUCE)
+    incoming = (
+        channel(left, target, Partitioning.REBALANCE, server),
+        channel(right, target, Partitioning.REBALANCE, server),
+    )
+    clock = ManualClock(AT_WINDOW_START)
+    operator = ReduceWindowOperator(
+        OperatorContext("target", clock=clock),
+        lambda left_value, right_value: {
+            "word": left_value["word"],
+            "count": left_value["count"] + right_value["count"],
+        },
+        window_size_seconds=5,
+        time_characteristic="event",
+    )
+    runtime = TaskRuntime(
+        deployment(target, incoming=incoming),
+        server,
+        operator=operator,
+        watermark_idle_timeout=5,
+        monotonic_clock=clock.monotonic,
+        timer_interval=0.01,
+    )
+    await runtime.start()
+    identities = tuple(
+        ChannelIdentity("job-1", item.source_task_id, target.task_id) for item in incoming
+    )
+
+    def control(index: int, timestamp: datetime) -> RecordEnvelope:
+        return RecordEnvelope(
+            record_id=f"watermark-{index}",
+            payload={},
+            processing_time=AT_WINDOW_START,
+            event_time=timestamp,
+            message_type=MessageType.WATERMARK,
+        )
+
+    try:
+        await runtime.accept_control(identities[0], control(1, AT_WINDOW_START))
+        await runtime.accept_control(identities[1], control(2, AT_WINDOW_END))
+        await wait_until(lambda: runtime._last_output_watermark == AT_WINDOW_START)
+
+        clock.advance(4)
+        await runtime.accept_control(
+            identities[1],
+            control(3, datetime(2026, 7, 26, 12, 0, 6, tzinfo=UTC)),
+        )
+        await wait_until(
+            lambda: (
+                runtime._input_watermarks[identities[1]]
+                == datetime(2026, 7, 26, 12, 0, 6, tzinfo=UTC)
+            )
+        )
+        clock.advance(2)
+        await runtime._refresh_idle_inputs()
+
+        assert identities[0] in runtime._idle_inputs
+        assert identities[1] not in runtime._idle_inputs
+        assert runtime._last_output_watermark == datetime(2026, 7, 26, 12, 0, 6, tzinfo=UTC)
+    finally:
         await runtime.stop()
         await server.close()
 

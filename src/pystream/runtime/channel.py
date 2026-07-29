@@ -6,12 +6,13 @@ import asyncio
 from contextlib import suppress
 from enum import StrEnum
 
-from pystream.common import RecordEnvelope
+from pystream.common import MessageType, RecordEnvelope
 from pystream.runtime.protocol import (
     DEFAULT_MAX_BATCH_RECORDS,
     DEFAULT_MAX_FRAME_SIZE,
     AsyncFrameWriter,
     ChannelIdentity,
+    control_frame,
     data_batch_frame,
     end_of_stream_frame,
     hello_frame,
@@ -70,6 +71,7 @@ class BoundedDataChannel:
         self._failure: BaseException | None = None
         self._records_sent = 0
         self._batches_sent = 0
+        self._control_frames_sent = 0
         self._max_queue_depth = 0
 
     @property
@@ -101,6 +103,11 @@ class BoundedDataChannel:
     def batches_sent(self) -> int:
         """返回已成功 drain 的 DATA_BATCH 数。"""
         return self._batches_sent
+
+    @property
+    def control_frames_sent(self) -> int:
+        """返回已成功 drain 的 CONTROL 帧数。"""
+        return self._control_frames_sent
 
     async def start(self) -> None:
         """发送 HELLO 后启动唯一发送协程。"""
@@ -223,22 +230,43 @@ class BoundedDataChannel:
             raise ChannelClosedError("发送协程已经结束")
 
     async def _run_sender(self) -> None:
+        pending: RecordEnvelope | object | None = None
         try:
-            should_close = False
-            while not should_close:
-                first = await self._queue.get()
+            while True:
+                if pending is None:
+                    first = await self._queue.get()
+                else:
+                    first = pending
+                    pending = None
                 if first is _CLOSE:
                     self._queue.task_done()
                     break
+                if not isinstance(first, RecordEnvelope):  # pragma: no cover - 队列封装保证
+                    self._queue.task_done()
+                    raise ChannelError("输出队列包含未知消息")
+                if first.message_type is not MessageType.DATA:
+                    try:
+                        await write_frame(
+                            self._writer,
+                            control_frame(first),
+                            max_frame_size=self._max_frame_size,
+                        )
+                    finally:
+                        self._queue.task_done()
+                    self._control_frames_sent += 1
+                    continue
+
                 batch = [first]
                 while len(batch) < self._batch_size:
                     try:
                         item = self._queue.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-                    if item is _CLOSE:
-                        self._queue.task_done()
-                        should_close = True
+                    if item is _CLOSE or (
+                        isinstance(item, RecordEnvelope)
+                        and item.message_type is not MessageType.DATA
+                    ):
+                        pending = item
                         break
                     batch.append(item)
 

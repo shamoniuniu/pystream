@@ -30,12 +30,13 @@ class UDFKind(StrEnum):
     MAP = "map"
     KEY_SELECTOR = "key_selector"
     REDUCE = "reduce"
+    RETRACT = "retract"
     VALIDATOR = "validator"
 
     @property
     def positional_arguments(self) -> int:
         """返回调用所需的位置参数数量。"""
-        return 2 if self is UDFKind.REDUCE else 1
+        return 2 if self in {UDFKind.REDUCE, UDFKind.RETRACT} else 1
 
 
 def _assert_json_serializable(value: Any, *, reference: str) -> None:

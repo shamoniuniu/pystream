@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, cast
 
-from pystream.common import JsonValue, RecordEnvelope, RecordValidationError
+from pystream.common import JsonValue, MessageType, RecordEnvelope, RecordValidationError
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 DEFAULT_MAX_FRAME_SIZE = 8 * 1024 * 1024
 DEFAULT_MAX_BATCH_RECORDS = 1_000
 _LENGTH_PREFIX_SIZE = 4
@@ -50,6 +50,7 @@ class FrameType(StrEnum):
 
     HELLO = "HELLO"
     DATA_BATCH = "DATA_BATCH"
+    CONTROL = "CONTROL"
     END_OF_STREAM = "END_OF_STREAM"
     ERROR = "ERROR"
     HEARTBEAT = "HEARTBEAT"
@@ -74,12 +75,19 @@ class ChannelIdentity:
     job_id: str
     upstream_task_id: str
     downstream_task_id: str
+    attempt_id: int = 0
 
     def __post_init__(self) -> None:
         for field_name in ("job_id", "upstream_task_id", "downstream_task_id"):
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value:
                 raise HandshakeError(f"{field_name} 必须是非空字符串")
+        if (
+            isinstance(self.attempt_id, bool)
+            or not isinstance(self.attempt_id, int)
+            or self.attempt_id < 0
+        ):
+            raise HandshakeError("attempt_id 必须是非负整数")
 
     def to_payload(self) -> dict[str, JsonValue]:
         """转换为 HELLO payload。"""
@@ -87,6 +95,7 @@ class ChannelIdentity:
             "job_id": self.job_id,
             "upstream_task_id": self.upstream_task_id,
             "downstream_task_id": self.downstream_task_id,
+            "attempt_id": self.attempt_id,
         }
 
 
@@ -265,7 +274,7 @@ def validate_hello(frame: Frame, expected: ChannelIdentity) -> ChannelIdentity:
     """校验首帧类型、字段和三元通道身份。"""
     if frame.frame_type is not FrameType.HELLO:
         raise HandshakeError(f"首帧必须是 HELLO, 实际为 {frame.frame_type.value}")
-    required = {"job_id", "upstream_task_id", "downstream_task_id"}
+    required = {"job_id", "upstream_task_id", "downstream_task_id", "attempt_id"}
     missing = required - frame.payload.keys()
     extra = frame.payload.keys() - required
     if missing or extra:
@@ -280,6 +289,7 @@ def validate_hello(frame: Frame, expected: ChannelIdentity) -> ChannelIdentity:
             job_id=cast(str, frame.payload["job_id"]),
             upstream_task_id=cast(str, frame.payload["upstream_task_id"]),
             downstream_task_id=cast(str, frame.payload["downstream_task_id"]),
+            attempt_id=cast(int, frame.payload["attempt_id"]),
         )
     except (AttributeError, HandshakeError) as exc:
         raise HandshakeError(f"HELLO 身份字段无效: {exc}") from exc
@@ -298,6 +308,8 @@ def data_batch_frame(
         raise MalformedFrameError("DATA_BATCH 至少包含一条记录")
     if len(records) > max_batch_records:
         raise MalformedFrameError(f"DATA_BATCH 记录数 {len(records)} 超过上限 {max_batch_records}")
+    if any(record.message_type is not MessageType.DATA for record in records):
+        raise MalformedFrameError("DATA_BATCH 只能包含 DATA 记录")
     return Frame(
         FrameType.DATA_BATCH,
         {"records": [record.to_dict() for record in records]},
@@ -323,6 +335,28 @@ def records_from_data_batch(
         return tuple(RecordEnvelope.from_dict(item) for item in records)
     except RecordValidationError as exc:
         raise MalformedFrameError(f"DATA_BATCH 包含非法记录: {exc}") from exc
+
+
+def control_frame(record: RecordEnvelope) -> Frame:
+    """创建单条有序控制消息帧。"""
+    if record.message_type is MessageType.DATA:
+        raise MalformedFrameError("CONTROL 不能包含 DATA 记录")
+    return Frame(FrameType.CONTROL, {"record": record.to_dict()})
+
+
+def record_from_control(frame: Frame) -> RecordEnvelope:
+    """从 CONTROL frame 恢复并校验非 DATA 记录。"""
+    if frame.frame_type is not FrameType.CONTROL:
+        raise MalformedFrameError(f"期望 CONTROL, 实际为 {frame.frame_type.value}")
+    if set(frame.payload) != {"record"}:
+        raise MalformedFrameError("CONTROL payload 只能包含 record")
+    try:
+        record = RecordEnvelope.from_dict(frame.payload["record"])
+    except RecordValidationError as exc:
+        raise MalformedFrameError(f"CONTROL 包含非法记录: {exc}") from exc
+    if record.message_type is MessageType.DATA:
+        raise MalformedFrameError("CONTROL 不能包含 DATA 记录")
+    return record
 
 
 def end_of_stream_frame() -> Frame:
@@ -359,6 +393,7 @@ __all__ = [
     "MalformedFrameError",
     "ProtocolError",
     "VersionMismatchError",
+    "control_frame",
     "data_batch_frame",
     "decode_frame_body",
     "encode_frame",
@@ -367,6 +402,7 @@ __all__ = [
     "heartbeat_frame",
     "hello_frame",
     "read_frame",
+    "record_from_control",
     "records_from_data_batch",
     "validate_hello",
     "write_frame",

@@ -10,16 +10,26 @@ Sink 复用 :class:`~pystream.operators.base.BaseOperator` 生命周期，将每
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import json
 import logging
 import re
 from collections.abc import AsyncIterator, Callable
+from contextlib import suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, TextIO, cast
 
-from pystream.api import FileSinkConfig, KafkaSourceConfig
-from pystream.common import JsonValue, RecordEnvelope
+from pystream.api import EventTimeExecutionConfig, FileSinkConfig, KafkaSourceConfig
+from pystream.common import (
+    JsonPointerError,
+    JsonValue,
+    MessageType,
+    RecordEnvelope,
+    resolve_json_pointer,
+)
 from pystream.observability import log_event
 from pystream.operators.base import (
     BaseOperator,
@@ -36,6 +46,10 @@ from pystream.operators.errors import (
 )
 
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_RFC3339 = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
 
 
 class KafkaMessage(Protocol):
@@ -66,6 +80,14 @@ class AsyncKafkaConsumer(Protocol):
 KafkaConsumerFactory = Callable[..., AsyncKafkaConsumer]
 FileOpener = Callable[[Path], TextIO]
 PayloadValidator = Callable[[JsonValue], object]
+
+
+@dataclass(slots=True)
+class _PartitionEventTimeState:
+    """一个 Kafka partition 的 Watermark 生成状态。"""
+
+    last_activity: float
+    max_event_time: datetime | None = None
 
 
 def _create_aiokafka_consumer(*topics: str, **kwargs: Any) -> AsyncKafkaConsumer:
@@ -103,6 +125,7 @@ class KafkaJsonSource:
         config: KafkaSourceConfig,
         consumer_factory: KafkaConsumerFactory = _create_aiokafka_consumer,
         payload_validator: PayloadValidator | None = None,
+        event_time_strategy: EventTimeExecutionConfig | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.context = context
@@ -110,11 +133,17 @@ class KafkaJsonSource:
         self.config = config
         self._consumer_factory = consumer_factory
         self._payload_validator = payload_validator
+        self._event_time_strategy = event_time_strategy
         self._logger = logger or logging.getLogger(__name__)
         self._consumer: AsyncKafkaConsumer | None = None
         self._state = OperatorState.CREATED
         self._records_read = 0
         self._bad_records = 0
+        self._watermarks_emitted = 0
+        self._partition_event_times: dict[tuple[str, int], _PartitionEventTimeState] = {}
+        self._last_watermark: datetime | None = None
+        if (config.event_time is None) != (event_time_strategy is None):
+            raise ValueError("Source event_time 提取器与 execution.event_time 策略必须同时配置")
 
     @property
     def state(self) -> OperatorState:
@@ -129,10 +158,13 @@ class KafkaJsonSource:
     @property
     def metrics(self) -> dict[str, int]:
         """返回连接器级输入与坏记录计数。"""
-        return {
+        metrics = {
             "records_read": self._records_read,
             "bad_records": self._bad_records,
         }
+        if self._event_time_strategy is not None:
+            metrics["watermarks_emitted"] = self._watermarks_emitted
+        return metrics
 
     async def open(self) -> None:
         """创建 consumer，并以关闭自动提交的方式加入消费组。"""
@@ -160,16 +192,62 @@ class KafkaJsonSource:
     async def records(self) -> AsyncIterator[RecordEnvelope]:
         """持续读取消息；skip 策略隔离坏记录，fail 策略立即终止任务。"""
         consumer = self._require_open()
+        if self._event_time_strategy is None:
+            try:
+                async for message in consumer:
+                    record = self._decode(message)
+                    if record is not None:
+                        self._records_read += 1
+                        yield record
+            except BadRecordError:
+                raise
+            except Exception as exc:
+                raise KafkaSourceError(
+                    f"消费 Kafka topic={self.config.topic!r} 失败: {exc}"
+                ) from exc
+            return
+
+        iterator = consumer.__aiter__()
+        pending: asyncio.Task[KafkaMessage] | None = None
+        poll_interval = min(max(self._event_time_strategy.idle_timeout_seconds / 2, 0.01), 1.0)
         try:
-            async for message in consumer:
+            self._refresh_assignment(consumer)
+            while True:
+                if pending is None:
+                    pending = asyncio.create_task(anext(iterator))
+                done, _ = await asyncio.wait({pending}, timeout=poll_interval)
+                if not done:
+                    self._refresh_assignment(consumer)
+                    watermark = self._next_watermark()
+                    if watermark is not None:
+                        yield watermark
+                    continue
+                try:
+                    message = pending.result()
+                except StopAsyncIteration:
+                    return
+                finally:
+                    pending = None
+                self._refresh_assignment(consumer)
                 record = self._decode(message)
                 if record is not None:
                     self._records_read += 1
+                    self._observe_event_time(message, record)
                     yield record
+                    watermark = self._next_watermark()
+                    if watermark is not None:
+                        yield watermark
         except BadRecordError:
+            raise
+        except asyncio.CancelledError:
             raise
         except Exception as exc:
             raise KafkaSourceError(f"消费 Kafka topic={self.config.topic!r} 失败: {exc}") from exc
+        finally:
+            if pending is not None and not pending.done():
+                pending.cancel()
+                with suppress(asyncio.CancelledError):
+                    await pending
 
     async def commit(self) -> None:
         """显式提交 offset；第一阶段绝不在后台自动提交。"""
@@ -212,17 +290,34 @@ class KafkaJsonSource:
                     self._payload_validator(cast(JsonValue, payload))
                 except Exception as exc:
                     raise ValueError(f"payload validator 拒绝记录: {exc}") from exc
+            event_time = None
+            extractor = self.config.event_time
+            if extractor is not None:
+                raw_event_time = resolve_json_pointer(
+                    cast(JsonValue, payload),
+                    extractor.pointer,
+                )
+                if not isinstance(raw_event_time, str):
+                    raise ValueError("event_time JSON Pointer 必须指向 RFC3339 字符串")
+                event_time = _parse_rfc3339(raw_event_time)
             return RecordEnvelope(
                 record_id=f"{message.topic}:{message.partition}:{message.offset}",
                 payload=cast(JsonValue, payload),
                 processing_time=self.context.clock.now(),
+                event_time=event_time,
                 headers={
                     "source_topic": message.topic,
                     "source_partition": message.partition,
                     "source_offset": message.offset,
                 },
             )
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (
+            JsonPointerError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             self._bad_records += 1
             error = BadRecordError(f"Kafka 坏记录 {location}: {exc}")
             if self.config.bad_record_policy == "fail":
@@ -242,6 +337,96 @@ class KafkaJsonSource:
                 error=f"{type(exc).__name__}: {exc}",
             )
             return None
+
+    def _refresh_assignment(self, consumer: AsyncKafkaConsumer) -> None:
+        assignment = getattr(consumer, "assignment", None)
+        if not callable(assignment):
+            return
+        now = self.context.clock.monotonic()
+        assigned: set[tuple[str, int]] = set()
+        for partition in assignment():
+            topic = getattr(partition, "topic", None)
+            index = getattr(partition, "partition", None)
+            if isinstance(topic, str) and isinstance(index, int):
+                assigned.add((topic, index))
+                self._partition_event_times.setdefault(
+                    (topic, index),
+                    _PartitionEventTimeState(last_activity=now),
+                )
+        if assigned:
+            for key in tuple(self._partition_event_times):
+                if key not in assigned:
+                    del self._partition_event_times[key]
+
+    def _observe_event_time(
+        self,
+        message: KafkaMessage,
+        record: RecordEnvelope,
+    ) -> None:
+        if record.event_time is None:  # pragma: no cover - 构造契约保证
+            raise KafkaSourceError("事件时间 Source 产生了 null event_time")
+        key = (message.topic, message.partition)
+        state = self._partition_event_times.setdefault(
+            key,
+            _PartitionEventTimeState(last_activity=self.context.clock.monotonic()),
+        )
+        state.last_activity = self.context.clock.monotonic()
+        if state.max_event_time is None or record.event_time > state.max_event_time:
+            state.max_event_time = record.event_time
+
+    def _next_watermark(self) -> RecordEnvelope | None:
+        strategy = self._event_time_strategy
+        if strategy is None or not self._partition_event_times:
+            return None
+        now = self.context.clock.monotonic()
+        active = [
+            state
+            for state in self._partition_event_times.values()
+            if now - state.last_activity < strategy.idle_timeout_seconds
+        ]
+        if not active or any(state.max_event_time is None for state in active):
+            return None
+        delay = timedelta(milliseconds=strategy.max_out_of_orderness_milliseconds)
+        candidate = min(cast(datetime, state.max_event_time) - delay for state in active)
+        if self._last_watermark is not None and candidate <= self._last_watermark:
+            return None
+        self._last_watermark = candidate
+        self._watermarks_emitted += 1
+        log_event(
+            self._logger,
+            logging.INFO,
+            "watermark_emitted",
+            "Kafka Source 已生成事件时间 Watermark",
+            component="kafka_source",
+            job_id=self.job_id,
+            operator_id=self.context.operator_id,
+            subtask=self.context.subtask_index,
+            watermark=candidate.isoformat(),
+            active_partitions=len(active),
+        )
+        return RecordEnvelope(
+            record_id=(
+                f"watermark:{self.context.operator_id}:"
+                f"{self.context.subtask_index}:{self._watermarks_emitted}"
+            ),
+            payload={},
+            processing_time=self.context.clock.now(),
+            event_time=candidate,
+            message_type=MessageType.WATERMARK,
+            headers={"active_partitions": len(active)},
+        )
+
+
+def _parse_rfc3339(value: str) -> datetime:
+    if _RFC3339.fullmatch(value) is None:
+        raise ValueError("event_time 必须是带时区的 RFC3339 时间")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("event_time 不是合法 RFC3339 时间") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("event_time 必须包含时区")
+    return parsed.astimezone(UTC)
 
 
 class FileSinkOperator(BaseOperator):

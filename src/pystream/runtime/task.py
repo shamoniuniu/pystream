@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
 from pystream.api import Partitioning
 from pystream.artifact import UDFLoader
-from pystream.common import MessageType, RecordEnvelope
+from pystream.common import MessageType, RecordEnvelope, utc_now
 from pystream.control import PhysicalChannel, TaskDeployment
 from pystream.observability import log_event
 from pystream.operators import OperatorTask
@@ -97,6 +99,12 @@ class _InputEnded:
     identity: ChannelIdentity
 
 
+@dataclass(frozen=True, slots=True)
+class _InputRecord:
+    identity: ChannelIdentity
+    record: RecordEnvelope
+
+
 @dataclass(slots=True)
 class _OutputRoute:
     partitioning: Partitioning
@@ -132,6 +140,9 @@ class TaskRuntime:
         channel_queue_capacity: int = 1_024,
         channel_batch_size: int = 100,
         timer_interval: float = 0.1,
+        watermark_idle_timeout: float | None = None,
+        monotonic_clock: Callable[[], float] = time.monotonic,
+        checkpoint_enabled: bool = False,
     ) -> None:
         if (source is None) == (operator is None):
             raise ValueError("TaskRuntime 必须且只能配置 source 或 operator")
@@ -139,6 +150,8 @@ class TaskRuntime:
             raise ValueError("队列容量必须大于 0")
         if timer_interval <= 0:
             raise ValueError("timer_interval 必须大于 0")
+        if watermark_idle_timeout is not None and watermark_idle_timeout <= 0:
+            raise ValueError("watermark_idle_timeout 必须大于 0")
         self.deployment = deployment
         self.data_server = data_server
         self.source = source
@@ -149,7 +162,10 @@ class TaskRuntime:
         self._channel_queue_capacity = channel_queue_capacity
         self._channel_batch_size = channel_batch_size
         self._timer_interval = timer_interval
-        self._input_queue: asyncio.Queue[RecordEnvelope | _InputEnded] = asyncio.Queue(
+        self._watermark_idle_timeout = watermark_idle_timeout
+        self._monotonic_clock = monotonic_clock
+        self._checkpoint_enabled = checkpoint_enabled
+        self._input_queue: asyncio.Queue[_InputRecord | _InputEnded] = asyncio.Queue(
             maxsize=input_queue_capacity
         )
         self._state = TaskRuntimeState.CREATED
@@ -166,10 +182,25 @@ class TaskRuntime:
         self._routes: tuple[_OutputRoute, ...] = ()
         self._all_output_channels: tuple[BoundedDataChannel, ...] = ()
         task = deployment.task
+        attempt_id = getattr(task, "attempt_id", 0)
         self._incoming_identities = tuple(
-            ChannelIdentity(task.job_id, channel.source_task_id, channel.target_task_id)
+            ChannelIdentity(
+                task.job_id,
+                channel.source_task_id,
+                channel.target_task_id,
+                attempt_id=attempt_id,
+            )
             for channel in deployment.incoming_channels
         )
+        now = self._monotonic_clock()
+        self._input_watermarks: dict[ChannelIdentity, datetime | None] = {
+            identity: None for identity in self._incoming_identities
+        }
+        self._last_input_activity: dict[ChannelIdentity, float] = {
+            identity: now for identity in self._incoming_identities
+        }
+        self._idle_inputs: set[ChannelIdentity] = set()
+        self._last_output_watermark: datetime | None = None
         if any(
             identity.downstream_task_id != task.task_id for identity in self._incoming_identities
         ):
@@ -302,7 +333,22 @@ class TaskRuntime:
         if self._state is not TaskRuntimeState.RUNNING:
             raise RuntimeLifecycleError(f"目标任务未运行: {self._state}")
         for record in records:
-            await self._input_queue.put(record)
+            if record.message_type is not MessageType.DATA:
+                raise RuntimeTaskError("DATA_BATCH 不能向 Runtime 投递控制消息")
+            await self._input_queue.put(_InputRecord(identity, record))
+
+    async def accept_control(
+        self,
+        identity: ChannelIdentity,
+        record: RecordEnvelope,
+    ) -> None:
+        """由 DataPlaneServer 按通道顺序投递控制消息。"""
+        self._require_registered_identity(identity)
+        if self._state is not TaskRuntimeState.RUNNING:
+            raise RuntimeLifecycleError(f"目标任务未运行: {self._state}")
+        if record.message_type is MessageType.DATA:
+            raise RuntimeTaskError("CONTROL 不能向 Runtime 投递 DATA")
+        await self._input_queue.put(_InputRecord(identity, record))
 
     async def input_closed(self, identity: ChannelIdentity) -> None:
         """把正常 EOS 放入同一有界合流队列。"""
@@ -320,9 +366,17 @@ class TaskRuntime:
         try:
             if self.source is not None:
                 async for record in self.source.records():
+                    if record.message_type is not MessageType.DATA:
+                        if record.message_type is not MessageType.WATERMARK:
+                            raise RuntimeTaskError(
+                                f"Source 不支持控制消息 {record.message_type.value}"
+                            )
+                        await self._emit_control(record)
+                        continue
                     self._records_in += 1
                     await self._emit(record)
-                    await self.source.commit()
+                    if not self._checkpoint_enabled:
+                        await self.source.commit()
             else:
                 await self._run_operator()
             await self._cleanup(graceful=True)
@@ -345,18 +399,33 @@ class TaskRuntime:
                     timeout=self._timer_interval,
                 )
             except TimeoutError:
+                await self._refresh_idle_inputs()
                 await self.trigger_timers()
                 continue
             try:
                 if isinstance(item, _InputEnded):
                     self._closed_inputs.add(item.identity)
                     continue
-                if item.message_type is not MessageType.DATA:
-                    raise RuntimeTaskError(f"第一阶段不支持控制消息 {item.message_type.value}")
+                self._mark_input_active(item.identity)
+                record = item.record
+                if record.message_type is not MessageType.DATA:
+                    await self._handle_control(item.identity, record)
+                    continue
                 self._records_in += 1
                 if self.operator is None:  # pragma: no cover - 构造器保证
                     raise RuntimeTaskError("普通任务缺少算子")
-                await self._emit_many(self.operator.process(item))
+                late_before = self._operator_late_records()
+                await self._emit_many(self.operator.process(record))
+                if self._operator_late_records() > late_before:
+                    self._log(
+                        logging.WARNING,
+                        "late_record_dropped",
+                        "事件时间记录晚于当前 Watermark, 已丢弃",
+                        record_id=record.record_id,
+                        event_time=(
+                            record.event_time.isoformat() if record.event_time is not None else None
+                        ),
+                    )
                 await self.trigger_timers()
             finally:
                 self._input_queue.task_done()
@@ -367,9 +436,108 @@ class TaskRuntime:
             await self._emit(record)
 
     async def _emit(self, record: RecordEnvelope) -> None:
+        if record.message_type is not MessageType.DATA:
+            raise RuntimeTaskError("_emit 只能发送 DATA")
         for route in self._routes:
             await route.select(record).send(record)
             self._records_out += 1
+
+    async def _emit_control(self, record: RecordEnvelope) -> None:
+        """把控制消息广播到全部物理输出通道。"""
+        if record.message_type is MessageType.DATA:
+            raise RuntimeTaskError("_emit_control 不能发送 DATA")
+        for channel in self._all_output_channels:
+            await channel.send(record)
+
+    async def _handle_control(
+        self,
+        identity: ChannelIdentity,
+        record: RecordEnvelope,
+    ) -> None:
+        if record.message_type is not MessageType.WATERMARK:
+            raise RuntimeTaskError(f"中级运行时尚未处理控制消息 {record.message_type.value}")
+        if record.event_time is None:
+            raise RuntimeTaskError("WATERMARK 必须包含 event_time")
+        previous = self._input_watermarks[identity]
+        if previous is not None and record.event_time < previous:
+            raise RuntimeTaskError(
+                f"入通道 Watermark 回退: previous={previous.isoformat()}, "
+                f"actual={record.event_time.isoformat()}"
+            )
+        self._input_watermarks[identity] = record.event_time
+        await self._advance_watermark()
+
+    def _mark_input_active(self, identity: ChannelIdentity) -> None:
+        self._last_input_activity[identity] = self._monotonic_clock()
+        if identity in self._idle_inputs:
+            self._idle_inputs.remove(identity)
+            self._log(
+                logging.INFO,
+                "input_active",
+                "输入通道恢复活跃",
+                upstream_task_id=identity.upstream_task_id,
+            )
+
+    async def _refresh_idle_inputs(self) -> None:
+        timeout = self._watermark_idle_timeout
+        if timeout is None:
+            return
+        now = self._monotonic_clock()
+        changed = False
+        for identity, last_activity in self._last_input_activity.items():
+            if (
+                identity not in self._closed_inputs
+                and identity not in self._idle_inputs
+                and now - last_activity >= timeout
+            ):
+                self._idle_inputs.add(identity)
+                changed = True
+                self._log(
+                    logging.INFO,
+                    "input_idle",
+                    "输入通道超过空闲阈值",
+                    upstream_task_id=identity.upstream_task_id,
+                    idle_seconds=now - last_activity,
+                )
+        if changed:
+            await self._advance_watermark()
+
+    async def _advance_watermark(self) -> None:
+        active = [
+            identity
+            for identity in self._incoming_identities
+            if identity not in self._closed_inputs and identity not in self._idle_inputs
+        ]
+        if not active:
+            return
+        watermarks = [self._input_watermarks[identity] for identity in active]
+        if any(watermark is None for watermark in watermarks):
+            return
+        candidate = min(watermark for watermark in watermarks if watermark is not None)
+        if self._last_output_watermark is not None and candidate <= self._last_output_watermark:
+            return
+        self._last_output_watermark = candidate
+        if self.operator is None:  # pragma: no cover - Source 不进入该路径
+            raise RuntimeTaskError("普通任务缺少算子")
+        outputs = self.operator.on_watermark(candidate)
+        await self._emit_many(outputs)
+        control = RecordEnvelope(
+            record_id=f"watermark:{self.task_id}:{candidate.isoformat()}",
+            payload={},
+            processing_time=utc_now(),
+            event_time=candidate,
+            message_type=MessageType.WATERMARK,
+            headers={"active_inputs": len(active)},
+        )
+        await self._emit_control(control)
+        self._log(
+            logging.INFO,
+            "watermark_advanced",
+            "任务 Watermark 已推进",
+            watermark=candidate.isoformat(),
+            active_inputs=len(active),
+            emitted_records=len(outputs),
+        )
 
     async def _connect_outputs(
         self,
@@ -404,6 +572,7 @@ class TaskRuntime:
                             self.deployment.task.job_id,
                             self.task_id,
                             physical.target_task_id,
+                            attempt_id=getattr(self.deployment.task, "attempt_id", 0),
                         ),
                         queue_capacity=self._channel_queue_capacity,
                         batch_size=self._channel_batch_size,
@@ -500,6 +669,10 @@ class TaskRuntime:
                     if isinstance(metric, int) and not isinstance(metric, bool)
                 }
         return {}
+
+    def _operator_late_records(self) -> int:
+        metrics = self._operator_metrics()
+        return metrics.get("late_records", 0)
 
     def _log(
         self,

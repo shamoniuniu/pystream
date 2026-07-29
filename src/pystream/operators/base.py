@@ -32,6 +32,7 @@ class RecordLike(Protocol):
     payload: JsonValue
     key: JsonValue
     processing_time: datetime
+    event_time: datetime | None
     headers: dict[str, JsonValue]
 
 
@@ -77,6 +78,9 @@ class OperatorTask(Protocol[RecordT]):
     def on_timer(self) -> list[RecordT]:
         """处理当前 Clock 已到期的定时器。"""
 
+    def on_watermark(self, watermark: datetime) -> list[RecordT]:
+        """处理单调推进的事件时间 Watermark。"""
+
     def close(self) -> None:
         """释放资源并进入 CLOSED。"""
 
@@ -113,6 +117,12 @@ class BaseOperator(ABC):
 
     def on_timer(self) -> list[RecordT]:
         """无定时器算子只校验生命周期并返回空输出。"""
+        self._require_open()
+        return []
+
+    def on_watermark(self, watermark: datetime) -> list[RecordT]:
+        """无事件时间状态的算子只校验生命周期。"""
+        del watermark
         self._require_open()
         return []
 

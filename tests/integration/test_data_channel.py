@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from pystream.common import RecordEnvelope
+from pystream.common import MessageType, RecordEnvelope
 from pystream.runtime import (
     BoundedDataChannel,
     ChannelError,
@@ -15,6 +15,7 @@ from pystream.runtime import (
     ChannelState,
     FrameType,
     IncrementalFrameDecoder,
+    record_from_control,
     records_from_data_batch,
 )
 
@@ -64,6 +65,18 @@ def record(index: int) -> RecordEnvelope:
     )
 
 
+def watermark(index: int) -> RecordEnvelope:
+    """创建带事件时间的控制消息。"""
+    timestamp = datetime(2026, 7, 26, 12, 0, index, tzinfo=UTC)
+    return RecordEnvelope(
+        record_id=f"watermark:{index}",
+        payload={},
+        processing_time=timestamp,
+        event_time=timestamp,
+        message_type=MessageType.WATERMARK,
+    )
+
+
 def decoded_frames(writer: ControlledWriter):
     """解码 writer 中的全部完成帧。"""
     decoder = IncrementalFrameDecoder()
@@ -96,6 +109,36 @@ async def test_channel_发送_hello_批次_eos_并保持顺序():
     assert channel.batches_sent == len(data_frames)
     assert channel.state is ChannelState.CLOSED
     assert writer.closed and writer.waited
+
+
+@pytest.mark.asyncio
+async def test_control帧不与data混装且保持前后顺序():
+    writer = ControlledWriter()
+    channel = BoundedDataChannel(
+        writer,
+        ChannelIdentity("job-1", "map-0", "reduce-0"),
+        queue_capacity=8,
+        batch_size=8,
+    )
+
+    await channel.start()
+    await channel.send(record(0))
+    await channel.send(watermark(1))
+    await channel.send(record(2))
+    await channel.close()
+
+    frames = decoded_frames(writer)
+    assert [frame.frame_type for frame in frames] == [
+        FrameType.HELLO,
+        FrameType.DATA_BATCH,
+        FrameType.CONTROL,
+        FrameType.DATA_BATCH,
+        FrameType.END_OF_STREAM,
+    ]
+    assert records_from_data_batch(frames[1])[0].record_id == "topic:0:0"
+    assert record_from_control(frames[2]).message_type is MessageType.WATERMARK
+    assert records_from_data_batch(frames[3])[0].record_id == "topic:0:2"
+    assert channel.control_frames_sent == 1
 
 
 @pytest.mark.asyncio

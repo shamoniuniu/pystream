@@ -115,6 +115,8 @@ class WorkerTaskManager:
             try:
                 graph = load_stream_graph(job_root / "job.yaml")
                 operator_spec = graph.operator(task.operator_id)
+                execution = graph.definition.execution
+                event_time_strategy = execution.event_time if execution is not None else None
                 if operator_spec.type is not task.operator_type:
                     raise WorkerTaskError(
                         f"任务类型 {task.operator_type.value} 与 job.yaml "
@@ -134,6 +136,7 @@ class WorkerTaskManager:
                     arguments: dict[str, Any] = {
                         "job_id": task.job_id,
                         "config": config,
+                        "event_time_strategy": event_time_strategy,
                     }
                     if config.validator is not None:
                         loader = UDFLoader(job_root, job_id=f"{task.job_id}-{task.task_id}")
@@ -167,10 +170,19 @@ class WorkerTaskManager:
                             context,
                             udf,
                             window_size_seconds=operator_spec.window.size_seconds,
+                            time_characteristic=operator_spec.window.time_characteristic,
                         )
                     else:  # pragma: no cover - StrEnum 完整处理
                         raise WorkerTaskError(f"不支持算子 {operator_spec.type}")
 
+                runtime_arguments = dict(self.runtime_options)
+                runtime_arguments.setdefault("monotonic_clock", context.clock.monotonic)
+                runtime_arguments.setdefault("checkpoint_enabled", execution is not None)
+                if event_time_strategy is not None:
+                    runtime_arguments.setdefault(
+                        "watermark_idle_timeout",
+                        event_time_strategy.idle_timeout_seconds,
+                    )
                 runtime = TaskRuntime(
                     deployment,
                     self.data_server,
@@ -178,7 +190,7 @@ class WorkerTaskManager:
                     operator=operator,
                     udf_loader=loader,
                     failure_callback=self._report_failure,
-                    **self.runtime_options,
+                    **runtime_arguments,
                 )
                 self._runtimes[task.task_id] = runtime
                 await runtime.start()

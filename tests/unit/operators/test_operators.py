@@ -31,6 +31,7 @@ def record(
     payload: Any,
     *,
     processing_time: datetime | None = None,
+    event_time: datetime | None = None,
     key: Any = None,
     record_id: str = "words:0:1",
 ) -> RecordEnvelope:
@@ -39,6 +40,7 @@ def record(
         record_id=record_id,
         payload=payload,
         processing_time=processing_time or at(12),
+        event_time=event_time,
         key=key,
     )
 
@@ -188,6 +190,90 @@ def test_reduce_isolates_keys_and_emits_at_window_end() -> None:
     assert all(item.processing_time == at(12, 5) for item in outputs)
     assert operator.state_size == 0
     assert operator.active_window_count == 0
+
+
+def test_event_time_window_accepts_bounded_out_of_order_and_fires_on_watermark() -> None:
+    clock = ManualClock(at(13))
+    operator = ReduceWindowOperator(
+        context(clock),
+        add_counts,
+        window_size_seconds=5,
+        time_characteristic="event",
+    )
+    operator.open()
+
+    operator.process(
+        record(
+            {"word": "apple", "count": 1},
+            key="apple",
+            event_time=at(12, 0, 1),
+        )
+    )
+    operator.process(
+        record(
+            {"word": "apple", "count": 1},
+            key="apple",
+            event_time=at(12, 0, 4),
+            record_id="words:0:2",
+        )
+    )
+    operator.process(
+        record(
+            {"word": "apple", "count": 1},
+            key="apple",
+            event_time=at(12, 0, 3),
+            record_id="words:0:3",
+        )
+    )
+
+    assert operator.on_timer() == []
+    assert operator.on_watermark(at(12, 0, 4)) == []
+    outputs = operator.on_watermark(at(12, 0, 5))
+
+    assert [item.payload["count"] for item in outputs] == [3]
+    assert outputs[0].headers["window_end"] == "2026/07/26T12:00:05"
+    assert operator.state_metrics == {
+        "state_entries": 0,
+        "active_windows": 0,
+        "late_records": 0,
+    }
+
+
+def test_event_time_record_at_or_before_watermark_is_late() -> None:
+    operator = ReduceWindowOperator(
+        context(),
+        add_counts,
+        window_size_seconds=5,
+        time_characteristic="event",
+    )
+    operator.open()
+    operator.on_watermark(at(12, 0, 2))
+
+    assert (
+        operator.process(
+            record(
+                {"word": "apple", "count": 1},
+                key="apple",
+                event_time=at(12, 0, 2),
+            )
+        )
+        == []
+    )
+    assert operator.state_metrics["late_records"] == 1
+    with pytest.raises(RecordValidationError, match="不能回退"):
+        operator.on_watermark(at(12, 0, 1))
+
+
+def test_event_time_window_requires_event_time() -> None:
+    operator = ReduceWindowOperator(
+        context(),
+        add_counts,
+        time_characteristic="event",
+    )
+    operator.open()
+
+    with pytest.raises(RecordValidationError, match="event_time"):
+        operator.process(record({"word": "apple", "count": 1}, key="apple"))
 
 
 def test_records_on_window_boundary_do_not_accumulate_across_windows() -> None:

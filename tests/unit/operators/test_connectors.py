@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from pystream.api import FileSinkConfig, KafkaSourceConfig
-from pystream.common import RecordEnvelope
+from pystream.api import EventTimeExecutionConfig, FileSinkConfig, KafkaSourceConfig
+from pystream.common import MessageType, RecordEnvelope
 from pystream.operators import (
     BadRecordError,
     FileSinkError,
@@ -36,6 +36,14 @@ class FakeMessage:
     topic: str = "words"
     partition: int = 0
     offset: int = 0
+
+
+@dataclass(frozen=True)
+class FakePartition:
+    """模拟 aiokafka TopicPartition。"""
+
+    topic: str
+    partition: int
 
 
 class FakeConsumer:
@@ -71,6 +79,10 @@ class FakeConsumer:
         self.commits += 1
         if self.commit_error is not None:
             raise self.commit_error
+
+    def assignment(self) -> set[FakePartition]:
+        """返回消息集中全部分区，便于 Watermark 在首条记录前建模。"""
+        return {FakePartition(message.topic, message.partition) for message in self.messages}
 
     def __aiter__(self):
         async def iterate():
@@ -218,6 +230,98 @@ async def test_source_builds_traceable_envelope_with_utc_processing_time() -> No
     ]
     assert source.metrics == {"records_read": 1, "bad_records": 0}
     await source.close()
+
+
+@pytest.mark.asyncio
+async def test_event_time_source_提取时间并按partition生成有限乱序watermark() -> None:
+    consumer = FakeConsumer(
+        [
+            FakeMessage(
+                b'{"word":"apple","count":1,"event_time":"2026-07-26T12:00:01Z"}',
+                partition=0,
+                offset=0,
+            ),
+            FakeMessage(
+                b'{"word":"pie","count":1,"event_time":"2026-07-26T12:00:04+00:00"}',
+                partition=1,
+                offset=0,
+            ),
+            FakeMessage(
+                b'{"word":"apple","count":1,"event_time":"2026-07-26T12:00:03Z"}',
+                partition=0,
+                offset=1,
+            ),
+        ]
+    )
+    source = KafkaJsonSource(
+        fixed_context(),
+        job_id="job-1",
+        config=source_config(event_time={"pointer": "/event_time", "format": "rfc3339"}),
+        event_time_strategy=EventTimeExecutionConfig(
+            max_out_of_orderness="2s",
+            idle_timeout="30s",
+        ),
+        consumer_factory=RecordingConsumerFactory(consumer),
+    )
+    await source.open()
+
+    records = [record async for record in source.records()]
+    data = [record for record in records if record.message_type is MessageType.DATA]
+    watermarks = [
+        record.event_time for record in records if record.message_type is MessageType.WATERMARK
+    ]
+
+    assert [record.event_time for record in data] == [
+        datetime(2026, 7, 26, 12, 0, 1, tzinfo=UTC),
+        datetime(2026, 7, 26, 12, 0, 4, tzinfo=UTC),
+        datetime(2026, 7, 26, 12, 0, 3, tzinfo=UTC),
+    ]
+    assert watermarks == [
+        datetime(2026, 7, 26, 11, 59, 59, tzinfo=UTC),
+        datetime(2026, 7, 26, 12, 0, 1, tzinfo=UTC),
+    ]
+    assert source.metrics == {
+        "records_read": 3,
+        "bad_records": 0,
+        "watermarks_emitted": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_event_time解析错误遵循_skip策略() -> None:
+    consumer = FakeConsumer(
+        [
+            FakeMessage(
+                b'{"word":"bad","count":1,"event_time":"2026-07-26 12:00:01"}',
+                offset=1,
+            ),
+            FakeMessage(
+                b'{"word":"ok","count":1,"event_time":"2026-07-26T12:00:02Z"}',
+                offset=2,
+            ),
+        ]
+    )
+    source = KafkaJsonSource(
+        fixed_context(),
+        job_id="job-1",
+        config=source_config(
+            bad_record_policy="skip",
+            event_time={"pointer": "/event_time"},
+        ),
+        event_time_strategy=EventTimeExecutionConfig(
+            max_out_of_orderness="0s",
+            idle_timeout="30s",
+        ),
+        consumer_factory=RecordingConsumerFactory(consumer),
+    )
+    await source.open()
+
+    records = [record async for record in source.records()]
+
+    assert [record.record_id for record in records if record.message_type is MessageType.DATA] == [
+        "words:0:2"
+    ]
+    assert source.metrics["bad_records"] == 1
 
 
 @pytest.mark.asyncio

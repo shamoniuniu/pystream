@@ -10,7 +10,7 @@ import copy
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from pystream.operators.base import (
     BaseOperator,
@@ -86,7 +86,7 @@ class _WindowState:
 
 
 class ReduceWindowOperator(BaseOperator):
-    """按 key 和处理时间窗口维护内存 Reduce 状态。"""
+    """按 key 和处理时间或事件时间窗口维护内存 Reduce 状态。"""
 
     def __init__(
         self,
@@ -94,13 +94,17 @@ class ReduceWindowOperator(BaseOperator):
         reduce_function: Callable[[Any, Any], Any],
         *,
         window_size_seconds: float = 300,
+        time_characteristic: Literal["processing", "event"] = "processing",
     ) -> None:
         super().__init__(context)
         if not callable(reduce_function):
             raise TypeError("reduce_function 必须可调用")
         self._reduce_function = reduce_function
         self._assigner = TumblingProcessingTimeWindowAssigner.from_seconds(window_size_seconds)
+        self._time_characteristic = time_characteristic
         self._windows: dict[tuple[TimeWindow, str], _WindowState] = {}
+        self._current_watermark: datetime | None = None
+        self._late_records = 0
 
     @property
     def window_size(self) -> timedelta:
@@ -120,10 +124,13 @@ class ReduceWindowOperator(BaseOperator):
     @property
     def state_metrics(self) -> dict[str, int]:
         """返回可由运行时写入日志或指标系统的状态规模。"""
-        return {
+        metrics = {
             "state_entries": self.state_size,
             "active_windows": self.active_window_count,
         }
+        if self._time_characteristic == "event":
+            metrics["late_records"] = self._late_records
+        return metrics
 
     def process(self, record: RecordT) -> list[RecordT]:
         """把记录聚合到唯一的 ``key/window`` 状态中。"""
@@ -131,7 +138,15 @@ class ReduceWindowOperator(BaseOperator):
         if record.key is None:
             raise RecordValidationError("Reduce 只接受经过 KeyBy 的记录")
         key_token = canonical_json(record.key)
-        window = self._assigner.assign(record.processing_time)
+        timestamp = record.processing_time
+        if self._time_characteristic == "event":
+            if record.event_time is None:
+                raise RecordValidationError("事件时间窗口要求记录包含 event_time")
+            timestamp = record.event_time
+            if self._current_watermark is not None and timestamp <= self._current_watermark:
+                self._late_records += 1
+                return []
+        window = self._assigner.assign(timestamp)
         state_key = (window, key_token)
         current = self._windows.get(state_key)
 
@@ -155,9 +170,28 @@ class ReduceWindowOperator(BaseOperator):
     def on_timer(self) -> list[RecordT]:
         """输出 Clock 已结束的非空窗口，并在输出构造后清理其状态。"""
         self._require_open()
+        if self._time_characteristic == "event":
+            return []
         now = require_utc(self.context.clock.now(), field="clock.now")
+        return self._emit_due(now)
+
+    def on_watermark(self, watermark: datetime) -> list[RecordT]:
+        """事件时间窗口在 Watermark 到达窗口结束时输出。"""
+        self._require_open()
+        normalized = require_utc(watermark, field="watermark")
+        if self._time_characteristic == "processing":
+            return []
+        if self._current_watermark is not None and normalized < self._current_watermark:
+            raise RecordValidationError("Watermark 不能回退")
+        if self._current_watermark == normalized:
+            return []
+        self._current_watermark = normalized
+        return self._emit_due(normalized)
+
+    def _emit_due(self, trigger_time: datetime) -> list[RecordT]:
+        """输出不晚于 trigger_time 的窗口并清理状态。"""
         due_keys = sorted(
-            (state_key for state_key in self._windows if state_key[0].end <= now),
+            (state_key for state_key in self._windows if state_key[0].end <= trigger_time),
             key=lambda item: (item[0].end, item[1]),
         )
         outputs: list[RecordT] = []
@@ -176,7 +210,7 @@ class ReduceWindowOperator(BaseOperator):
                     state.representative,
                     payload=copy.deepcopy(state.accumulator),
                     key=copy.deepcopy(state.key),
-                    processing_time=now,
+                    processing_time=self.context.clock.now(),
                     headers=headers,
                 )
             )

@@ -4,6 +4,11 @@
 运行时、算子或命令行模块。
 """
 
+from pystream.common.json_pointer import (
+    JsonPointerError,
+    resolve_json_pointer,
+    validate_json_pointer,
+)
 from pystream.common.records import (
     ChangeKind,
     JsonScalar,
@@ -16,10 +21,13 @@ from pystream.common.records import (
 
 __all__ = [
     "ChangeKind",
+    "JsonPointerError",
     "JsonScalar",
     "JsonValue",
     "MessageType",
     "RecordEnvelope",
     "RecordValidationError",
+    "resolve_json_pointer",
     "utc_now",
+    "validate_json_pointer",
 ]

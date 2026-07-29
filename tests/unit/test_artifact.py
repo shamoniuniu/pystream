@@ -389,6 +389,24 @@ def test_udf_loader_支持单参数_payload_validator(tmp_path):
             validator({})
 
 
+def test_udf_loader_支持二参数_retract(tmp_path):
+    root = make_job(
+        tmp_path / "job",
+        udf_source=(
+            "def retract(accumulator, value):\n"
+            "    remaining = accumulator['count'] - value['count']\n"
+            "    return None if remaining == 0 else {'count': remaining}\n"
+        ),
+    )
+    with UDFLoader(root, job_id="retract") as loader:
+        retract = loader.load("udfs:retract", UDFKind.RETRACT)
+
+        assert retract({"count": 2}, {"count": 1}) == {"count": 1}
+        assert retract({"count": 1}, {"count": 1}) is None
+        with pytest.raises(UDFContractError, match="参数数量"):
+            retract({"count": 1})
+
+
 def test_udf_loader_关闭后禁止继续加载(tmp_path):
     loader = UDFLoader(make_job(tmp_path / "job"), job_id="closed")
     loader.close()

@@ -11,19 +11,19 @@
 ## API 与兼容性
 
 - [ ] 原 `pystream/v1` WordCount 无修改解析和运行
-- [ ] 未知字段继续拒绝并给出路径
-- [ ] 事件时间配置、持续时间、JSON Pointer 严格校验
-- [ ] changelog/retract DAG 能力传播和错误配置拒绝
-- [ ] File Sink 未配置 columns 时输出格式不变
+- [x] 未知字段继续拒绝并给出路径
+- [x] 事件时间配置、持续时间、JSON Pointer 严格校验
+- [x] changelog/retract DAG 能力传播和错误配置拒绝
+- [x] File Sink 未配置 columns 时输出格式不变
 
 ## 事件时间
 
-- [ ] RFC3339 offset 时间统一转 UTC，naive/leap second 拒绝
-- [ ] 每 partition Watermark 使用有限乱序策略
-- [ ] 多输入只推进活跃输入 Watermark 最小值
-- [ ] 全 idle 不推进，恢复 active 不回退
-- [ ] `event_time <= watermark` 丢弃且有 metric/log
-- [ ] 窗口只在 Watermark 到达 window end 时触发并清理
+- [x] RFC3339 offset 时间统一转 UTC，naive/leap second 拒绝
+- [x] 每 partition Watermark 使用有限乱序策略
+- [x] 多输入只推进活跃输入 Watermark 最小值
+- [x] 全 idle 不推进，恢复 active 不回退
+- [x] `event_time <= watermark` 丢弃且有 metric/log
+- [x] 窗口只在 Watermark 到达 window end 时触发并清理
 
 ## Retract
 
@@ -36,7 +36,7 @@
 
 ## Checkpoint
 
-- [ ] CONTROL 不进入 UDF且不越过前序 DATA
+- [x] CONTROL 不进入 UDF且不越过前序 DATA
 - [ ] WATERMARK/DRAIN 广播全部物理通道
 - [ ] Source pause 后 snapshot 精确 partition next offsets
 - [ ] 全部入通道 DRAIN 到达后才写 Task snapshot

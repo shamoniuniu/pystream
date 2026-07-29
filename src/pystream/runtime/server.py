@@ -24,6 +24,7 @@ from pystream.runtime.protocol import (
     HandshakeError,
     error_frame,
     read_frame,
+    record_from_control,
     records_from_data_batch,
     validate_hello,
     write_frame,
@@ -39,6 +40,13 @@ class InputConsumer(Protocol):
         records: tuple[RecordEnvelope, ...],
     ) -> None:
         """接收同一通道内保持顺序的一批记录。"""
+
+    async def accept_control(
+        self,
+        identity: ChannelIdentity,
+        record: RecordEnvelope,
+    ) -> None:
+        """接收与 DATA 同通道有序的控制消息。"""
 
     async def input_closed(self, identity: ChannelIdentity) -> None:
         """接收正常 END_OF_STREAM。"""
@@ -258,6 +266,9 @@ class DataPlaneServer:
                     raise RuntimeConnectionError("HEARTBEAT sequence 必须严格递增")
                 heartbeat_sequence = sequence
                 continue
+            if frame.frame_type is FrameType.CONTROL:
+                await consumer.accept_control(identity, record_from_control(frame))
+                continue
             if frame.frame_type is FrameType.END_OF_STREAM:
                 if frame.payload:
                     raise RuntimeConnectionError("END_OF_STREAM payload 必须为空")
@@ -308,16 +319,22 @@ def _identity_from_hello(frame: Frame) -> ChannelIdentity:
     if frame.frame_type is not FrameType.HELLO:
         raise HandshakeError(f"首帧必须是 HELLO, 实际为 {frame.frame_type.value}")
     payload: dict[str, JsonValue] = frame.payload
-    required = {"job_id", "upstream_task_id", "downstream_task_id"}
+    required = {"job_id", "upstream_task_id", "downstream_task_id", "attempt_id"}
     if set(payload) != required:
-        raise HandshakeError("HELLO 字段必须恰好为 job_id/upstream_task_id/downstream_task_id")
-    values = [payload[field] for field in sorted(required)]
-    if not all(isinstance(value, str) for value in values):
-        raise HandshakeError("HELLO 身份字段必须是字符串")
+        raise HandshakeError(
+            "HELLO 字段必须恰好为 job_id/upstream_task_id/downstream_task_id/attempt_id"
+        )
+    string_fields = ("job_id", "upstream_task_id", "downstream_task_id")
+    if not all(isinstance(payload[field], str) for field in string_fields):
+        raise HandshakeError("HELLO 任务身份字段必须是字符串")
+    attempt_id = payload["attempt_id"]
+    if isinstance(attempt_id, bool) or not isinstance(attempt_id, int):
+        raise HandshakeError("HELLO attempt_id 必须是非负整数")
     return ChannelIdentity(
         job_id=cast(str, payload["job_id"]),
         upstream_task_id=cast(str, payload["upstream_task_id"]),
         downstream_task_id=cast(str, payload["downstream_task_id"]),
+        attempt_id=attempt_id,
     )
 
 

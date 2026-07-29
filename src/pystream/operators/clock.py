@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -24,6 +25,9 @@ class Clock(Protocol):
     def now(self) -> datetime:
         """返回带时区的 UTC 当前时间。"""
 
+    def monotonic(self) -> float:
+        """返回只用于持续时间比较的单调秒数。"""
+
 
 class SystemClock:
     """读取系统 UTC 时间的生产时钟。"""
@@ -32,12 +36,17 @@ class SystemClock:
         """返回当前 UTC 时间。"""
         return datetime.now(UTC)
 
+    def monotonic(self) -> float:
+        """返回不受墙钟回拨影响的单调秒数。"""
+        return time.monotonic()
+
 
 @dataclass
 class ManualClock:
     """可由测试显式推进的确定性时钟。"""
 
     _current: datetime
+    _elapsed: float = 0.0
 
     def __post_init__(self) -> None:
         self._current = require_utc(self._current, field="start")
@@ -46,11 +55,16 @@ class ManualClock:
         """返回当前测试时间。"""
         return self._current
 
+    def monotonic(self) -> float:
+        """返回随测试时钟同步推进的单调秒数。"""
+        return self._elapsed
+
     def set(self, value: datetime) -> None:
         """将测试时间移动到不早于当前值的时间点。"""
         normalized = require_utc(value)
         if normalized < self._current:
             raise ValueError("ManualClock 不能向后移动")
+        self._elapsed += (normalized - self._current).total_seconds()
         self._current = normalized
 
     def advance(self, delta: timedelta | float) -> datetime:
@@ -59,6 +73,7 @@ class ManualClock:
         if duration < timedelta(0):
             raise ValueError("ManualClock 不能按负时长推进")
         self._current += duration
+        self._elapsed += duration.total_seconds()
         return self._current
 
 

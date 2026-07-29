@@ -12,7 +12,11 @@ from pystream.api.errors import ConfigIssue, JobConfigError
 from pystream.api.graph import DataStream, StreamEdge, StreamGraph, build_stream_graph
 from pystream.api.models import (
     API_VERSION,
+    CheckpointConfig,
     EdgeSpec,
+    EventTimeExecutionConfig,
+    EventTimeExtractorConfig,
+    ExecutionConfig,
     FileSinkConfig,
     JobDefinition,
     JobMetadata,
@@ -20,6 +24,7 @@ from pystream.api.models import (
     OperatorSpec,
     OperatorType,
     Partitioning,
+    RestartConfig,
     TumblingWindowConfig,
 )
 from pystream.api.parser import load_job_yaml, parse_job_yaml
@@ -37,9 +42,13 @@ def load_stream_graph(path: str | Path) -> StreamGraph:
 
 __all__ = [
     "API_VERSION",
+    "CheckpointConfig",
     "ConfigIssue",
     "DataStream",
     "EdgeSpec",
+    "EventTimeExecutionConfig",
+    "EventTimeExtractorConfig",
+    "ExecutionConfig",
     "FileSinkConfig",
     "JobConfigError",
     "JobDefinition",
@@ -48,6 +57,7 @@ __all__ = [
     "OperatorSpec",
     "OperatorType",
     "Partitioning",
+    "RestartConfig",
     "StreamEdge",
     "StreamGraph",
     "TumblingWindowConfig",

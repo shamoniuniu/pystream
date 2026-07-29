@@ -10,6 +10,7 @@ from pystream.api.errors import ConfigIssue, JobConfigError
 from pystream.api.models import (
     EdgeSpec,
     JobDefinition,
+    KafkaSourceConfig,
     OperatorSpec,
     OperatorType,
     Partitioning,
@@ -23,6 +24,7 @@ class DataStream:
     operator_id: str
     keyed: bool
     partitioning: Partitioning | None
+    changelog: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +45,7 @@ class StreamGraph:
         self._validate_edges(definition.edges)
         self._topological_order = self._sort_topologically()
         self._streams = self._propagate_stream_properties()
+        self._validate_event_time_contract()
         self._edges = tuple(self._normalize_edge(edge) for edge in definition.edges)
 
     @staticmethod
@@ -223,15 +226,113 @@ class StreamGraph:
                     )
                 )
 
+            input_changelog = any(stream.changelog for stream in input_streams)
+            if operator.type is OperatorType.REDUCE:
+                if input_changelog and operator.retract_udf is None:
+                    issues.append(
+                        ConfigIssue(
+                            f"operators[{positions[operator_id]}].retract_udf",
+                            "reduce 消费 changelog stream 时必须配置 retract_udf",
+                        )
+                    )
+                elif not input_changelog and operator.retract_udf is not None:
+                    issues.append(
+                        ConfigIssue(
+                            f"operators[{positions[operator_id]}].retract_udf",
+                            "reduce 只消费 INSERT stream 时不能配置 retract_udf",
+                        )
+                    )
+
+            if operator.type is OperatorType.SOURCE:
+                changelog = False
+            elif operator.type is OperatorType.REDUCE:
+                changelog = operator.emit_mode == "changelog"
+            else:
+                changelog = input_changelog
+
             streams[operator_id] = DataStream(
                 operator_id=operator_id,
                 keyed=keyed,
                 partitioning=Partitioning.HASH if keyed else None,
+                changelog=changelog,
             )
 
         if issues:
             raise JobConfigError(issues)
         return streams
+
+    def _validate_event_time_contract(self) -> None:
+        """校验事件时间执行配置和所有上游 Source 的提取能力。"""
+        positions = {
+            operator.id: position for position, operator in enumerate(self.definition.operators)
+        }
+        event_windows = [
+            operator
+            for operator in self.definition.operators
+            if operator.window is not None and operator.window.time_characteristic == "event"
+        ]
+        source_extractors = [
+            operator
+            for operator in self.definition.operators
+            if operator.type is OperatorType.SOURCE
+            and isinstance(operator.config, KafkaSourceConfig)
+            and operator.config.event_time is not None
+        ]
+        execution_event_time = (
+            self.definition.execution.event_time if self.definition.execution is not None else None
+        )
+        issues: list[ConfigIssue] = []
+
+        if not event_windows:
+            if execution_event_time is not None:
+                issues.append(
+                    ConfigIssue(
+                        "execution.event_time",
+                        "只有事件时间窗口作业才能配置 event_time 执行策略",
+                    )
+                )
+            for source in source_extractors:
+                issues.append(
+                    ConfigIssue(
+                        f"operators[{positions[source.id]}].config.event_time",
+                        "只有事件时间窗口作业才能配置 Source event_time",
+                    )
+                )
+        elif execution_event_time is None:
+            issues.append(
+                ConfigIssue(
+                    "execution.event_time",
+                    "事件时间窗口必须配置 execution.event_time",
+                )
+            )
+
+        upstream_ids: dict[str, list[str]] = defaultdict(list)
+        for edge in self.definition.edges:
+            upstream_ids[edge.to].append(edge.from_)
+        for window_operator in event_windows:
+            pending = list(upstream_ids[window_operator.id])
+            visited: set[str] = set()
+            while pending:
+                operator_id = pending.pop()
+                if operator_id in visited:
+                    continue
+                visited.add(operator_id)
+                upstream = self._operators[operator_id]
+                if upstream.type is OperatorType.SOURCE:
+                    config = upstream.config
+                    if not isinstance(config, KafkaSourceConfig) or config.event_time is None:
+                        issues.append(
+                            ConfigIssue(
+                                f"operators[{positions[upstream.id]}].config.event_time",
+                                f"Source {upstream.id!r} 可到达事件时间窗口 "
+                                f"{window_operator.id!r}, 必须配置 event_time",
+                            )
+                        )
+                    continue
+                pending.extend(upstream_ids[operator_id])
+
+        if issues:
+            raise JobConfigError(issues)
 
     def _normalize_edge(self, edge: EdgeSpec) -> StreamEdge:
         source = self._operators[edge.from_]

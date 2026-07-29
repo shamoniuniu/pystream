@@ -20,6 +20,7 @@ from pystream.runtime.protocol import (
     IncrementalFrameDecoder,
     MalformedFrameError,
     VersionMismatchError,
+    control_frame,
     data_batch_frame,
     encode_frame,
     end_of_stream_frame,
@@ -27,6 +28,7 @@ from pystream.runtime.protocol import (
     heartbeat_frame,
     hello_frame,
     read_frame,
+    record_from_control,
     records_from_data_batch,
     validate_hello,
     write_frame,
@@ -62,6 +64,11 @@ def record(index: int = 0, *, message_type: MessageType = MessageType.DATA) -> R
         payload={"word": "apple", "count": index + 1},
         key="apple",
         processing_time=datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
+        event_time=(
+            datetime(2026, 7, 26, 11, 59, tzinfo=UTC)
+            if message_type is MessageType.WATERMARK
+            else None
+        ),
         message_type=message_type,
         change_kind=ChangeKind.INSERT,
     )
@@ -133,13 +140,13 @@ def test_非法_json_结构和未知帧类型被拒绝(body):
 def test_协议版本不兼容被拒绝():
     body = json.dumps(
         {
-            "version": 2,
+            "version": 1,
             "type": "HEARTBEAT",
             "payload": {"sequence": 1},
         }
     ).encode()
 
-    with pytest.raises(VersionMismatchError, match="收到 2"):
+    with pytest.raises(VersionMismatchError, match="收到 1"):
         IncrementalFrameDecoder().feed_data(struct.pack(">I", len(body)) + body)
 
 
@@ -157,16 +164,16 @@ def test_hello_校验完整身份和首帧类型():
         validate_hello(heartbeat_frame(0), expected)
 
 
-def test_data_batch_往返并保留未来控制消息类型():
-    records = (
-        record(0),
-        record(1, message_type=MessageType.WATERMARK),
-    )
+def test_data_batch和control分别往返且禁止混装():
+    data = record(0)
+    watermark = record(1, message_type=MessageType.WATERMARK)
 
-    restored = records_from_data_batch(data_batch_frame(records))
-
-    assert restored == records
-    assert restored[1].message_type is MessageType.WATERMARK
+    assert records_from_data_batch(data_batch_frame([data])) == (data,)
+    assert record_from_control(control_frame(watermark)) == watermark
+    with pytest.raises(MalformedFrameError, match="只能包含 DATA"):
+        data_batch_frame([data, watermark])
+    with pytest.raises(MalformedFrameError, match="不能包含 DATA"):
+        control_frame(data)
 
 
 def test_data_batch_拒绝空批次_超限和非法记录():

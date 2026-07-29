@@ -483,3 +483,187 @@ def test_错误对象格式和空问题保护():
     assert format_path(()) == "$"
     with pytest.raises(ValueError, match="至少需要一条问题"):
         JobConfigError([])
+
+
+def event_time_job() -> dict:
+    """返回在现有线性 DAG 上启用事件时间的兼容作业。"""
+    document = linear_job()
+    document["execution"] = {
+        "event_time": {
+            "max_out_of_orderness": "2s",
+            "idle_timeout": "30s",
+        },
+        "checkpoint": {
+            "interval": "10s",
+            "timeout": "30s",
+            "max_consecutive_failures": 3,
+        },
+        "restart": {"max_attempts": 3, "delay": "2s"},
+    }
+    document["operators"][0]["config"]["event_time"] = {
+        "pointer": "/event_time",
+        "format": "rfc3339",
+    }
+    document["operators"][3]["window"]["time_characteristic"] = "event"
+    return document
+
+
+def test_旧作业不配置_execution_时保持第一阶段默认() -> None:
+    graph = parse_stream_graph(as_yaml(linear_job()))
+
+    assert graph.definition.execution is None
+    assert graph.operator("totals").emit_mode == "final"
+    assert graph.data_stream("totals").changelog is False
+    assert graph.operator("output").config.columns is None
+
+
+def test_事件时间作业解析默认值和毫秒属性() -> None:
+    graph = parse_stream_graph(as_yaml(event_time_job()))
+    execution = graph.definition.execution
+
+    assert execution is not None
+    assert execution.event_time is not None
+    assert execution.event_time.max_out_of_orderness_milliseconds == 2_000
+    assert execution.event_time.idle_timeout_seconds == 30
+    assert execution.checkpoint.interval_seconds == 10
+    assert execution.checkpoint.timeout_seconds == 30
+    assert execution.restart.delay_seconds == 2
+    assert graph.operator("totals").window.time_characteristic == "event"
+
+
+def test_事件时间窗口要求_execution策略和所有source提取器() -> None:
+    missing_execution = event_time_job()
+    missing_execution.pop("execution")
+    assert_config_error(
+        missing_execution,
+        "execution.event_time",
+        "事件时间窗口必须配置",
+    )
+
+    missing_extractor = event_time_job()
+    missing_extractor["operators"][0]["config"].pop("event_time")
+    assert_config_error(
+        missing_extractor,
+        "operators[0].config.event_time",
+        "必须配置 event_time",
+    )
+
+
+def test_处理时间作业拒绝无用途的事件时间配置() -> None:
+    document = event_time_job()
+    document["operators"][3]["window"]["time_characteristic"] = "processing"
+
+    assert_config_error(
+        document,
+        "execution.event_time",
+        "只有事件时间窗口作业",
+    )
+
+
+@pytest.mark.parametrize("pointer", ["event_time", "/bad~2escape"])
+def test_source_event_time_pointer_必须是合法_rfc6901(pointer: str) -> None:
+    document = event_time_job()
+    document["operators"][0]["config"]["event_time"]["pointer"] = pointer
+
+    assert_config_error(
+        document,
+        "operators[0].config.kafka.event_time.pointer",
+        "JSON Pointer",
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("execution", "event_time", "max_out_of_orderness"), "-1s"),
+        (("execution", "event_time", "idle_timeout"), "0s"),
+        (("execution", "checkpoint", "interval"), "0s"),
+        (("execution", "checkpoint", "timeout"), "seconds"),
+        (("execution", "restart", "delay"), "-1s"),
+    ],
+)
+def test_execution_持续时间边界(path: tuple[str, ...], value: str) -> None:
+    document = event_time_job()
+    target = document
+    for segment in path[:-1]:
+        target = target[segment]
+    target[path[-1]] = value
+
+    assert_config_error(document, ".".join(path), "持续时间")
+
+
+def changelog_job() -> dict:
+    """返回带二级 retract Reduce 的处理时间作业。"""
+    document = linear_job()
+    document["operators"][3]["emit_mode"] = "changelog"
+    document["operators"].insert(
+        4,
+        operator("by_count", "key_by", udf="wordcount_udfs:count_key"),
+    )
+    document["operators"].insert(
+        5,
+        operator(
+            "distribution",
+            "reduce",
+            udf="wordcount_udfs:add_bucket",
+            retract_udf="wordcount_udfs:remove_bucket",
+            window={
+                "type": "tumbling",
+                "time_characteristic": "processing",
+                "size": "300s",
+            },
+        ),
+    )
+    document["edges"] = [
+        {"from": "words", "to": "normalize"},
+        {"from": "normalize", "to": "by_word"},
+        {"from": "by_word", "to": "totals"},
+        {"from": "totals", "to": "by_count"},
+        {"from": "by_count", "to": "distribution"},
+        {"from": "distribution", "to": "output"},
+    ]
+    return document
+
+
+def test_changelog属性传播且消费reduce要求_retract_udf() -> None:
+    document = changelog_job()
+    graph = parse_stream_graph(as_yaml(document))
+
+    assert graph.data_stream("totals").changelog is True
+    assert graph.data_stream("by_count").changelog is True
+    assert graph.data_stream("distribution").changelog is False
+
+    document["operators"][5].pop("retract_udf")
+    assert_config_error(
+        document,
+        "operators[5].retract_udf",
+        "必须配置 retract_udf",
+    )
+
+
+def test_只消费insert的reduce拒绝无用途_retract_udf() -> None:
+    document = linear_job()
+    document["operators"][3]["retract_udf"] = "wordcount_udfs:remove"
+
+    assert_config_error(
+        document,
+        "operators[3].retract_udf",
+        "只消费 INSERT",
+    )
+
+
+def test_file_sink_columns_校验_pointer和重复() -> None:
+    valid = linear_job()
+    valid["operators"][-1]["config"]["columns"] = [
+        "/headers/window_end",
+        "/payload/count",
+    ]
+    graph = parse_stream_graph(as_yaml(valid))
+    assert graph.operator("output").config.columns == [
+        "/headers/window_end",
+        "/payload/count",
+    ]
+
+    duplicate = linear_job()
+    duplicate["operators"][-1]["config"]["columns"] = ["/payload/count", "/payload/count"]
+    assert_config_error(duplicate, "operators[4].config.file.columns", "重复")
