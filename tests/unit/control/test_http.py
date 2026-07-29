@@ -50,6 +50,7 @@ async def test_http_注册三worker_提交查询下载和取消(tmp_path: Path) 
                 "/workers/register",
                 json={
                     "worker_id": f"worker-{index}",
+                    "incarnation_id": f"worker-{index}-process-1",
                     "control_address": f"http://worker-{index}:8081",
                     "data_host": f"worker-{index}",
                     "data_port": 9000,
@@ -57,11 +58,14 @@ async def test_http_注册三worker_提交查询下载和取消(tmp_path: Path) 
                 },
             )
             assert response.status == 201
+            registration = await response.json()
+            assert registration["restarted"] is False
 
         health = await (await client.get("/health")).json()
         workers = await (await client.get("/v1/workers")).json()
         assert health["healthy_workers"] == 3
         assert len(workers["workers"]) == 3
+        assert workers["workers"][0]["incarnation_id"] == "worker-1-process-1"
 
         bundle = build_job_bundle(
             Path("examples") / "wordcount",

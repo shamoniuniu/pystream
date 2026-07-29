@@ -142,6 +142,7 @@ class JobManagerHttpService:
         workers = [
             {
                 "worker_id": view.worker_id,
+                "incarnation_id": view.incarnation_id,
                 "healthy": view.healthy,
                 "total_slots": view.total_slots,
                 "used_slots": view.used_slots,
@@ -220,23 +221,29 @@ class JobManagerHttpService:
 
     async def _register_worker(self, request: web.Request) -> web.Response:
         document = await _json_object(request)
-        worker = self.manager.register_worker(
+        worker, restarted, affected_jobs = await self.manager.register_worker_process(
             worker_id=_required_string(document, "worker_id"),
+            incarnation_id=_required_string(document, "incarnation_id"),
             control_address=_required_string(document, "control_address"),
             data_host=_required_string(document, "data_host"),
             data_port=_required_integer(document, "data_port", minimum=1, maximum=65535),
             total_slots=_required_integer(document, "total_slots", minimum=1),
         )
         self._log(
-            logging.INFO,
-            "worker_registered",
-            "Worker 已注册",
+            logging.WARNING if restarted else logging.INFO,
+            "worker_re_registered" if restarted else "worker_registered",
+            "Worker 新进程已重注册" if restarted else "Worker 已注册",
             worker_id=worker.worker_id,
+            incarnation_id=worker.incarnation_id,
+            affected_jobs=list(affected_jobs),
             total_slots=worker.total_slots,
         )
         return web.json_response(
             {
                 "worker_id": worker.worker_id,
+                "incarnation_id": worker.incarnation_id,
+                "restarted": restarted,
+                "affected_jobs": affected_jobs,
                 "total_slots": worker.total_slots,
                 "status": "REGISTERED",
             },

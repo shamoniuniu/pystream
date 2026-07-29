@@ -47,6 +47,7 @@
 
 ## 自动恢复
 
+- [x] Worker incarnation 变化触发受影响作业恢复
 - [ ] Worker 进程 SIGKILL 后 Compose 自动拉起
 - [ ] Worker 重注册并重新参与调度
 - [x] 作业进入 RECOVERING，attempt 递增

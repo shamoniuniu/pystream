@@ -116,6 +116,7 @@ class WorkerNode:
     data_host: str
     data_port: int
     slots: list[WorkerSlot]
+    incarnation_id: str = "legacy"
     last_heartbeat: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @classmethod
@@ -127,10 +128,14 @@ class WorkerNode:
         data_port: int,
         total_slots: int,
         heartbeat_at: datetime | None = None,
+        *,
+        incarnation_id: str = "legacy",
     ) -> WorkerNode:
         """校验注册参数并创建 Worker。"""
         if not worker_id:
             raise ValueError("worker_id 不能为空")
+        if not incarnation_id:
+            raise ValueError("incarnation_id 不能为空")
         if not control_address or not data_host:
             raise ValueError("Worker 地址不能为空")
         if not 1 <= data_port <= 65535:
@@ -143,6 +148,7 @@ class WorkerNode:
             data_host=data_host,
             data_port=data_port,
             slots=[WorkerSlot(index=index) for index in range(total_slots)],
+            incarnation_id=incarnation_id,
             last_heartbeat=heartbeat_at or datetime.now(UTC),
         )
 
@@ -282,6 +288,7 @@ class ResourceView:
     """供状态接口展示的 Worker 资源快照。"""
 
     worker_id: str
+    incarnation_id: str
     healthy: bool
     total_slots: int
     used_slots: int

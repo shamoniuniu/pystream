@@ -10,9 +10,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 from urllib.parse import quote
+from uuid import uuid4
 
 from aiohttp import ClientResponseError, ClientSession, ClientTimeout, web
 
@@ -44,6 +45,7 @@ class RegistrationClient(StatusReporter, Protocol):
         data_host: str,
         data_port: int,
         total_slots: int,
+        incarnation_id: str,
     ) -> None:
         """向 JobManager 注册 Worker。"""
 
@@ -58,12 +60,18 @@ class WorkerServiceConfig:
     worker_id: str
     control_address: str
     data_host: str
+    incarnation_id: str = field(default_factory=lambda: uuid4().hex)
     total_slots: int = 4
     heartbeat_interval: float = 5.0
 
     def __post_init__(self) -> None:
-        if not self.worker_id or not self.control_address or not self.data_host:
-            raise ValueError("Worker ID 和地址不能为空")
+        if (
+            not self.worker_id
+            or not self.control_address
+            or not self.data_host
+            or not self.incarnation_id
+        ):
+            raise ValueError("Worker ID、incarnation 和地址不能为空")
         if self.total_slots <= 0:
             raise ValueError("total_slots 必须大于 0")
         if self.heartbeat_interval <= 0:
@@ -127,6 +135,7 @@ class WorkerHttpService:
             data_host=self.config.data_host,
             data_port=self.data_server.bound_port,
             total_slots=self.config.total_slots,
+            incarnation_id=self.config.incarnation_id,
         )
         self._heartbeat_task = asyncio.create_task(
             self._heartbeat_loop(),
@@ -136,6 +145,7 @@ class WorkerHttpService:
             logging.INFO,
             "worker_started",
             "Worker 服务已启动",
+            incarnation_id=self.config.incarnation_id,
             data_port=self.data_server.bound_port,
             total_slots=self.config.total_slots,
         )
@@ -178,6 +188,7 @@ class WorkerHttpService:
             {
                 "status": "ok" if self._heartbeat_error is None else "degraded",
                 "worker_id": self.config.worker_id,
+                "incarnation_id": self.config.incarnation_id,
                 "tasks": self.manager.task_count,
                 "data_host": self.config.data_host,
                 "data_port": self.data_server.bound_port,
@@ -383,6 +394,7 @@ class HttpJobManagerClient(_HttpClientBase, RegistrationClient):
         data_host: str,
         data_port: int,
         total_slots: int,
+        incarnation_id: str,
     ) -> None:
         await self._post(
             "/workers/register",
@@ -392,6 +404,7 @@ class HttpJobManagerClient(_HttpClientBase, RegistrationClient):
                 "data_host": data_host,
                 "data_port": data_port,
                 "total_slots": total_slots,
+                "incarnation_id": incarnation_id,
             },
         )
 

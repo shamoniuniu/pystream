@@ -31,6 +31,8 @@ class WorkerRegistry:
         data_port: int,
         total_slots: int,
         heartbeat_at: datetime | None = None,
+        *,
+        incarnation_id: str = "legacy",
     ) -> WorkerNode:
         """注册新 Worker，或在不破坏占用的前提下刷新已有 Worker。"""
         candidate = WorkerNode.create(
@@ -40,6 +42,7 @@ class WorkerRegistry:
             data_port=data_port,
             total_slots=total_slots,
             heartbeat_at=heartbeat_at,
+            incarnation_id=incarnation_id,
         )
         existing = self._workers.get(worker_id)
         if existing is not None and existing.used_slots:
@@ -48,6 +51,7 @@ class WorkerRegistry:
             existing.control_address = candidate.control_address
             existing.data_host = candidate.data_host
             existing.data_port = candidate.data_port
+            existing.incarnation_id = candidate.incarnation_id
             existing.last_heartbeat = candidate.last_heartbeat
             return existing
 
@@ -89,6 +93,7 @@ class WorkerRegistry:
         return tuple(
             ResourceView(
                 worker_id=worker.worker_id,
+                incarnation_id=worker.incarnation_id,
                 healthy=worker.is_healthy(observed_at, self.heartbeat_timeout),
                 total_slots=worker.total_slots,
                 used_slots=worker.used_slots,

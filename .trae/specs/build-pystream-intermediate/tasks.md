@@ -71,6 +71,7 @@
   - [x] 控制面、Worker、Runtime 恢复测试
 
 - [ ] Task 8: 完成部署和中级 demo
+  - [x] Worker 进程 incarnation 识别与重注册触发恢复
   - [ ] Compose 共享 checkpoint 卷与 0.2.0 镜像
   - [ ] event-time/retract 作业与 UDF
   - [ ] 生产、提交、等待 Checkpoint、故障注入、验证、清理脚本

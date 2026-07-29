@@ -171,6 +171,7 @@ async def test_worker_http_注册心跳_部署查询停止() -> None:
             worker_id="worker-1",
             control_address="http://worker-1:8081",
             data_host="worker-1",
+            incarnation_id="worker-1-process-1",
             total_slots=4,
             heartbeat_interval=0.01,
         ),
@@ -182,9 +183,11 @@ async def test_worker_http_注册心跳_部署查询停止() -> None:
     await client.start_server()
     try:
         assert registration.registrations[0]["data_port"] == data_server.bound_port
+        assert registration.registrations[0]["incarnation_id"] == "worker-1-process-1"
         health = await (await client.get("/health")).json()
         assert health["status"] == "ok"
         assert health["worker_id"] == "worker-1"
+        assert health["incarnation_id"] == "worker-1-process-1"
         assert health["data_plane"]["registered_channels"] == 0
         assert health["data_plane"]["active_connections"] == 0
         assert health["runtime"] == {
@@ -248,6 +251,7 @@ async def test_http_worker_gateway_调用真实worker路由() -> None:
             worker_id="worker-1",
             control_address="http://placeholder",
             data_host="127.0.0.1",
+            incarnation_id="worker-1-process-2",
         ),
         manager,  # type: ignore[arg-type]
         data_server,

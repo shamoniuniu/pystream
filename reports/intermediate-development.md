@@ -121,7 +121,7 @@
 
 ## 2026-07-29T09:02:53Z - Task 6-7 Source 状态合并与整作业自动恢复
 
-- 状态：实现完成，待提交
+- 状态：完成并推送
 - 变更：
   - Task/部署/状态上报/stop/Checkpoint API 全链路增加 attempt fencing
   - Worker 对低 attempt 拒绝、同 attempt 幂等、高 attempt 停旧换新
@@ -159,5 +159,37 @@
   - Kafka/文件 Sink 实际 E2E 的无丢失与允许重复证明留到 Task 8
   - JobManager 重启恢复仍不在中级范围
 - 上一回退点：`0c2acb6`
+- 结果提交：`5ee80b3` (`feat: add automatic job recovery`)
+- 审查回执：Git note 已关联提交并推送 `refs/notes/commits`
+- 回退提交：`git revert 5ee80b3`
+
+## 2026-07-29T10:22:35Z - Task 8 预检：Worker 进程 incarnation
+
+- 状态：实现完成，待提交
+- 预检发现：
+  - SIGKILL 后 Compose 会以相同 `worker_id` 拉起新进程
+  - 原注册逻辑会刷新旧 Worker 心跳并保留旧 slot，导致 JobManager 无法通过心跳超时
+    识别旧 Runtime 已消失
+  - 该缺口会使作业保持虚假 RUNNING，阻断实际自动恢复验收
+- 变更：
+  - Worker 每次进程启动生成唯一 `incarnation_id`，注册和健康接口均公开该身份
+  - 相同 incarnation 重复注册保持幂等，不触发无意义恢复
+  - 不同 incarnation 重注册时识别旧 Worker 承载的作业
+  - 中级作业触发单 leader 整作业恢复；基础作业保持失败而不自动恢复
+  - Worker 资源接口暴露 incarnation，供 SIGKILL 验收比较新旧进程
+- 验证：
+  - 控制面、调度和 Worker HTTP 专项：`31 passed`
+  - 全仓：`357 passed`，总覆盖率 `84.45%`
+  - Ruff lint：通过
+  - Ruff format：79 个文件通过
+  - `git diff --check`：通过
+- 故障路径覆盖：
+  - 同 incarnation 注册重试不触发恢复
+  - 新 incarnation 在旧 slot 仍占用时触发最近 Checkpoint 恢复
+  - 恢复完成后 attempt 递增且全部 Task 使用同一 restored checkpoint
+- 未完成边界：
+  - 容器 restart count、新 incarnation 实际重注册和恢复时间仍需 Docker SIGKILL 实证
+  - At-least-once 输入无丢失及追加 Sink 重复边界仍需中级 E2E 实证
+- 上一回退点：`5ee80b3`
 - 结果提交：本条随本里程碑提交，SHA 将在提交后回填并写入 Git note
 - 回退提交：提交后使用 `git revert <本里程碑 SHA>`

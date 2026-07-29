@@ -515,6 +515,70 @@ async def test_task失败从最近完整checkpoint恢复全图(
 
 
 @pytest.mark.asyncio
+async def test_worker新incarnation重注册触发checkpoint作业恢复(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway()
+    manager = manager_with_workers(tmp_path, gateway, worker_count=2, slots=2)
+    graph = checkpoint_graph(two_task_graph)
+    await manager.submit_job(graph, b"bundle", job_id="job-worker-restarted")
+    await manager.trigger_checkpoint("job-worker-restarted")
+    worker_id = gateway.deploy_calls[0][0]
+    worker = manager.registry.get(worker_id)
+
+    registered, restarted, affected_jobs = await manager.register_worker_process(
+        worker_id,
+        "replacement-process",
+        worker.control_address,
+        worker.data_host,
+        worker.data_port,
+        worker.total_slots,
+    )
+
+    assert registered.incarnation_id == "replacement-process"
+    assert restarted is True
+    assert affected_jobs == ("job-worker-restarted",)
+    recovery = manager._runs["job-worker-restarted"].recovery_task
+    assert recovery is not None
+    await recovery
+    status = manager.status_view("job-worker-restarted")
+    assert status["status"] == "RUNNING"
+    assert status["attempt"] == 1
+    assert {
+        task["restored_checkpoint_id"] for task in status["tasks"] if isinstance(task, dict)
+    } == {1}
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_worker相同incarnation重复注册不触发恢复(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway()
+    manager = manager_with_workers(tmp_path, gateway, worker_count=2, slots=2)
+    graph = checkpoint_graph(two_task_graph)
+    await manager.submit_job(graph, b"bundle", job_id="job-worker-reregistered")
+    worker = manager.registry.get("worker-0")
+
+    _, restarted, affected_jobs = await manager.register_worker_process(
+        worker.worker_id,
+        worker.incarnation_id,
+        worker.control_address,
+        worker.data_host,
+        worker.data_port,
+        worker.total_slots,
+    )
+
+    assert restarted is False
+    assert affected_jobs == ()
+    assert manager.get_job("job-worker-reregistered").status is JobStatus.RUNNING
+    assert manager._runs["job-worker-reregistered"].recovery_task is None
+    await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_中级作业初次部署失败进入recovery后成功(
     tmp_path,
     two_task_graph: StreamGraph,

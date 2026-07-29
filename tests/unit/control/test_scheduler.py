@@ -66,18 +66,59 @@ def test_registry_拒绝非法超时和未知_worker():
 
 def test_registry_活动_worker_合法重注册保留slot():
     registry = WorkerRegistry()
-    worker = registry.register("worker-a", "http://old", "old-host", 9000, 2)
+    worker = registry.register(
+        "worker-a",
+        "http://old",
+        "old-host",
+        9000,
+        2,
+        incarnation_id="process-1",
+    )
     worker.reserve("task-1")
 
-    refreshed = registry.register("worker-a", "http://new", "new-host", 9001, 2)
+    refreshed = registry.register(
+        "worker-a",
+        "http://new",
+        "new-host",
+        9001,
+        2,
+        incarnation_id="process-1",
+    )
 
     assert refreshed is worker
+    assert refreshed.incarnation_id == "process-1"
     assert refreshed.control_address == "http://new"
     assert refreshed.data_host == "new-host"
     assert refreshed.data_port == 9001
     assert refreshed.slots[0].task_id == "task-1"
     with pytest.raises(ValueError, match="不能修改"):
         registry.register("worker-a", "http://new", "new-host", 9001, 3)
+
+
+def test_registry_新incarnation更新身份并暂时保留旧slot():
+    registry = WorkerRegistry()
+    worker = registry.register(
+        "worker-a",
+        "http://old",
+        "old-host",
+        9000,
+        2,
+        incarnation_id="process-1",
+    )
+    worker.reserve("task-1")
+
+    restarted = registry.register(
+        "worker-a",
+        "http://new",
+        "new-host",
+        9001,
+        2,
+        incarnation_id="process-2",
+    )
+
+    assert restarted is worker
+    assert restarted.incarnation_id == "process-2"
+    assert restarted.slots[0].task_id == "task-1"
 
 
 def test_registry_活动_worker_重注册仍拒绝非法端口():

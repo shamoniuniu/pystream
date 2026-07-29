@@ -23,6 +23,7 @@ from pystream.control.errors import (
     ControlPlaneError,
     DeploymentError,
     InvalidStateTransition,
+    WorkerNotFound,
 )
 from pystream.control.execution import ExecutionGraph, build_execution_graph
 from pystream.control.models import (
@@ -107,6 +108,8 @@ class JobManager:
         data_port: int,
         total_slots: int,
         heartbeat_at: datetime | None = None,
+        *,
+        incarnation_id: str = "legacy",
     ) -> WorkerNode:
         """注册 Worker 并返回当前资源对象。"""
         return self.registry.register(
@@ -116,7 +119,63 @@ class JobManager:
             data_port=data_port,
             total_slots=total_slots,
             heartbeat_at=heartbeat_at,
+            incarnation_id=incarnation_id,
         )
+
+    async def register_worker_process(
+        self,
+        worker_id: str,
+        incarnation_id: str,
+        control_address: str,
+        data_host: str,
+        data_port: int,
+        total_slots: int,
+    ) -> tuple[WorkerNode, bool, tuple[str, ...]]:
+        """注册 Worker 进程，并在 incarnation 变化时处理旧进程承载的作业。"""
+        try:
+            previous = self.registry.get(worker_id)
+        except WorkerNotFound:
+            previous = None
+        previous_incarnation = previous.incarnation_id if previous is not None else None
+        restarted = previous is not None and previous_incarnation != incarnation_id
+        affected_runs = (
+            tuple(
+                run
+                for run in self._runs.values()
+                if run.job.status
+                in {
+                    JobStatus.DEPLOYING,
+                    JobStatus.RUNNING,
+                    JobStatus.RECOVERING,
+                }
+                and any(task.worker_id == worker_id for task in run.execution_graph.tasks.values())
+            )
+            if restarted
+            else ()
+        )
+        worker = self.register_worker(
+            worker_id,
+            control_address,
+            data_host,
+            data_port,
+            total_slots,
+            incarnation_id=incarnation_id,
+        )
+        reason = (
+            f"Worker {worker_id} incarnation 已变化: "
+            f"{previous_incarnation or 'unknown'} -> {incarnation_id}"
+        )
+        for run in affected_runs:
+            if run.checkpoint_interval is not None:
+                await self._request_recovery(run, reason)
+                continue
+            failed_task = next(
+                task for task in run.execution_graph.tasks.values() if task.worker_id == worker_id
+            )
+            await self._cancel_checkpoint_loop(run)
+            async with run.checkpoint_lock:
+                await self._fail_run(run, reason, failed_task=failed_task)
+        return worker, restarted, tuple(run.job.job_id for run in affected_runs)
 
     def heartbeat(self, worker_id: str, at: datetime | None = None) -> WorkerNode:
         """接收 Worker 心跳。"""
