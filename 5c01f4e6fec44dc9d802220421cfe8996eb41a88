@@ -1,0 +1,6 @@
+review-receipt: 134fba6f4d7e313cb51ebc18893cb210a15a2051
+task: 8 worker incarnation recovery
+verdict: ready
+tree: 4909ef7f6871cbd08e1a0f49caf6fd127a007893
+verification: 357 passed; coverage 84.45%; ruff lint/format pass; git diff --cached --check pass
+rollback: git revert 5c01f4e
