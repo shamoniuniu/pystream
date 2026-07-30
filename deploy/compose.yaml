@@ -6,7 +6,8 @@ x-pystream-service: &pystream-service
     dockerfile: Dockerfile
     args:
       PYTHON_VERSION: 3.11.9
-  image: pystream:0.1.0
+      PYTHON_BASE_DIGEST: sha256:8fb099199b9f2d70342674bd9dbccd3ed03a258f26bbd1d556822c6dfc60c317
+  image: pystream:0.2.0
   user: "10001:10001"
   init: true
   read_only: true
@@ -56,7 +57,7 @@ x-worker: &worker
 
 services:
   kafka:
-    image: apache/kafka:3.9.1
+    image: apache/kafka:3.9.1@sha256:4ceccc577f03f51f6af8dbfda55194d0d892f4fa7913ffbded567ce3895622ed
     hostname: kafka
     restart: unless-stopped
     stop_grace_period: 30s
@@ -98,7 +99,7 @@ services:
           memory: 1G
 
   kafka-init:
-    image: apache/kafka:3.9.1
+    image: apache/kafka:3.9.1@sha256:4ceccc577f03f51f6af8dbfda55194d0d892f4fa7913ffbded567ce3895622ed
     depends_on:
       kafka:
         condition: service_healthy
@@ -106,17 +107,18 @@ services:
     networks:
       - pystream
     command:
-      - /opt/kafka/bin/kafka-topics.sh
-      - --bootstrap-server
-      - kafka:9092
-      - --create
-      - --if-not-exists
-      - --topic
-      - words
-      - --partitions
-      - "2"
-      - --replication-factor
-      - "1"
+      - /bin/bash
+      - -ec
+      - |
+        for topic in words intermediate-words; do
+          /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server kafka:9092 \
+            --create \
+            --if-not-exists \
+            --topic "$${topic}" \
+            --partitions 2 \
+            --replication-factor 1
+        done
     deploy:
       resources:
         reservations:

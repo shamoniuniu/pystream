@@ -1,17 +1,16 @@
 # 架构与数据流
 
-本文面向需要理解 PyStream 运行机制和失败边界的开发者。代码和测试是当前状态的
-权威来源；本文解释其组织方式，不引入额外语义。
+本文描述 PyStream 0.2.0 的控制流、数据流、Checkpoint 和恢复边界。代码与测试是
+行为权威来源。
 
 ## 部署拓扑
 
 ```text
-CLI
-  |
-  | HTTP/ZIP
-  v
-JobManager :8080
-  |  register / heartbeat / deploy / status / artifact
+CLI / acceptance tools
+          |
+          v
+JobManager :8080 ---------------- shared artifacts/checkpoints volumes
+  | deploy/status/checkpoint
   +--------------------+--------------------+
   v                    v                    v
 Worker-1             Worker-2             Worker-3
@@ -19,54 +18,55 @@ Worker-1             Worker-2             Worker-3
 :9000 data           :9000 data           :9000 data
   \_____________________|____________________/
                         |
-                      Kafka :9092
+                    Kafka :9092
                         |
                  shared output volume
 ```
 
-JobManager 持有作业、物理执行图、Worker 资源和制品元数据。Worker 下载制品并在
-本地启动 TaskRuntime。Kafka 是外部无界输入，CSV 文件是第一阶段输出。
+JobManager 持有作业状态、执行图、Worker 资源、Checkpoint coordinator 和恢复
+状态机。Worker 持有 TaskRuntime、算子状态和数据面连接。Kafka 是可重放输入，
+共享 checkpoint 卷允许任务恢复到不同 Worker。
 
-## 控制流
+## 部署与调度
 
-1. `pystream package` 校验 YAML，将作业目录构建为带清单和 SHA-256 的 ZIP。
-2. `pystream submit` 通过 HTTP 上传 ZIP。
-3. JobManager 复验摘要、安全解压并构建逻辑 `StreamGraph`。
-4. 每个逻辑算子按 `parallelism` 展开为 `TaskInstance`。
-5. 调度器先做全量 slot 预检，再确定性分配 Worker；资源不足不会部分部署。
-6. JobManager 按 Sink 到 Source 的逆拓扑顺序部署，确保下游先监听。
-7. Worker 下载同一不可变制品，隔离加载当前任务所需 UDF，启动 TaskRuntime。
-8. CLI 通过状态 API 查询任务所在 Worker、slot、状态和错误。
+1. CLI 构建带清单和 SHA-256 的 ZIP。
+2. JobManager 复验、安全解压并构建 `StreamGraph`。
+3. 逻辑算子按 parallelism 展开，调度器先做全量 slot 预检。
+4. 非 Source 任务按下游优先顺序部署。
+5. 同一 Source 的 subtasks 并发部署，并按 partition 编号确定性静态分配。
+6. Worker 下载同一制品，按 attempt 隔离 Runtime 和 UDF 命名空间。
 
-任一部署失败时，JobManager 停止已部署任务、释放所有 slot，并将作业置为
-`FAILED`。取消作业同样按反向部署顺序停止任务。
+Source 确定性分配消除了正常部署时消费组 rebalance 导致的跨 Runtime 重放：
 
-## 数据流
+```text
+partition % source_parallelism == subtask_index
+```
 
-WordCount 的默认逻辑链路：
+## 数据面
 
 ```text
 Kafka Source(2)
-  -> Map normalize(2)       FORWARD
-  -> KeyBy word(2)          FORWARD
-  => Reduce window(3)       HASH
-  -> File Sink(1)           REBALANCE
+  -> Map normalize(2)        FORWARD
+  -> KeyBy word(2)           FORWARD
+  => Reduce word_totals(2)   HASH + changelog
+  -> Map bucket(1)
+  -> KeyBy count(1)
+  -> Reduce distribution(1)  retract + final
+  -> File Sink(1)
 ```
 
-- FORWARD：上下游并发度相同，连接相同 subtask 编号。
-- REBALANCE：上游按轮询选择下游 subtask。
-- HASH：将 key 转为排序键的规范 JSON，计算 SHA-256 后对下游并发度取模。
+- FORWARD：相同 subtask 编号。
+- REBALANCE：轮询下游。
+- HASH：规范 JSON key 的 SHA-256 对下游并发度取模。
 - 分支：每条逻辑边独立发送。
-- 合流：多个上游写入目标 TaskRuntime 的同一个有界输入队列；不提供 Join 语义。
+- 合流：多个物理输入共享有界队列，但保留独立 Watermark/Checkpoint 输入状态。
 
-Task 间使用 TCP 长连接。每帧是 4 字节大端长度加 UTF-8 JSON body。连接先发送
-HELLO 确认 job/upstream/downstream 身份，再传 DATA_BATCH、HEARTBEAT、
-END_OF_STREAM 或 ERROR。
+协议 v2 将数据和控制帧分离。同一通道内严格保序，WATERMARK 和
+CHECKPOINT_DRAIN 广播全部物理出通道。HELLO 携带 attempt，旧连接被拒绝。
 
 ## 背压
 
-每个出通道持有有界队列，唯一发送协程按批次写入，并等待 `writer.drain()`。
-目标 Worker 的 TaskRuntime 同样使用有界合流队列。因此下游处理变慢时：
+出通道和目标 Runtime 均使用有界队列：
 
 ```text
 下游 input queue 满
@@ -76,76 +76,78 @@ END_OF_STREAM 或 ERROR。
   -> 上游 send 等待
 ```
 
-系统不会通过无限队列隐藏过载。Worker `/health` 和 `/tasks` 暴露当前队列深度、
-容量、历史峰值、批次数和输入/输出记录数。
+系统不以无限缓冲隐藏过载。Worker 健康和任务状态公开队列深度、峰值、批次和
+记录计数。
 
-## 处理时间窗口
+## 事件时间与 Watermark
 
-Reduce 只消费 keyed stream。状态键为 `(TimeWindow, canonical_key)`：
+Source 从 RFC3339 字段提取 event time，并按 partition 维护：
 
-- 默认窗口 300 秒，示例为便于演示使用 10 秒。
-- 窗口按 Unix epoch 对齐，区间为左闭右开 `[start, end)`。
-- TaskRuntime 周期调用 `on_timer()`。
-- 当前 UTC Clock 到达窗口结束时间后输出非空 key，并立即删除该窗口状态。
-- 输出 `headers.window_start/window_end` 使用 `YYYY/MM/DDTHH:MM:SS`。
-- 空窗口不输出；不同窗口不累计。
+```text
+watermark = max_seen_event_time - max_out_of_orderness
+```
 
-## 记录与状态
+Runtime 对多输入取活跃输入 Watermark 最小值。idle 输入暂时退出 min 计算；
+重新 active 时不能让全局 Watermark 回退。Reduce 在 Watermark 到达 window end
+时触发事件时间窗口；`event_time <= watermark` 的迟到记录丢弃并记录指标/日志。
 
-`RecordEnvelope` 保存 record_id、payload、key、processing_time、headers，并预留
-event_time、message_type、change_kind 和 checkpoint_id。第一阶段：
+## Changelog 与 Retract
 
-- `message_type=DATA`
-- `change_kind=INSERT`
-- `event_time=null`
-- `checkpoint_id=null`
+上游 changelog Reduce 在状态变化时发送 UPDATE_BEFORE/UPDATE_AFTER。Map、
+KeyBy 和 Shuffle 保留 change kind。下游 Reduce 对旧值执行 retract，对新值
+执行 add；retract 返回 null 时删除空状态。中级示例由此实现“单词计数分布”的
+二级聚合。
 
-算子状态只在 Worker 内存中。Source record_id 使用
-`topic:partition:offset`，便于日志定位，但它本身不提供去重或恢复。
+## 停流 Checkpoint
+
+Checkpoint 是 stop-the-world 协调，不是持续流 barrier 对齐：
+
+1. JobManager 串行分配 checkpoint ID。
+2. 所有 Task arm，Source pause。
+3. Source 在已有 DATA 后广播 CHECKPOINT_DRAIN。
+4. 多输入 Runtime 收齐全部当前 attempt 输入的 DRAIN。
+5. Task 写版本化 JSON snapshot；Source 保存 partition next offset、事件时间和
+   Watermark，Reduce 保存窗口/聚合/输入 Watermark。
+6. JobManager 收齐执行图全部 descriptor，复验 SHA/大小/身份并最后原子写
+   manifest。
+7. manifest 成功后 Source 才提交 offset，所有 Task complete 并恢复消费。
+
+任一超时或失败执行 abort；没有完整 manifest 的目录不能恢复。快照写入期间 Source
+暂停，因此 Checkpoint 时间直接增加端到端延迟。
+
+## 整作业恢复
+
+Worker 进程启动生成唯一 incarnation。同一 worker ID 出现新 incarnation 时：
+
+1. JobManager 将受影响的中级作业转入恢复流程。
+2. 取消周期 Checkpoint，停止旧 attempt，释放全图 slots。
+3. 选择最高合法完整 manifest；不存在时从初始状态恢复。
+4. attempt 递增并重新调度全图。
+5. Task 在建立输出连接前恢复状态；Source 按 partition seek。
+6. 全部 Task RUNNING 后恢复周期 Checkpoint。
+
+恢复部署失败会在 `max_attempts` 内重试；旧 attempt 的连接、状态上报、stop 和
+Checkpoint 请求均被 fencing。状态 API 持久暴露 recovery attempts，客户端不必
+依赖采到短暂的 RECOVERING 状态。
+
+## 语义与故障域
+
+| 失败/边界 | 行为 |
+|---|---|
+| Worker 业务进程 SIGKILL | 容器自动拉起，新 incarnation 触发整作业恢复 |
+| Kafka/算子状态 | 从同一完整 manifest 恢复，无输入丢失 |
+| File Sink | 普通追加写，Checkpoint 后故障可重放并产生重复 |
+| 损坏/不完整快照 | 忽略并回退前一合法 manifest |
+| JobManager 失败 | 无 HA；控制面和内存中的作业协调状态不可用 |
+| 共享 checkpoint 卷失败 | 所有 Worker 的恢复源同时不可用 |
+
+因此当前语义为 At-least-once，不是 Exactly-once。共享卷解决跨 Worker 可见性，
+但共享卷和单 JobManager 仍是单故障域。
 
 ## 信任边界
 
-- JobManager/Worker 在可信实验网络内，第一阶段无认证和 TLS。
-- Python UDF 是可信代码，可在 Worker 进程中执行，不提供沙箱。
-- ZIP 解压仍防止绝对路径、`..`、符号链接、文件数量/大小超限和摘要不匹配。
-- Kafka payload 和 UDF 输出经过 JSON 及类型校验。
-- File Sink 路径按 job/operator/subtask 隔离，拒绝路径逃逸。
-
-## 失败模型
-
-第一阶段采用 fail-fast：
-
-| 失败 | 行为 |
-|---|---|
-| 坏 Kafka 记录 | 按 `bad_record_policy` 跳过并记录，或使 Source 失败 |
-| UDF/算子异常 | Task 上报失败，JobManager 停止整作业 |
-| TCP 异常 EOF/协议错误 | 下游 Task 失败，不把数据缺口当正常结束 |
-| Worker 心跳超时 | 使用该 Worker 的运行作业失败并释放 slot |
-| 文件写入失败 | Sink Task 失败并传播 |
-| JobManager 失败 | 无高可用；控制面不可用 |
-
-系统不会自动重启、恢复内存状态或回退 Kafka offset。因此当前不承诺
-At-least-once 或 Exactly-once；完整边界见 [阶段路线](roadmap.md)。
-
-## 依赖方向
-
-```text
-common <- api <- control
-common <- runtime <- worker
-common <- operators <- runtime
-artifact <- control/worker/cli
-observability <- service/control/runtime/worker/operators
-cli -> api + artifact + HTTP client
-```
-
-`common` 不反向依赖控制面、运行时或算子。JobManager 不导入 WordCount UDF。
-传输适配器位于边缘，领域模型不依赖 HTTP。
-
-## 可观测检查点
-
-- JobManager `/health`：Worker 和作业摘要。
-- JobManager `/v1/workers`：地址、slot、心跳和健康状态。
-- JobManager `/v1/jobs/{job_id}`：物理任务位置、状态和错误。
-- Worker `/health`：心跳、数据连接及聚合运行指标。
-- Worker `/tasks`：每个任务的通道、队列、记录、批次、错误和算子状态指标。
-- 标准错误流：一行一个 JSON 日志；按 job/operator/subtask/worker/event 查询。
+- 控制面位于可信实验网络，无认证和 TLS。
+- Python UDF 是可信代码，不提供沙箱。
+- ZIP 防止路径穿越、符号链接、超限和摘要不匹配。
+- Kafka payload、UDF 输出、snapshot 和 manifest 都经过结构/大小校验。
+- File Sink 路径按 job/operator/subtask 隔离。

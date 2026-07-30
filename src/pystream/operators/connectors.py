@@ -79,6 +79,7 @@ class AsyncKafkaConsumer(Protocol):
 
 
 KafkaConsumerFactory = Callable[..., AsyncKafkaConsumer]
+TopicPartitionFactory = Callable[[str, int], object]
 FileOpener = Callable[[Path], TextIO]
 PayloadValidator = Callable[[JsonValue], object]
 
@@ -98,6 +99,15 @@ def _create_aiokafka_consumer(*topics: str, **kwargs: Any) -> AsyncKafkaConsumer
     except ImportError as exc:  # pragma: no cover - 干净运行环境应安装项目依赖
         raise KafkaSourceError("缺少 aiokafka 依赖, 无法启动 Kafka Source") from exc
     return cast(AsyncKafkaConsumer, AIOKafkaConsumer(*topics, **kwargs))
+
+
+def _create_topic_partition(topic: str, partition: int) -> object:
+    """延迟创建 TopicPartition，使 fake 测试无需依赖具体 Kafka 类型。"""
+    try:
+        from aiokafka.structs import TopicPartition
+    except ImportError as exc:  # pragma: no cover - 干净运行环境应安装项目依赖
+        raise KafkaSourceError("缺少 aiokafka 依赖, 无法分配 Kafka partition") from exc
+    return TopicPartition(topic, partition)
 
 
 def _open_text_append(path: Path) -> TextIO:
@@ -125,6 +135,8 @@ class KafkaJsonSource:
         job_id: str,
         config: KafkaSourceConfig,
         consumer_factory: KafkaConsumerFactory = _create_aiokafka_consumer,
+        topic_partition_factory: TopicPartitionFactory = _create_topic_partition,
+        source_parallelism: int = 1,
         payload_validator: PayloadValidator | None = None,
         event_time_strategy: EventTimeExecutionConfig | None = None,
         logger: logging.Logger | None = None,
@@ -133,12 +145,15 @@ class KafkaJsonSource:
         self.job_id = _require_safe_segment(job_id, field="job_id")
         self.config = config
         self._consumer_factory = consumer_factory
+        self._topic_partition_factory = topic_partition_factory
+        self._source_parallelism = source_parallelism
         self._payload_validator = payload_validator
         self._event_time_strategy = event_time_strategy
         self._logger = logger or logging.getLogger(__name__)
         self._consumer: AsyncKafkaConsumer | None = None
         self._state = OperatorState.CREATED
         self._records_read = 0
+        self._records_replayed = 0
         self._bad_records = 0
         self._watermarks_emitted = 0
         self._partition_event_times: dict[tuple[str, int], _PartitionEventTimeState] = {}
@@ -153,6 +168,14 @@ class KafkaJsonSource:
         self._paused = False
         self._resume_event = asyncio.Event()
         self._resume_event.set()
+        if (
+            isinstance(source_parallelism, bool)
+            or not isinstance(source_parallelism, int)
+            or source_parallelism <= 0
+        ):
+            raise ValueError("source_parallelism 必须是正整数")
+        if context.subtask_index >= source_parallelism:
+            raise ValueError("Source subtask_index 必须小于 source_parallelism")
         if (config.event_time is None) != (event_time_strategy is None):
             raise ValueError("Source event_time 提取器与 execution.event_time 策略必须同时配置")
 
@@ -173,6 +196,8 @@ class KafkaJsonSource:
             "records_read": self._records_read,
             "bad_records": self._bad_records,
         }
+        if self._records_replayed:
+            metrics["records_replayed"] = self._records_replayed
         if self._event_time_strategy is not None:
             metrics["watermarks_emitted"] = self._watermarks_emitted
         return metrics
@@ -182,6 +207,7 @@ class KafkaJsonSource:
         if self._state is not OperatorState.CREATED:
             raise KafkaSourceError(f"无法从 {self._state} 打开 Kafka Source")
         client_id = f"{self.group_id}-{self.context.operator_id}-{self.context.subtask_index}"
+        consumer: AsyncKafkaConsumer | None = None
         try:
             consumer = self._consumer_factory(
                 self.config.topic,
@@ -192,13 +218,56 @@ class KafkaJsonSource:
                 auto_offset_reset="earliest",
             )
             await consumer.start()
+            self._assign_partitions(consumer)
         except Exception as exc:
+            if consumer is not None:
+                with suppress(Exception):
+                    await consumer.stop()
             self._consumer = None
             raise KafkaSourceError(
                 f"启动 Kafka Source 失败 topic={self.config.topic!r}: {exc}"
             ) from exc
         self._consumer = consumer
         self._state = OperatorState.OPEN
+
+    def _assign_partitions(self, consumer: AsyncKafkaConsumer) -> None:
+        """多并发 Source 按 partition 编号静态分片，避免正常部署 rebalance 重放。"""
+        if self._source_parallelism == 1:
+            return
+        partitions_for_topic = getattr(consumer, "partitions_for_topic", None)
+        unsubscribe = getattr(consumer, "unsubscribe", None)
+        assign = getattr(consumer, "assign", None)
+        if not callable(partitions_for_topic) or not callable(unsubscribe) or not callable(assign):
+            raise KafkaSourceError("Kafka consumer 不支持静态 partition 分配")
+        partitions = partitions_for_topic(self.config.topic)
+        if not partitions:
+            raise KafkaSourceError(f"Kafka topic {self.config.topic!r} 没有可分配 partition")
+        selected = sorted(
+            partition
+            for partition in partitions
+            if partition % self._source_parallelism == self.context.subtask_index
+        )
+        if not selected:
+            raise KafkaSourceError(
+                f"Source parallelism={self._source_parallelism} 超过 topic partition 分配能力"
+            )
+        unsubscribe()
+        assigned = [
+            self._topic_partition_factory(self.config.topic, partition) for partition in selected
+        ]
+        assign(assigned)
+        log_event(
+            self._logger,
+            logging.INFO,
+            "source_partitions_assigned",
+            "Kafka Source 已完成确定性 partition 分配",
+            component="kafka_source",
+            job_id=self.job_id,
+            operator_id=self.context.operator_id,
+            subtask=self.context.subtask_index,
+            partitions=selected,
+            source_parallelism=self._source_parallelism,
+        )
 
     async def records(self) -> AsyncIterator[RecordEnvelope]:
         """持续读取消息；skip 策略隔离坏记录，fail 策略立即终止任务。"""
@@ -211,7 +280,8 @@ class KafkaJsonSource:
                     restored = self._refresh_assignment(consumer)
                     if (message.topic, message.partition) in restored:
                         continue
-                    self._record_consumed(message)
+                    if not self._record_consumed(message):
+                        continue
                     record = self._decode(message)
                     if record is not None:
                         self._records_read += 1
@@ -249,7 +319,8 @@ class KafkaJsonSource:
                 restored = self._refresh_assignment(consumer)
                 if (message.topic, message.partition) in restored:
                     continue
-                self._record_consumed(message)
+                if not self._record_consumed(message):
+                    continue
                 record = self._decode(message)
                 if record is not None:
                     self._records_read += 1
@@ -575,15 +646,29 @@ class KafkaJsonSource:
         if state.max_event_time is None or record.event_time > state.max_event_time:
             state.max_event_time = record.event_time
 
-    def _record_consumed(self, message: KafkaMessage) -> None:
+    def _record_consumed(self, message: KafkaMessage) -> bool:
         key = (message.topic, message.partition)
         next_offset = message.offset + 1
         previous = self._next_offsets.get(key)
         if previous is not None and next_offset <= previous:
-            raise KafkaSourceError(
-                f"Kafka partition offset 未严格递增: {key} {next_offset} <= {previous}"
+            self._records_replayed += 1
+            log_event(
+                self._logger,
+                logging.WARNING,
+                "source_replay_skipped",
+                "Kafka Source 跳过当前 Runtime 已处理的重放消息",
+                component="kafka_source",
+                job_id=self.job_id,
+                operator_id=self.context.operator_id,
+                subtask=self.context.subtask_index,
+                topic=message.topic,
+                partition=message.partition,
+                offset=message.offset,
+                next_offset=previous,
             )
+            return False
         self._next_offsets[key] = next_offset
+        return True
 
     def _next_watermark(self) -> RecordEnvelope | None:
         strategy = self._event_time_strategy

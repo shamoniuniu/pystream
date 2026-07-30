@@ -1,0 +1,165 @@
+Obtaining file:///workspace
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: aiohttp<4,>=3.10 in /opt/venv/lib/python3.11/site-packages (from pystream==0.2.0) (3.14.3)
+Requirement already satisfied: aiokafka<1,>=0.11 in /opt/venv/lib/python3.11/site-packages (from pystream==0.2.0) (0.14.0)
+Requirement already satisfied: pydantic<3,>=2.7 in /opt/venv/lib/python3.11/site-packages (from pystream==0.2.0) (2.13.4)
+Requirement already satisfied: PyYAML<7,>=6 in /opt/venv/lib/python3.11/site-packages (from pystream==0.2.0) (6.0.3)
+Collecting pytest<9,>=8 (from pystream==0.2.0)
+  Downloading pytest-8.4.2-py3-none-any.whl.metadata (7.7 kB)
+Collecting pytest-asyncio<1,>=0.24 (from pystream==0.2.0)
+  Downloading pytest_asyncio-0.26.0-py3-none-any.whl.metadata (4.0 kB)
+Collecting pytest-cov<7,>=5 (from pystream==0.2.0)
+  Downloading pytest_cov-6.3.0-py3-none-any.whl.metadata (30 kB)
+Collecting ruff<1,>=0.6 (from pystream==0.2.0)
+  Downloading ruff-0.16.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (26 kB)
+Requirement already satisfied: aiohappyeyeballs>=2.5.0 in /opt/venv/lib/python3.11/site-packages (from aiohttp<4,>=3.10->pystream==0.2.0) (2.7.1)
+Requirement already satisfied: aiosignal>=1.4.0 in /opt/venv/lib/python3.11/site-packages (from aiohttp<4,>=3.10->pystream==0.2.0) (1.4.0)
+Requirement already satisfied: attrs>=17.3.0 in /opt/venv/lib/python3.11/site-packages (from aiohttp<4,>=3.10->pystream==0.2.0) (26.1.0)
+Requirement already satisfied: frozenlist>=1.1.1 in /opt/venv/lib/python3.11/site-packages (from aiohttp<4,>=3.10->pystream==0.2.0) (1.8.0)
+Requirement already satisfied: multidict<7.0,>=4.5 in /opt/venv/lib/python3.11/site-packages (from aiohttp<4,>=3.10->pystream==0.2.0) (6.7.1)
+Requirement already satisfied: propcache>=0.2.0 in /opt/venv/lib/python3.11/site-packages (from aiohttp<4,>=3.10->pystream==0.2.0) (0.5.2)
+Requirement already satisfied: typing_extensions>=4.4 in /opt/venv/lib/python3.11/site-packages (from aiohttp<4,>=3.10->pystream==0.2.0) (4.16.0)
+Requirement already satisfied: yarl<2.0,>=1.17.0 in /opt/venv/lib/python3.11/site-packages (from aiohttp<4,>=3.10->pystream==0.2.0) (1.24.5)
+Requirement already satisfied: async-timeout in /opt/venv/lib/python3.11/site-packages (from aiokafka<1,>=0.11->pystream==0.2.0) (5.0.1)
+Requirement already satisfied: packaging in /opt/venv/lib/python3.11/site-packages (from aiokafka<1,>=0.11->pystream==0.2.0) (26.2)
+Requirement already satisfied: annotated-types>=0.6.0 in /opt/venv/lib/python3.11/site-packages (from pydantic<3,>=2.7->pystream==0.2.0) (0.8.0)
+Requirement already satisfied: pydantic-core==2.46.4 in /opt/venv/lib/python3.11/site-packages (from pydantic<3,>=2.7->pystream==0.2.0) (2.46.4)
+Requirement already satisfied: typing-inspection>=0.4.2 in /opt/venv/lib/python3.11/site-packages (from pydantic<3,>=2.7->pystream==0.2.0) (0.4.2)
+Collecting iniconfig>=1 (from pytest<9,>=8->pystream==0.2.0)
+  Downloading iniconfig-2.3.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting pluggy<2,>=1.5 (from pytest<9,>=8->pystream==0.2.0)
+  Downloading pluggy-1.6.0-py3-none-any.whl.metadata (4.8 kB)
+Collecting pygments>=2.7.2 (from pytest<9,>=8->pystream==0.2.0)
+  Downloading pygments-2.20.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting coverage>=7.5 (from coverage[toml]>=7.5->pytest-cov<7,>=5->pystream==0.2.0)
+  Downloading coverage-7.15.2-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (8.6 kB)
+Requirement already satisfied: idna>=2.0 in /opt/venv/lib/python3.11/site-packages (from yarl<2.0,>=1.17.0->aiohttp<4,>=3.10->pystream==0.2.0) (3.18)
+Downloading pytest-8.4.2-py3-none-any.whl (365 kB)
+Downloading pluggy-1.6.0-py3-none-any.whl (20 kB)
+Downloading pytest_asyncio-0.26.0-py3-none-any.whl (19 kB)
+Downloading pytest_cov-6.3.0-py3-none-any.whl (25 kB)
+Downloading ruff-0.16.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (11.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 11.4/11.4 MB 20.8 MB/s  0:00:00
+Downloading coverage-7.15.2-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (254 kB)
+Downloading iniconfig-2.3.0-py3-none-any.whl (7.5 kB)
+Downloading pygments-2.20.0-py3-none-any.whl (1.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 16.9 MB/s  0:00:00
+Building wheels for collected packages: pystream
+  Building editable for pystream (pyproject.toml): started
+  Building editable for pystream (pyproject.toml): finished with status 'done'
+  Created wheel for pystream: filename=pystream-0.2.0-0.editable-py3-none-any.whl size=1595 sha256=9e4f4d5c80133a3ff0a7eb83851fd130f80e16bdace4ca55316f337a35d6817e
+  Stored in directory: /tmp/pip-ephem-wheel-cache-56hdviea/wheels/e2/2c/68/4c4a53c0aec7bc75cfaa7bb42a2542d1390caa1e3199ccef70
+Successfully built pystream
+Installing collected packages: ruff, pygments, pluggy, iniconfig, coverage, pytest, pytest-cov, pytest-asyncio, pystream
+  Attempting uninstall: pystream
+    Found existing installation: pystream 0.2.0
+    Uninstalling pystream-0.2.0:
+      Successfully uninstalled pystream-0.2.0
+
+Successfully installed coverage-7.15.2 iniconfig-2.3.0 pluggy-1.6.0 pygments-2.20.0 pystream-0.2.0 pytest-8.4.2 pytest-asyncio-0.26.0 pytest-cov-6.3.0 ruff-0.16.0
+============================= test session starts ==============================
+platform linux -- Python 3.11.9, pytest-8.4.2, pluggy-1.6.0
+rootdir: /workspace
+configfile: pyproject.toml
+testpaths: tests
+plugins: cov-6.3.0, asyncio-0.26.0
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 372 items
+
+tests/contract/test_demo_scripts.py ............                         [  3%]
+tests/contract/test_deployment_assets.py .........                       [  5%]
+tests/contract/test_documentation.py .....                               [  6%]
+tests/contract/test_job_api.py ......................................... [ 18%]
+.............................                                            [ 25%]
+tests/integration/test_data_channel.py ......                            [ 27%]
+tests/integration/test_task_runtime.py ............                      [ 30%]
+tests/unit/checkpoint/test_store.py ......                               [ 32%]
+tests/unit/control/test_checkpoint.py ....                               [ 33%]
+tests/unit/control/test_control_artifacts.py ........                    [ 35%]
+tests/unit/control/test_http.py ...                                      [ 36%]
+tests/unit/control/test_manager.py ...................                   [ 41%]
+tests/unit/control/test_models_execution.py ..............               [ 45%]
+tests/unit/control/test_scheduler.py .........                           [ 47%]
+tests/unit/operators/test_connectors.py ................................ [ 56%]
+.....                                                                    [ 57%]
+tests/unit/operators/test_operators.py ............................      [ 65%]
+tests/unit/test_artifact.py ...............................              [ 73%]
+tests/unit/test_cli.py ............                                      [ 76%]
+tests/unit/test_client.py ...........                                    [ 79%]
+tests/unit/test_json_pointer.py .........                                [ 81%]
+tests/unit/test_observability.py ....                                    [ 83%]
+tests/unit/test_protocol.py ...............                              [ 87%]
+tests/unit/test_records.py ....................                          [ 92%]
+tests/unit/test_routing.py .............                                 [ 95%]
+tests/unit/worker/test_worker_http.py ..                                 [ 96%]
+tests/unit/worker/test_worker_manager.py ......                          [ 98%]
+tests/unit/worker/test_worker_models.py .......                          [100%]
+
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.11.9-final-0 ________________
+
+Name                                     Stmts   Miss Branch BrPart  Cover   Missing
+------------------------------------------------------------------------------------
+src/pystream/__init__.py                     2      0      0      0   100%
+src/pystream/__main__.py                     1      1      0      0     0%   6
+src/pystream/api/__init__.py                11      0      0      0   100%
+src/pystream/api/errors.py                  23      0      6      0   100%
+src/pystream/api/graph.py                  201      2     98      1    99%   318, 356
+src/pystream/api/models.py                 178      5     34      3    96%   221, 226-227, 271, 273
+src/pystream/api/parser.py                  50      2      6      0    96%   32-33
+src/pystream/artifact/__init__.py            5      0      0      0   100%
+src/pystream/artifact/bundle.py            237     34     98     24    83%   65, 77, 86, 114, 117, 129, 175, 191, 224, 234-236, 241, 246, 248-249, 268-269, 276, 280, 282, 287, 294, 296, 307, 322, 345, 384, 388, 392, 394, 397-399
+src/pystream/artifact/errors.py              6      0      0      0   100%
+src/pystream/artifact/models.py             80     14     30     14    75%   20, 34, 36, 51, 54, 71, 73, 77, 83, 86, 91, 108, 111, 114
+src/pystream/artifact/udf.py               125      6     26      5    93%   96, 120, 128, 131, 147-148, 185->exit
+src/pystream/checkpoint/__init__.py          4      0      0      0   100%
+src/pystream/checkpoint/codec.py            31      9     14      7    64%   14, 16, 29-30, 36, 46, 48, 50, 53
+src/pystream/checkpoint/models.py           84     17     26     10    72%   20, 27, 33, 37-42, 102, 145, 151-152, 154, 157, 160, 175
+src/pystream/checkpoint/store.py           174     26     80     23    81%   36-37, 43-44, 57, 72, 77, 79, 90, 92, 113, 115, 163, 170, 172, 175, 186, 188, 204, 207, 222, 231, 242, 277, 280, 298->296, 323
+src/pystream/cli.py                        169      6     34      7    94%   152, 154, 216, 219, 233->exit, 240, 249
+src/pystream/client.py                      71     11     12      2    84%   57-65, 156, 168
+src/pystream/common/__init__.py              3      0      0      0   100%
+src/pystream/common/json_pointer.py         48      1     26      1    97%   35
+src/pystream/common/records.py             113      9     36      7    89%   67, 104, 141, 165-166, 171, 174, 177, 180
+src/pystream/control/__init__.py            10      0      0      0   100%
+src/pystream/control/artifacts.py           57      1     14      1    97%   40
+src/pystream/control/checkpoint.py          79     17     16      6    76%   47, 50, 52, 70, 119-120, 131, 154-155, 162-163, 166-167, 172, 181-183
+src/pystream/control/errors.py              11      0      0      0   100%
+src/pystream/control/execution.py           63      1     18      1    98%   110
+src/pystream/control/http.py               170     34     24      9    77%   50, 52, 95, 97, 99, 102-116, 127->131, 136-137, 168, 170, 269, 278-303, 339-340, 342, 349, 362, 364
+src/pystream/control/manager.py            423     45    134     31    85%   70->exit, 171-177, 287, 329, 332, 393->405, 395-403, 405->exit, 417, 421, 425-426, 447, 470, 473, 492, 504, 505->507, 520->525, 567-570, 581, 595, 609, 665, 668->670, 678-683, 692, 701->690, 703->708, 709, 738->745, 749, 769-770, 884, 890
+src/pystream/control/models.py             163      3     30      3    97%   138, 214, 248
+src/pystream/control/ports.py               24      0      0      0   100%
+src/pystream/control/scheduler.py           86      6     22      0    93%   160-165
+src/pystream/observability/__init__.py       2      0      0      0   100%
+src/pystream/observability/logging.py       27      1      6      1    94%   43
+src/pystream/operators/__init__.py           7      0      0      0   100%
+src/pystream/operators/base.py             101     11     16      5    85%   62, 64, 146, 173, 177-185
+src/pystream/operators/clock.py             41      1      6      0    98%   37
+src/pystream/operators/connectors.py       515     65    156     39    84%   97-101, 106-110, 176, 178, 180, 208, 223->226, 241, 244, 251, 282, 303->305, 307-311, 321, 332-337, 340-342, 358, 372, 422-423, 425, 427, 430, 439, 457, 466, 486, 502-503, 509->515, 527, 546, 592, 598->595, 609-610, 620, 676, 688, 721-722, 724, 730, 733-734, 738, 764, 780-781, 813, 836->841, 839-840, 843, 865
+src/pystream/operators/core.py              32      2      8      2    90%   27, 46
+src/pystream/operators/errors.py             9      0      0      0   100%
+src/pystream/operators/window.py           244     27     84     21    85%   42, 58, 105, 107, 109, 140, 208, 225-226, 269, 273, 319, 352, 368, 372, 382, 386, 390, 393, 404, 409, 412-413, 419, 445, 448-449
+src/pystream/runtime/__init__.py             7      0      0      0   100%
+src/pystream/runtime/channel.py            196     41     52     16    75%   58, 60, 62, 115, 122-126, 137, 150, 156-157, 159-160, 165->167, 173-176, 191->199, 195, 199->exit, 207, 209, 219-230, 239-240, 265-271, 303
+src/pystream/runtime/errors.py               5      0      0      0   100%
+src/pystream/runtime/protocol.py           218     33     84     22    80%   84, 90, 114, 122, 125-126, 147, 154, 157, 168, 184, 186, 199, 211, 245, 247, 281-286, 294-295, 326, 331, 333, 350, 352, 355-356, 358, 377
+src/pystream/runtime/routing.py             44      3     16      1    93%   27-28, 84
+src/pystream/runtime/server.py             188     34     64     22    75%   75, 77, 100, 129, 136->139, 142-145, 154, 156, 160, 174->172, 196, 198, 206, 220-221, 226->236, 260-268, 274, 277-281, 295->302, 299-301, 320, 324, 329, 332
+src/pystream/runtime/task.py               681    103    262     77    80%   145->144, 147, 173, 175, 177, 179, 241, 289, 291, 299->301, 303-306, 326-328, 332->336, 343, 346, 351, 369, 371, 375, 391, 395, 429, 432, 452, 472, 475, 486, 488, 495, 510-515, 525->exit, 536, 564, 576, 585, 594, 611, 619, 634, 637, 651, 665, 697-698, 733-735, 739, 741, 746, 760-761, 799, 835, 839, 850, 860, 864, 881, 888, 891, 895, 902, 919, 937, 968-972, 1015-1016, 1028, 1033, 1081, 1083, 1104, 1107, 1110-1111, 1113, 1116, 1120, 1123, 1131, 1149, 1158, 1167, 1177-1178, 1183, 1185, 1188-1189, 1191, 1197, 1214-1215, 1217
+src/pystream/service.py                     69     29      4      0    55%   65-86, 90-120, 125-137
+src/pystream/worker/__init__.py              4      0      0      0   100%
+src/pystream/worker/http.py                243     36     24      8    84%   74, 76, 78, 156->160, 171-177, 254-265, 318-319, 367->exit, 376-383, 399, 412, 421, 431-433, 455-457, 472-474, 575-577, 598, 605-606, 608
+src/pystream/worker/manager.py             196     39     60     13    76%   81, 102, 122, 131, 136, 146, 160, 173->175, 176-200, 217, 247-251, 266, 270, 321-322, 327-328, 338, 346-347, 349, 371->385, 386->393, 402->exit
+src/pystream/worker/models.py               95     13     42     10    82%   122, 127, 137-138, 140, 174, 177-178, 200->222, 236-237, 248, 255->257, 263, 281
+------------------------------------------------------------------------------------
+TOTAL                                     5626    688   1668    392    84%
+Required test coverage of 80% reached. Total coverage: 84.40%
+============================= 372 passed in 24.01s =============================

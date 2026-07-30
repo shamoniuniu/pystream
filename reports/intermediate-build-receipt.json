@@ -1,0 +1,28 @@
+{
+    "schema_version":  1,
+    "scope":  "local-intermediate-final-candidate",
+    "branch":  "feature/intermediate-v0.2",
+    "source_head":  "5c01f4e6fec44dc9d802220421cfe8996eb41a88",
+    "working_tree":  "dirty-content-addressed",
+    "input_manifest_sha1":  "7a444a3d8fafb30cf9e15b81771717809687d8f9",
+    "image_tag":  "pystream:0.2.0",
+    "image_id":  "sha256:6607f69ea1b6f4344eeb9a687931994d9e2794da84d5e911311fa711b3c88ad6",
+    "python_base":  "python:3.11.9-slim-bookworm@sha256:8fb099199b9f2d70342674bd9dbccd3ed03a258f26bbd1d556822c6dfc60c317",
+    "kafka_image":  "apache/kafka:3.9.1@sha256:4ceccc577f03f51f6af8dbfda55194d0d892f4fa7913ffbded567ce3895622ed",
+    "checks":  {
+                   "ruff":  "passed",
+                   "format":  "109 files",
+                   "python311_full_suite":  "372 passed, 84.40%",
+                   "docker_fault_acceptance":  "passed",
+                   "basic_wordcount_compatibility":  "passed",
+                   "kafka_lag":  "0 on both partitions",
+                   "resource_cleanup":  "0",
+                   "image_labels":  "revision and input manifest matched",
+                   "post_review_python311_regression":  "27 passed",
+                   "final_image_smoke":  "python=3.11.9; pystream=0.2.0; checkpoint_timeout_fix=present"
+               },
+    "decision":  "authorized as local final acceptance candidate; no image publication",
+    "rollback":  "source via git revert; v0.1.0 remains immutable",
+    "dependency_resolution":  "online ranged dependencies; not byte-reproducible and not approved for external publication",
+    "created_at":  "2026-07-30T16:16:03.3883056Z"
+}

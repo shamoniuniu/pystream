@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from pystream.artifact import build_job_bundle
+from pystream.checkpoint import CheckpointManifest
 from pystream.control import (
     JobManager,
     JobManagerHttpService,
@@ -35,6 +37,35 @@ class RecordingGateway:
     ) -> None:
         del attempt_id
         self.stops.append((worker.worker_id, task_id))
+
+
+@pytest.mark.asyncio
+async def test_http_手动触发checkpoint返回manifest(tmp_path: Path, monkeypatch) -> None:
+    manager = JobManager(LocalArtifactRepository(tmp_path / "store"), RecordingGateway())
+
+    async def trigger_checkpoint(job_id: str) -> CheckpointManifest:
+        assert job_id == "job-1"
+        return CheckpointManifest(
+            job_id=job_id,
+            checkpoint_id=3,
+            attempt_id=1,
+            created_at=datetime.now(UTC),
+            snapshots=(),
+        )
+
+    monkeypatch.setattr(manager, "trigger_checkpoint", trigger_checkpoint)
+    client = TestClient(TestServer(JobManagerHttpService(manager).create_app()))
+    await client.start_server()
+    try:
+        response = await client.post("/v1/jobs/job-1/checkpoint")
+        document = await response.json()
+
+        assert response.status == 200
+        assert document["job_id"] == "job-1"
+        assert document["checkpoint_id"] == 3
+        assert document["attempt_id"] == 1
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio

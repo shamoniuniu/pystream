@@ -70,18 +70,18 @@
   - [x] max attempts、cancel 优先和状态接口
   - [x] 控制面、Worker、Runtime 恢复测试
 
-- [ ] Task 8: 完成部署和中级 demo
+- [x] Task 8: 完成部署和中级 demo
   - [x] Worker 进程 incarnation 识别与重注册触发恢复
-  - [ ] Compose 共享 checkpoint 卷与 0.2.0 镜像
-  - [ ] event-time/retract 作业与 UDF
-  - [ ] 生产、提交、等待 Checkpoint、故障注入、验证、清理脚本
-  - [ ] 初级 WordCount 兼容回归
-  - [ ] Worker SIGKILL、重启、恢复与无丢失验证
+  - [x] Compose 共享 checkpoint 卷与 0.2.0 镜像
+  - [x] event-time/retract 作业与 UDF
+  - [x] 生产、提交、等待 Checkpoint、故障注入、验证、清理脚本
+  - [x] 初级 WordCount 兼容回归
+  - [x] Worker SIGKILL、重启、恢复与无丢失验证
 
 - [ ] Task 9: 文档、日志和最终验收
-  - [ ] 更新 README/API/架构/模块/部署/测试/排障/roadmap
-  - [ ] 开发日志逐提交完整
-  - [ ] 中级验收报告完整
-  - [ ] Ruff、格式、全量 pytest、覆盖率通过
-  - [ ] Docker E2E、故障注入、清理通过
+  - [x] 更新 README/API/架构/模块/部署/测试/排障/roadmap
+  - [x] 开发日志逐提交完整
+  - [x] 中级验收报告完整
+  - [x] Ruff、格式、全量 pytest、覆盖率通过
+  - [x] Docker E2E、故障注入、清理通过
   - [ ] 功能分支推送，main 和 v0.1.0 未变化

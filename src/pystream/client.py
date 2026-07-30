@@ -106,6 +106,15 @@ class JobManagerClient:
             expected_statuses={200},
         )
 
+    def trigger_checkpoint(self, job_id: str) -> dict[str, object]:
+        """立即触发一次完整 Checkpoint 并返回 manifest。"""
+        return self._json_request(
+            "POST",
+            f"/v1/jobs/{quote(job_id, safe='')}/checkpoint",
+            body=b"",
+            expected_statuses={200},
+        )
+
     def cancel(self, job_id: str) -> dict[str, object]:
         """请求取消作业并返回当前状态。"""
         return self._json_request(

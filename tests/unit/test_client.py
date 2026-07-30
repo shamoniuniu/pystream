@@ -77,6 +77,27 @@ def test_cancel_发送空_post_请求():
     assert transport.requests[0]["body"] == b""
 
 
+def test_trigger_checkpoint_发送空post并编码job_id():
+    transport = FakeTransport(
+        json_response(
+            200,
+            {
+                "job_id": "a/b",
+                "checkpoint_id": 1,
+                "attempt_id": 0,
+            },
+        )
+    )
+    client = JobManagerClient("http://manager", transport=transport)
+
+    result = client.trigger_checkpoint("a/b")
+
+    assert result["checkpoint_id"] == 1
+    assert transport.requests[0]["method"] == "POST"
+    assert transport.requests[0]["url"].endswith("/v1/jobs/a%2Fb/checkpoint")
+    assert transport.requests[0]["body"] == b""
+
+
 def test_http_json_错误包含状态码和服务端详情():
     transport = FakeTransport(json_response(409, {"error": "状态冲突"}))
     client = JobManagerClient("http://manager", transport=transport)

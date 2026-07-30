@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import shutil
+import tomllib
 from pathlib import Path
 
 import yaml
 
+from pystream import __version__
 from pystream.api import Partitioning, load_stream_graph
 from pystream.artifact import UDFKind, UDFLoader, build_job_bundle
 from pystream.service import build_parser
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_intermediate版本身份一致() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load((ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8"))
+
+    assert project["project"]["version"] == "0.2.0"
+    assert __version__ == "0.2.0"
+    assert compose["x-pystream-service"]["image"] == "pystream:0.2.0"
 
 
 def test_wordcount_样例契约和_udf(tmp_path: Path) -> None:
@@ -130,11 +141,15 @@ def test_dockerfile_固定python311并使用非root多阶段镜像() -> None:
     content = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert "PYTHON_VERSION=3.11.9" in content
+    assert (
+        "PYTHON_BASE_DIGEST=sha256:8fb099199b9f2d70342674bd9dbccd3ed03a258f26bbd1d556822c6dfc60c317"
+    ) in content
     assert " AS builder" in content
     assert " AS runtime" in content
     assert "USER 10001:10001" in content
     assert "PYSTREAM_HOME=/opt/pystream" in content
     assert "COPY --from=builder /opt/venv /opt/venv" in content
+    assert "mkdir -p /data/artifacts /data/checkpoints /data/output" in content
     assert "latest" not in content
 
 
@@ -151,8 +166,11 @@ def test_compose_包含固定kafka_jobmanager_三worker和工具容器() -> None
         "tools",
     }
     assert expected <= services.keys()
-    assert services["kafka"]["image"] == "apache/kafka:3.9.1"
-    assert services["kafka-init"]["image"] == "apache/kafka:3.9.1"
+    kafka_image = (
+        "apache/kafka:3.9.1@sha256:4ceccc577f03f51f6af8dbfda55194d0d892f4fa7913ffbded567ce3895622ed"
+    )
+    assert services["kafka"]["image"] == kafka_image
+    assert services["kafka-init"]["image"] == kafka_image
     assert services["kafka"]["environment"]["KAFKA_PROCESS_ROLES"] == "broker,controller"
     assert "pystream-output" in compose["volumes"]
 
@@ -167,10 +185,14 @@ def test_compose_包含固定kafka_jobmanager_三worker和工具容器() -> None
         assert "healthcheck" in worker
         assert worker["deploy"]["resources"]["limits"]["memory"] == "512M"
         assert "pystream-output:/data/output" in worker["volumes"]
+        assert "pystream-checkpoints:/data/checkpoints" in worker["volumes"]
 
     init_command = services["kafka-init"]["command"]
-    assert init_command[init_command.index("--partitions") + 1] == "2"
+    init_script = init_command[-1]
+    assert "words intermediate-words" in init_script
+    assert "--partitions 2" in init_script
     assert services["jobmanager"]["ports"] == ["8080:8080"]
+    assert "pystream-checkpoints:/data/checkpoints" in services["jobmanager"]["volumes"]
     assert services["tools"]["profiles"] == ["tools"]
 
 
@@ -181,9 +203,48 @@ def test_演示脚本齐全并被复制进运行镜像() -> None:
         "wait_for_window.py",
         "verify_wordcount.py",
         "cleanup_wordcount.py",
+        "produce_intermediate.py",
+        "submit_intermediate.py",
+        "wait_for_intermediate.py",
+        "wait_for_checkpoint.py",
+        "inject_worker_failure.py",
+        "verify_intermediate.py",
+        "cleanup_intermediate.py",
     }
     scripts = ROOT / "scripts"
 
     assert names <= {path.name for path in scripts.glob("*.py")}
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY --chown=pystream:pystream scripts /opt/pystream/scripts" in dockerfile
+    failure_injection = (scripts / "inject_worker_failure.py").read_text(encoding="utf-8")
+    normalized_failure_injection = " ".join(failure_injection.split())
+    assert '"docker", "exec"' in normalized_failure_injection
+    assert '"kill -9 $(cat /proc/1/task/1/children)"' in normalized_failure_injection
+    assert '"docker", "kill"' not in normalized_failure_injection
+
+
+def test_中级验收使用可超时的create_start_inspect编排并验证清理() -> None:
+    content = (ROOT / "scripts" / "run_intermediate_acceptance.ps1").read_text(encoding="utf-8")
+
+    assert "System.Diagnostics.Process" in content
+    assert "WaitForExit($TimeoutSeconds * 1000)" in content
+    assert "Initialize-DockerProject" in content
+    assert '"network", "create"' in content
+    assert '"volume", "create"' in content
+    assert "intermediate-docker-resources.tsv" in content
+    assert "Start-DockerContainers" in content
+    assert "docker_start_cli_retry=" in content
+    assert "docker start timed out after 3 attempts" in content
+    normalized_content = " ".join(content.split())
+    assert '"--checkpoint-interval" "1h"' in normalized_content
+    assert normalized_content.count('"--trigger"') == 2
+    assert "Invoke-Docker start" not in content
+    assert "Wait-ContainerExit" in content
+    assert "{{.State.Status}} {{.State.ExitCode}}" in content
+    assert '@("wait",' not in content
+    assert "Assert-ComposeProjectRemoved" in content
+    assert "Invoke-Docker compose" not in content
+    assert " run --rm " not in content
+    assert "network ls" not in content
+    assert "volume ls" not in content
+    assert "ps -aq" not in content

@@ -1,79 +1,78 @@
 # 阶段语义与后续路线
 
-本文用于区分“当前已实现”与“规划能力”，防止接口预留被误解为一致性承诺。
-权威范围来自 `.trae/specs/build-pystream-engine/spec.md`。
+本文区分已实现能力和未来承诺。中级范围权威来源为
+`.trae/specs/build-pystream-intermediate/spec.md`。
 
-## 第一阶段：已实现
+## v0.1.0 初级基线
 
-- 严格 YAML DAG、UDF 作业包、并发度和 slot 调度。
-- Kafka JSON Source、Map、KeyBy、Reduce 处理时间滚动窗口、File Sink。
-- FORWARD、REBALANCE、跨节点 HASH Shuffle。
-- 有界队列和 TCP drain 背压。
-- Worker 心跳、任务/连接失败上报、整作业 fail-fast。
-- 结构化日志、健康/状态端点、离线自动化测试。
+- YAML DAG、UDF 作业包、slot 调度。
+- Kafka Source、Map、KeyBy、处理时间 Reduce、File Sink。
+- FORWARD/REBALANCE/跨 Worker HASH。
+- 有界队列和 fail-fast。
 
-### 当前交付语义
+初级基线由 Git tag `v0.1.0` 固定。
 
-第一阶段发生故障时：
+## v0.2.0 中级：已实现
 
-1. 失败任务报告 JobManager。
-2. JobManager 停止其他任务、释放 slots。
-3. 作业进入 `FAILED`。
-4. 系统不自动重启任务、不恢复内存状态、不回退到一致 Kafka offset。
+- RFC3339 事件时间、有限乱序 Watermark、多输入 min/idle。
+- 事件时间滚动窗口和迟到记录丢弃。
+- Changelog/Retract 二级聚合。
+- DATA/CONTROL 协议 v2 与 attempt fencing。
+- 停流协调 Checkpoint。
+- Kafka next offset、Watermark 和 Reduce 状态 snapshot/restore。
+- 版本化 manifest-last、损坏回退。
+- Worker incarnation、自动拉起、整作业重调度。
+- At-least-once：输入无丢失，追加 Sink 允许故障边界重复。
 
-Kafka Consumer 关闭自动提交并不等于 At-least-once。File Sink 每条记录追加并
-flush 也不等于 Exactly-once。重新提交可能重放输入并产生重复文件行。
+### 已实证语义
 
-## 已预留但未启用的接口
+受控 Worker 业务进程 SIGKILL 后：
 
-| 接口/字段 | 当前行为 | 未来用途 |
-|---|---|---|
-| `RecordEnvelope.event_time` | null | 事件时间 |
-| `MessageType.WATERMARK` | 不作为当前数据语义处理 | Watermark |
-| `MessageType.BARRIER` | 不作为当前数据语义处理 | Checkpoint 对齐 |
-| `change_kind` | 固定 INSERT | Retract changelog |
-| `checkpoint_id` | null | 快照归属 |
-| `snapshot_state/restore_state` | 抛 UnsupportedStateOperation | 算子状态快照/恢复 |
-| Sink begin/pre-commit/commit/abort | 抛 UnsupportedStateOperation | 事务文件提交 |
+1. 容器 RestartCount 增加并以新 incarnation 注册。
+2. 作业 attempt/recovery attempts 增加。
+3. 全部 Task 从同一完整 Checkpoint 恢复。
+4. Kafka 两 partitions 最终 lag=0。
+5. Checkpoint 前 baseline 精确一次。
+6. Checkpoint 后 recovery 窗口发生允许的重复。
 
-预留枚举或方法不代表功能通过测试。只有后续 change-id 的任务与 checklist 全部
-完成后，文档才能将其标记为已实现。
+因此当前可以声明 At-least-once，不能声明 Exactly-once。
 
-## 第二阶段：规划
+## 明确未实现
 
-独立 change-id 将实现：
+| 能力 | 当前边界 |
+|---|---|
+| 持续流 barrier 对齐 | 当前 Checkpoint 会 pause Source 并 drain 全图 |
+| 事务 Sink | File Sink 普通追加和 flush |
+| Exactly-once | 故障恢复可产生重复可见行 |
+| JobManager HA | 单实例控制面 |
+| 多副本 Checkpoint Store | 单共享命名卷 |
+| 安全多租户 | 无认证、TLS、UDF 沙箱或租户隔离 |
 
-- 从配置字段提取事件时间。
-- 有限乱序 Watermark：`max_event_time - max_out_of_orderness`。
-- 事件时间滚动窗口和迟到记录策略。
-- INSERT/UPDATE_BEFORE/UPDATE_AFTER/DELETE Retract。
-- 周期状态快照和 Kafka offset 快照。
-- Worker 失联后的自动重新部署、连接重建和状态恢复。
-- At-least-once：不丢失，但允许故障边界重放和重复输出。
+## 后续候选
 
-第二阶段开始前必须先验证现有 RecordEnvelope、Channel、Operator 生命周期和
-Sink 扩展边界的兼容性。
+### v0.3 一致性与可用性
 
-## 第三阶段：规划
+- 持续流 barrier 对齐和对齐超时。
+- 事务/幂等 Sink，按 Checkpoint 预提交与原子发布。
+- 无故障与故障输出逐记录一致的 Exactly-once 证明。
+- Checkpoint Store 抽象到具备冗余的持久存储。
+- JobManager 元数据恢复或 HA 设计。
 
-独立 change-id 将实现：
+### 运维增强
 
-- 对齐 Checkpoint Barrier。
-- Kafka offset 与算子状态的一致快照。
-- 最近完成 Checkpoint 恢复。
-- File Sink 每 Checkpoint 临时文件、预提交、原子提交和 abort 清理。
-- 故障注入下与无故障基准逐记录一致的端到端 Exactly-once 证明。
-
-只有系统内状态不重复而 File Sink 仍重复，不能称为端到端 Exactly-once。
+- 固定 Python 依赖 lock 和离线 wheelhouse，使镜像构建可复现。
+- 指标导出、SLO 和恢复时间趋势。
+- Checkpoint 暂停时间、状态大小和背压容量基准。
+- 认证、TLS、secret 管理与 UDF 隔离。
 
 ## 能力声明门槛
 
 | 声明 | 必需证据 |
 |---|---|
-| 基础分布式 | 多 Worker 状态、跨 Worker 通道、正确 WordCount |
-| At-least-once | Worker 故障后自动恢复，固定输入无丢失，允许重复 |
-| 系统内 Exactly-once | 状态与 offset 一致恢复，逻辑状态无重复生效 |
-| 端到端 Exactly-once | 事务 Sink，最终可见输出无丢失无重复 |
+| 基础分布式 | 多 Worker、跨 Worker HASH、正确 WordCount |
+| At-least-once | Worker 故障恢复、统一恢复点、lag=0、允许重复 |
+| 系统内 Exactly-once | 状态与 offset 一致恢复，逻辑状态不重复生效 |
+| 端到端 Exactly-once | 事务 Sink，最终输出无丢失无重复 |
 
-每个阶段上线后必须同步更新 README、架构、API、部署、测试和排障文档，并将本文件
-相应能力从 planned 改为 implemented。
+接口预留、枚举存在或单元测试通过都不足以升级能力声明；必须有完整运行证据并同步
+更新 README、API、架构、部署、测试和排障文档。

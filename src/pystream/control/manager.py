@@ -297,22 +297,20 @@ class JobManager:
 
         job.transition(JobStatus.DEPLOYING)
         try:
-            for task in execution_graph.deployment_order():
-                task.transition(TaskStatus.DEPLOYING)
-                worker = self.registry.get(task.worker_id or "")
-                await self.worker_gateway.deploy_task(
-                    worker,
-                    self._deployment(run, task),
-                )
-                task.transition(TaskStatus.RUNNING)
-                run.deployed_task_ids.append(task.task_id)
+            await self._deploy_run_tasks(run)
         except Exception as exc:
+            failed_task = next(
+                (
+                    candidate
+                    for candidate in execution_graph.deployment_order()
+                    if candidate.status is TaskStatus.FAILED
+                ),
+                None,
+            )
             if run.checkpoint_interval is not None:
-                if task.status not in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
-                    task.transition(TaskStatus.FAILED, str(exc))
                 await self._request_recovery(run, f"部署失败: {exc}")
                 return job
-            await self._fail_run(run, f"部署失败: {exc}", failed_task=task)
+            await self._fail_run(run, f"部署失败: {exc}", failed_task=failed_task)
             raise DeploymentError(f"作业 {resolved_job_id} 部署失败并已回滚: {exc}") from exc
 
         job.transition(JobStatus.RUNNING)
@@ -489,15 +487,7 @@ class JobManager:
                 try:
                     self.scheduler.schedule(run.execution_graph, self.registry)
                     run.job.transition(JobStatus.DEPLOYING, run.last_failure)
-                    for task in run.execution_graph.deployment_order():
-                        task.transition(TaskStatus.DEPLOYING)
-                        worker = self.registry.get(task.worker_id or "")
-                        await self.worker_gateway.deploy_task(
-                            worker,
-                            self._deployment(run, task),
-                        )
-                        task.transition(TaskStatus.RUNNING)
-                        run.deployed_task_ids.append(task.task_id)
+                    await self._deploy_run_tasks(run)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -548,6 +538,52 @@ class JobManager:
         finally:
             if run.recovery_task is asyncio.current_task():
                 run.recovery_task = None
+
+    async def _deploy_run_tasks(self, run: JobRun) -> None:
+        """保持下游优先，同一 Source 的 subtasks 并发加入消费组。"""
+        ordered = run.execution_graph.deployment_order()
+        index = 0
+        while index < len(ordered):
+            task = ordered[index]
+            if task.operator_type is not OperatorType.SOURCE:
+                await self._deploy_task(run, task)
+                index += 1
+                continue
+            source_tasks: list[TaskInstance] = []
+            operator_id = task.operator_id
+            while (
+                index < len(ordered)
+                and ordered[index].operator_type is OperatorType.SOURCE
+                and ordered[index].operator_id == operator_id
+            ):
+                source_tasks.append(ordered[index])
+                index += 1
+            results = await asyncio.gather(
+                *(self._deploy_task(run, source_task) for source_task in source_tasks),
+                return_exceptions=True,
+            )
+            failures = [result for result in results if isinstance(result, BaseException)]
+            if failures:
+                first = failures[0]
+                if isinstance(first, asyncio.CancelledError):
+                    raise first
+                raise first
+
+    async def _deploy_task(self, run: JobRun, task: TaskInstance) -> None:
+        task.transition(TaskStatus.DEPLOYING)
+        worker = self.registry.get(task.worker_id or "")
+        try:
+            await self.worker_gateway.deploy_task(
+                worker,
+                self._deployment(run, task),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            task.transition(TaskStatus.FAILED, str(exc))
+            raise
+        task.transition(TaskStatus.RUNNING)
+        run.deployed_task_ids.append(task.task_id)
 
     def _deployment(self, run: JobRun, task: TaskInstance) -> TaskDeployment:
         if run.artifact is None:  # pragma: no cover - submit 顺序保证

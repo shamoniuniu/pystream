@@ -1,4 +1,7 @@
-# Docker 验收记录
+# Docker 验收记录（v0.1.0 历史基线）
+
+> 本文件保留初级阶段历史证据。当前 0.2.0 中级验收见
+> `reports/intermediate-acceptance.md`，不得用本文件判断当前恢复能力。
 
 ## 验收结论
 

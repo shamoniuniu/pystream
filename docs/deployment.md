@@ -1,59 +1,118 @@
-# Docker 部署与 WordCount 验证
+# Docker 部署与中级验收
 
-本文面向课程演示和验收执行者。部署拓扑的权威来源是
-`deploy/compose.yaml`；脚本行为的权威来源是 `scripts/`。
+部署资产权威来源为 `Dockerfile`、`deploy/compose.yaml` 和
+`scripts/run_intermediate_acceptance.ps1`。
 
-> 验证状态：Compose、镜像和脚本已通过静态契约测试；2026-07-26 当前开发机
-> 没有 `docker` 命令，因此多容器运行结果仍待在安装 Docker 的机器验证。
+> Last verified: 2026-07-30，Docker Engine 29.6.2，Python 3.11.9，
+> `pystream:0.2.0`。初级兼容与中级故障恢复 E2E 均通过。
 
-## 前置条件
+## 拓扑与资源
 
-- Docker Desktop，启用 Linux containers。
-- Docker Compose v2，即 `docker compose`。
-- 建议至少 4 CPU、4 GiB 可用内存。
-- 主机端口 8080 未被占用。
+- Kafka 3.9.1：单 Broker KRaft，`words` 和 `intermediate-words` 各 2 partitions。
+- JobManager：`http://localhost:8080`。
+- Worker 1/2/3：每个 4 slots，共 12 slots。
+- 共享卷：artifacts、checkpoints、output、Kafka 数据。
+- Worker 独立 work 卷。
 
-确认：
+JobManager/Worker 使用 UID/GID 10001、只读根文件系统、`cap_drop: ALL` 和
+`no-new-privileges`。镜像预创建并授权 `/data/checkpoints`，使非 root Worker
+可以写共享快照。
+
+## 标准验收
+
+本机 Docker Compose 插件在长时间验收中可能挂起，因此标准脚本使用原生 Docker
+命令创建与清理固定资源，并用
+`.pystream/intermediate-docker-resources.tsv` 记录资源。
 
 ```powershell
-docker version
-docker compose version
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File scripts\run_intermediate_acceptance.ps1 `
+  -PythonCommand .\.venv\Scripts\python.exe
 ```
 
-## 启动集群
+可用参数：
 
-从仓库根目录执行：
+```text
+-KeepEnvironment
+-LogPath reports/intermediate-acceptance.log
+-RuntimeLogPath reports/intermediate-runtime.log
+-EvidencePath reports/intermediate-failure-evidence.json
+```
+
+默认流程：
+
+1. 精确删除 ledger 中旧资源并确认资源为 0。
+2. 创建 network、7 个 volumes 和 6 个长期/初始化容器。
+3. 验证 Kafka、JobManager、3 Worker healthy。
+4. 运行初级 WordCount，验证 `apple=2, pie=1` 和跨 Worker HASH。
+5. 运行中级 event-time/retract baseline。
+6. 显式触发 Checkpoint 1。
+7. 写入 recovery 窗口并等待追加 Sink 输出。
+8. 在承载状态算子的 Worker 内执行：
+
+   ```sh
+   kill -9 $(cat /proc/1/task/1/children)
+   ```
+
+   它终止 tini 的业务子进程，使 `restart: unless-stopped` 自动拉起容器。
+9. 验证 RestartCount、StartedAt、incarnation、recovery attempts、attempt 和统一
+   restored checkpoint。
+10. 显式触发恢复后 Checkpoint 2。
+11. 验证 baseline 精确一次、recovery 窗口允许重复、Kafka lag=0、无输入丢失。
+12. 取消作业并删除所有容器、网络和卷。
+
+成功标记：
+
+```text
+intermediate_acceptance=passed
+compose_project_resources=0
+```
+
+## 验收专用 Checkpoint 控制
+
+示例默认周期仍为 `10s`。验收提交工具在临时作业副本中将周期覆盖为 `1h`，并通过
+`POST /v1/jobs/{job_id}/checkpoint` 在精确边界触发 Checkpoint。这样故障必定位于
+Checkpoint 1 之后、Checkpoint 2 之前，不依赖 Docker CLI 速度。
+
+该覆盖不会修改 `examples/intermediate/job.yaml`。
+
+## At-least-once 预期
+
+baseline 输出：
+
+```text
+2026/07/29T00:00:05,1,1
+2026/07/29T00:00:05,2,1
+```
+
+recovery 输出在故障恢复后各出现两次，其中一次是允许的追加 Sink 重放：
+
+```text
+2026/07/29T00:00:10,1,1
+2026/07/29T00:00:10,2,2
+```
+
+Kafka 最终：
+
+```text
+partition 0: committed=6, end=6, lag=0
+partition 1: committed=4, end=4, lag=0
+```
+
+这证明输入无丢失且故障边界允许重复，不证明 Exactly-once。
+
+## Compose 手工启动
+
+Compose 仍可用于日常观察：
 
 ```powershell
 docker compose -f deploy/compose.yaml up -d --build
 docker compose -f deploy/compose.yaml ps
-```
-
-预期服务：
-
-- `kafka`：单 Broker KRaft，内部端口 9092。
-- `kafka-init`：创建 2 分区 `words` topic 后退出 0。
-- `jobmanager`：主机 `http://localhost:8080`。
-- `worker-1/2/3`：每个 4 slots，内部控制端口 8081、数据端口 9000。
-
-等待所有长期服务显示 healthy：
-
-```powershell
-docker compose -f deploy/compose.yaml ps
-```
-
-检查控制面：
-
-```powershell
 Invoke-RestMethod http://localhost:8080/health
 Invoke-RestMethod http://localhost:8080/v1/workers
 ```
 
-应有 3 个 healthy Worker 和 12 个总 slots。
-
-## 执行 WordCount
-
-`tools` 使用同一镜像和输出卷。按顺序执行：
+初级工具示例：
 
 ```powershell
 docker compose -f deploy/compose.yaml --profile tools run --rm tools scripts/produce_wordcount.py
@@ -62,107 +121,27 @@ docker compose -f deploy/compose.yaml --profile tools run --rm tools scripts/wai
 docker compose -f deploy/compose.yaml --profile tools run --rm tools scripts/verify_wordcount.py
 ```
 
-步骤含义：
-
-1. `produce` 删除并重建 `words` topic，写入 APPLE、pie、apple 三条 JSON。
-2. `submit` 等待 3 Worker，打包 `examples/wordcount` 并提交。
-3. `wait` 等待 10 秒处理时间窗口产生 CSV。
-4. `verify` 检查作业仍为 RUNNING、任务至少跨 2 Worker、CSV 汇总为
-   `apple=2, pie=1`，并打印 JSON 证据。
-
-输出时间由实际到达窗口决定，行顺序不固定。文件位于命名卷中的：
-
-```text
-/data/output/<job_id>/output/part-00000.csv
-```
-
-## 查看状态与 Shuffle 证据
-
-最近 job_id 写入输出卷 `.last_wordcount_job_id`。提交脚本也会打印 job_id。
-
-```powershell
-docker compose -f deploy/compose.yaml --profile tools run --rm tools `
-  -m pystream status <job_id> --jobmanager-url http://jobmanager:8080
-
-docker compose -f deploy/compose.yaml logs jobmanager worker-1 worker-2 worker-3
-```
-
-验收证据：
-
-- 状态输出中 Source、Map、KeyBy、Reduce、Sink 物理任务分布到至少 2 Worker。
-- `by_word -> totals` 的逻辑边在 `pystream validate` 中显示 `hash`。
-- Worker 日志存在 `connection_opened`，其 upstream/downstream task 属于不同
-  Worker 时证明跨节点通道。
-- Worker `/tasks` 可查看记录数、批次数和队列指标。
-
-## 清理作业
-
-取消最近作业并删除其输出：
-
-```powershell
-docker compose -f deploy/compose.yaml --profile tools run --rm tools scripts/cleanup_wordcount.py
-```
-
-停止容器，保留卷：
+手工停止：
 
 ```powershell
 docker compose -f deploy/compose.yaml down
-```
-
-停止并删除 Kafka、制品、输出和 Worker 工作卷：
-
-```powershell
 docker compose -f deploy/compose.yaml down -v
 ```
 
-`down -v` 会删除演示数据，不可恢复。
+`down -v` 删除 Kafka、Checkpoint 和输出证据，不可恢复。
 
-## 重复演示
+## 运行证据
 
-每轮都先运行 `produce_wordcount.py`。它重建 topic，避免旧消息污染结果。若希望
-保留 topic，使用 `--keep-topic`，但此时验证结果会包含历史输入，不适合作为
-标准验收。
+- `reports/intermediate-acceptance.log`：完整主流程。
+- `reports/intermediate-runtime.log`：JobManager/Worker JSON 日志。
+- `reports/intermediate-failure-evidence.json`：RestartCount、incarnation、attempt、
+  恢复点和状态 trace。
+- `reports/intermediate-acceptance.md`：验收摘要。
 
-## 故障行为验证
+## 运行限制
 
-第一阶段只验证 fail-fast，不验证恢复：
-
-```powershell
-docker compose -f deploy/compose.yaml stop worker-2
-Start-Sleep -Seconds 20
-Invoke-RestMethod http://localhost:8080/v1/jobs/<job_id>
-```
-
-预期：
-
-- JobManager 健康端点仍可访问。
-- 使用 worker-2 的运行作业进入 `FAILED`。
-- 其余任务被停止，slot 被释放。
-- 作业不会自动重启，CSV 也不具备去重保证。
-
-恢复演示环境：
-
-```powershell
-docker compose -f deploy/compose.yaml start worker-2
-```
-
-重新提交前先执行清理和数据重置。
-
-## 验收记录
-
-完成实机验证后记录以下内容：
-
-```text
-日期:
-操作系统:
-Docker Client/Server:
-Docker Compose:
-镜像摘要:
-健康服务:
-job_id:
-参与 Worker:
-输出行:
-故障测试结果:
-```
-
-若任何命令与实际资产不一致，应先修正文档或脚本，不得只在验收现场口头补充。
+- Checkpoint 会暂停 Source 并 drain 全图；大状态或慢 Sink 会延长暂停。
+- checkpoint 命名卷允许跨 Worker 恢复，但共享卷和单 JobManager 都是单故障域。
+- `restart: unless-stopped` 不会把 `docker kill` 视为自动恢复场景，因此标准故障
+  注入杀容器内业务子进程。
+- Docker CLI 可能在请求已生效后超时；脚本通过 inspect 验证真实状态并有限重试。

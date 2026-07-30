@@ -1,173 +1,150 @@
 # 故障排查
 
-本文面向部署和演示执行者。先确认故障层级，再查看健康端点、任务状态和 JSON
-日志；不要在未定位原因前反复重启并覆盖证据。
+先保留状态和日志，再重启。标准证据位于 `reports/intermediate-*.log/json`。
 
 ## 最短诊断路径
 
 ```powershell
-docker compose -f deploy/compose.yaml ps
 Invoke-RestMethod http://localhost:8080/health
 Invoke-RestMethod http://localhost:8080/v1/workers
 Invoke-RestMethod http://localhost:8080/v1/jobs/<job_id>
-docker compose -f deploy/compose.yaml logs --since 10m jobmanager worker-1 worker-2 worker-3
+docker logs pystream-jobmanager-1
+docker logs pystream-worker-1-1
 ```
 
-每行服务日志是 JSON，稳定定位字段为：
+日志稳定字段：
 
 ```text
 timestamp level component job_id operator_id subtask worker_id event
 ```
 
-建议先按 `job_id`，再按 `event` 或 `operator_id/subtask` 过滤。
+## Docker 命令挂起
 
-## 服务无法启动
+症状：`docker start/create/inspect/logs` 长时间无输出。
 
-### `docker` 不存在
+- 不并行发起更多 Docker 枚举命令。
+- 标准验收脚本为每个原生命令设置硬超时。
+- `start` 超时后 inspect：目标仍为 `created` 才重试；已是 running/exited 则继续。
+- create 成功后立即写 resource ledger，失败时只删除已知资源。
+- 最终必须出现 `compose_project_resources=0`。
 
-症状：PowerShell 报 `docker is not recognized`。
+Compose 插件挂起时使用 `scripts/run_intermediate_acceptance.ps1`，不要改用无界
+`docker ps -aq`、network/volume 全量枚举。
 
-处理：安装并启动 Docker Desktop，启用 Linux containers，重新打开终端后运行
-`docker version` 和 `docker compose version`。无 Docker 时只能运行离线测试，
-不能完成多容器验收。
+## 服务或提交失败
 
-### JobManager 不健康
+### JobManager/Worker 不健康
 
-```powershell
-docker compose -f deploy/compose.yaml logs jobmanager
-docker compose -f deploy/compose.yaml port jobmanager 8080
-```
+检查：
 
-检查主机 8080 端口冲突、制品卷写权限和 Python 启动错误。
+- 主机 8080 是否冲突。
+- checkpoint/artifact/output 卷是否可写。
+- Worker `/health` 的 `heartbeat_error` 和 runtime errors。
+- Worker 是否以 UID/GID 10001 运行。
 
-### Worker 显示 degraded
-
-访问 Worker 容器内 `/health`，重点查看：
-
-- `heartbeat_error`：最近一次 JobManager 心跳错误。
-- `data_plane.active_connections`：当前数据连接。
-- `runtime.errors`：本地任务累计错误。
-
-Worker 会继续尝试心跳；超过 JobManager 心跳超时时，运行作业会失败。
-
-## 提交失败
-
-### YAML 校验失败
-
-```powershell
-.\.venv\Scripts\python -m pystream validate examples/wordcount/job.yaml
-```
-
-错误会包含 `operators[3].window` 等字段路径。常见原因：
-
-- 未知字段或拼写错误。
-- Source 有上游、Sink 有下游。
-- 图存在环或引用不存在的算子。
-- Reduce 的任一上游路径未经过 KeyBy。
-- 算子 UDF、connector 或 window 与 type 不匹配。
-
-### 制品被拒绝
-
-常见原因：SHA-256 不匹配、ZIP 损坏、缺少 `job.yaml`、路径穿越、符号链接、
-文件数量/大小超限。重新使用 `pystream package` 构建，不要手工修改 ZIP。
+`PermissionError: /data/checkpoints` 表示镜像没有为非 root 用户初始化挂载点权限，
+必须重建包含 `/data/checkpoints` chown 的镜像。
 
 ### 资源不足
 
-JobManager 返回 HTTP 409 并说明 required/available slots。WordCount 需要 10 个
-物理任务，默认 3 Worker 共 12 slots。检查：
+状态 API 返回 required/available slots。中级示例有 12 个物理任务，默认集群正好
+提供 12 slots；任一 Worker 未注册都会阻止整图部署。
+
+### YAML/制品拒绝
 
 ```powershell
-Invoke-RestMethod http://localhost:8080/v1/workers
+.\.venv\Scripts\python -m pystream validate examples/intermediate/job.yaml
 ```
 
-不要只增加 Source 并发度；所有算子并发度之和必须不超过健康 slots。
+检查未知字段、Reduce keyed 输入、event-time execution、retract UDF、ZIP 摘要、
+路径穿越和符号链接。
 
-## 作业进入 FAILED
+## 事件时间无输出
 
-查询状态：
+1. 检查 Source `records_read`、partition assignment 和 event time 解析。
+2. 检查 `current_watermark` 与每输入 idle/active 状态。
+3. 确认两 partitions 都有推进 Watermark 的 clock 记录。
+4. 检查 `late_record_dropped`；`event_time <= watermark` 不会进入窗口。
+5. 检查 Reduce active windows 和 `window_triggered`。
 
-```powershell
-.\.venv\Scripts\python -m pystream status <job_id> --json
-```
+多输入 Watermark 取活跃输入最小值，不是最大值。
 
-定位首个 `status=FAILED` 的 task 和 `error`。
+## 二级聚合错误或重复
 
-### `task_failed`
+- baseline 出现重复：优先检查 Source 是否发生动态 group rebalance；多并发必须使用
+  确定性 manual partition assignment。
+- count distribution 错误：检查 UPDATE_BEFORE/UPDATE_AFTER 顺序和 retract UDF。
+- baseline 只能出现一次；recovery 窗口在 At-least-once 故障边界允许重复。
+- 行顺序不稳定，验证必须比较多重集。
 
-表示 UDF、算子、Source、Sink 或运行循环异常。日志中有 job/operator/subtask 和
-异常文本。若是 UDF，先在独立 Python 测试中验证输入、返回值和同步签名。
+## Checkpoint 失败
 
-### `connection_failed`
-
-表示 HELLO、协议帧、异常 EOF 或远端连接错误。检查：
-
-- upstream/downstream task 所在 Worker 是否健康。
-- 9000 内部端口是否被 Compose 网络阻断。
-- 两端 job_id/task_id 是否来自同一物理图。
-- 是否有 Worker 在运行中被停止。
-
-第一阶段不会重连；此事件使作业失败是预期行为。
-
-### `heartbeat_failed`
-
-Worker 无法联系 JobManager。检查 Compose DNS、JobManager 健康和 8080 端口。
-短暂错误会重试；超时后作业失败。
-
-### `bad_record_skipped`
-
-仅在 `bad_record_policy=skip` 出现。日志包含 topic、partition、offset 和错误。
-修复输入生产者；不要把跳过记录计入正确性结果。
-
-## 窗口没有输出
-
-1. 确认作业仍为 RUNNING。
-2. 检查 Source `records_read`、Task `records_in/out` 是否增长。
-3. 检查 Reduce `operator_metrics.state_entries/active_windows`。
-4. 等待完整处理时间窗口结束；示例为 10 秒，默认配置为 300 秒。
-5. 检查 `window_triggered` 事件和 `emitted_records`。
-6. 检查 Sink `operator_metrics.records_written` 和输出卷。
-
-处理时间以 Worker Clock 为准，不读取消息中的事件时间。
-
-## 结果错误或重复
-
-- APPLE 和 apple 未合并：检查 Map UDF 是否转小写，KeyBy 是否返回 `word`。
-- 同 key 分散：检查边是否为 HASH，并确认 UDF 返回稳定 JSON key。
-- 历史结果混入：先运行 producer 重建 topic，并清理旧作业输出。
-- 故障后重复：第一阶段 File Sink 追加写且无 Checkpoint/事务，这是已知限制；
-  清理输出并重新执行完整演示。
-- 行顺序不同：跨 key 没有全局顺序，按 `(window_end, word)` 比较。
-
-## 背压定位
-
-Worker `/tasks` 中查看：
+状态字段：
 
 ```text
-input_queue_depth / input_queue_capacity
-output_queue_depth / output_queue_capacity
-max_output_queue_depth
-batches_out
-records_in / records_out
+checkpoint.next_id
+checkpoint.last_completed_id
+checkpoint.consecutive_failures
 ```
 
-队列接近容量且下游记录数增长缓慢表示背压正在传播。容量必须保持有界；不要通过
-无限增大队列掩盖慢 Sink 或不可达下游。
+检查顺序：
+
+1. Source 是否 pause 并广播 DRAIN。
+2. 所有输入是否收齐同一 checkpoint/attempt DRAIN。
+3. snapshot SHA、大小、schema 和 task set 是否通过。
+4. manifest 是否最后原子写入。
+5. Source 是否只在 manifest 成功后 commit/resume。
+
+损坏高版本 manifest 应被忽略并回退前一完整版本。连续失败达到配置阈值后进入恢复。
+
+显式触发：
+
+```powershell
+Invoke-RestMethod -Method Post `
+  http://localhost:8080/v1/jobs/<job_id>/checkpoint
+```
+
+Checkpoint 是停流操作；慢 Sink、大状态或 Docker I/O 延迟会增加暂停时间。
+
+## Worker SIGKILL 后未恢复
+
+不要使用：
+
+```powershell
+docker kill --signal SIGKILL pystream-worker-1-1
+```
+
+Docker 将其视为人工停止，`restart: unless-stopped` 不会自动拉起。标准注入为：
+
+```powershell
+docker exec pystream-worker-1-1 /bin/sh -c `
+  "kill -9 `$(cat /proc/1/task/1/children)"
+```
+
+应验证：
+
+- RestartCount 增加、StartedAt 改变。
+- incarnation 改变。
+- `recovery.attempts` 增加；不要求轮询必然采到短暂 RECOVERING。
+- 最终作业 RUNNING，所有 Task attempt 一致、恢复点一致。
+
+新 Worker 注册后端口可能尚未完全 ready，首次恢复部署可失败并进入下一 attempt；
+只要未耗尽 `max_attempts` 且最终一致，即为正常重试路径。
+
+## Kafka lag 验证失败
+
+lag 验证分离两个 consumer：
+
+- 无 group 的 metadata consumer 跟踪 topic 并读取 partitions/end offsets。
+- 无订阅的 group consumer 只读取 committed offsets，避免加入业务组触发 rebalance。
+
+`Topic ... not found in cluster metadata` 在 broker 刚启动时可能瞬态出现；验证脚本
+有 30 秒有界 metadata 刷新。超时后仍为空才判失败。
 
 ## 清理失败
 
-先用 CLI 或脚本取消作业，再停止 Compose。若只需保留证据：
+标准脚本只删除 ledger 中固定容器、network 和 volumes。若进程中断，重新运行脚本
+会先读取 ledger 清理。不要删除不属于 `pystream` 的 Docker 资源。
 
-```powershell
-docker compose -f deploy/compose.yaml down
-```
-
-只有确认不再需要 Kafka/制品/输出后才执行：
-
-```powershell
-docker compose -f deploy/compose.yaml down -v
-```
-
-## 需要保留的证据
-
-出现新故障时记录时间、job_id、task_id、Worker、操作步骤、状态 JSON、相关日志、
-输入和输出文件。若形成新的稳定排障步骤，应在同一修复变更中更新本文。
+出现新故障时保留时间、job_id、attempt、checkpoint、Worker/incarnation、状态
+JSON、运行日志和输入/输出多重集。

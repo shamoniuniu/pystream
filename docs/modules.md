@@ -32,54 +32,55 @@
 - 依赖：仅标准库；禁止反向依赖其他 PyStream 业务模块。
 - 失败：非 UTC 时间、不可 JSON 序列化值、未知字段或枚举触发
   `RecordValidationError`。
-- 扩展：第二/三阶段启用现有 event time、changelog、checkpoint 字段。
+- 扩展：event time、changelog 和 checkpoint 字段已启用；后续事务 Sink 仍需保持
+  向后兼容。
 
 ## `pystream.control`
 
 - 职责：维护 Job/Task/Worker 状态，展开物理图、调度 slot、编排部署/取消、
-  保存制品并暴露 JobManager HTTP API。
-- 入口：`JobManager`、`JobManagerHttpService`、`build_execution_graph`、
-  `SlotScheduler`、`LocalArtifactRepository`。
+  协调 Checkpoint 与整作业恢复，并暴露 JobManager HTTP API。
+- 入口：`JobManager`、`CheckpointCoordinator`、`JobManagerHttpService`、
+  `build_execution_graph`、`SlotScheduler`、`LocalArtifactRepository`。
 - 输入/输出：逻辑 StreamGraph、Worker 注册、任务状态 -> 物理执行图和作业状态。
 - 依赖：API、Artifact、可替换 `WorkerGateway`/`ArtifactRepository` 端口。
-- 失败：资源不足时原子拒绝；部署或运行失败时回滚任务并释放 slot。
-- 扩展：后续恢复协调器和 Checkpoint 元数据应留在控制面，不进入 HTTP 模型。
+- 失败：资源不足时原子拒绝；中级作业在重试预算内整作业恢复，耗尽后失败并释放
+  slot；旧 attempt 请求被 fencing。
+- 扩展：Exactly-once 和 JobManager HA 仍属于后续阶段。
 
 ## `pystream.runtime`
 
-- 职责：版本化 TCP 协议、连接握手、数据分帧、Shuffle、有界队列、TaskRuntime
-  执行循环和失败传播。
+- 职责：协议 v2、attempt 握手、DATA/CONTROL 保序、Shuffle、有界队列、
+  Watermark/DRAIN 合并、TaskRuntime snapshot/restore 和失败传播。
 - 入口：`TaskRuntime`、`DataPlaneServer`、`BoundedDataChannel`、
   `ShuffleRouter`、协议帧函数。
 - 输入/输出：`TaskDeployment` 和 RecordEnvelope -> 跨 Task 数据批次与状态快照。
 - 依赖：Common、Control 的部署 DTO、Operators 接口。
 - 失败：协议、握手、异常 EOF、队列发送或算子异常使任务进入 `FAILED`。
-- 扩展：Channel 已区分帧类型；Watermark/Barrier 需要显式控制消息处理。
+- 扩展：WATERMARK 和 CHECKPOINT_DRAIN 已启用；持续流 barrier 对齐尚未实现。
 
 ## `pystream.operators`
 
-- 职责：统一算子生命周期、Clock、Map、KeyBy、Reduce 处理时间窗口、Kafka
-  Source 和 CSV File Sink。
+- 职责：统一算子生命周期、Clock、Map、KeyBy、处理时间/事件时间 Reduce、
+  Changelog/Retract、Kafka Source 和 CSV File Sink。
 - 入口：`OperatorContext`、`BaseOperator`、`KafkaJsonSource`、
   `MapOperator`、`KeyByOperator`、`ReduceWindowOperator`、
   `FileSinkOperator`。
 - 输入/输出：RecordEnvelope -> 零到多条 RecordEnvelope；外部 Kafka/文件。
 - 依赖：API 连接器配置、Common 记录、注入的 UDF 和 Clock。
-- 失败：生命周期、坏记录、UDF、Kafka、文件或不支持状态操作均使用明确异常。
-- 扩展：`snapshot_state/restore_state` 和 Sink 事务方法当前明确抛
-  `UnsupportedStateOperation`。
+- 失败：生命周期、迟到记录、坏记录、UDF、Kafka、快照和文件错误均使用明确异常。
+- 扩展：Source/Reduce 已支持状态快照；Sink 事务方法仍明确不支持。
 
 ## `pystream.worker`
 
-- 职责：注册和心跳、HTTP 部署接口、制品缓存、UDF/算子组装、TaskRuntime
-  生命周期和失败上报。
+- 职责：进程 incarnation 注册和心跳、attempt-aware 部署、Checkpoint 控制接口、
+  制品缓存、UDF/算子组装、TaskRuntime 生命周期和失败上报。
 - 入口：`WorkerTaskManager`、`WorkerHttpService`、`HttpJobManagerClient`、
   `HttpWorkerGateway`。
 - 输入/输出：TaskDeployment -> RuntimeSnapshot；Worker 状态 -> JobManager。
 - 依赖：Artifact、API、Operators、Runtime，以及控制面端口 DTO。
 - 失败：制品不匹配、任务类型不一致、启动失败或运行失败转为 `WorkerTaskError`
   并上报。
-- 扩展：进程内资源隔离和自动恢复不属于第一阶段。
+- 扩展：自动恢复已由 JobManager 编排；进程级强隔离和 Worker 内局部恢复未实现。
 
 ## `pystream.observability`
 
@@ -92,7 +93,8 @@
 
 ## `pystream.cli` 与 `pystream.client`
 
-- 职责：提供 validate/package/submit/status/cancel 用户流程和同步 HTTP 客户端。
+- 职责：提供 validate/package/submit/status/cancel 用户流程和同步 HTTP 客户端；
+  客户端也可显式触发一次完整 Checkpoint。
 - 入口：`pystream`、`python -m pystream`、`JobManagerClient`。
 - 输入/输出：本地路径/Job ID -> 人类可读摘要或稳定退出码。
 - 依赖：公开 API、Artifact 和 HTTP client；不导入 JobManager 领域实现。

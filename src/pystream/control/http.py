@@ -65,6 +65,7 @@ class JobManagerHttpService:
         app.router.add_get("/v1/workers", self._workers)
         app.router.add_post("/v1/jobs", self._submit)
         app.router.add_get("/v1/jobs/{job_id}", self._status)
+        app.router.add_post("/v1/jobs/{job_id}/checkpoint", self._checkpoint)
         app.router.add_post("/v1/jobs/{job_id}/cancel", self._cancel)
         app.router.add_post("/workers/register", self._register_worker)
         app.router.add_post("/workers/{worker_id}/heartbeat", self._heartbeat)
@@ -203,6 +204,19 @@ class JobManagerHttpService:
 
     async def _status(self, request: web.Request) -> web.Response:
         return web.json_response(self.manager.status_view(request.match_info["job_id"]))
+
+    async def _checkpoint(self, request: web.Request) -> web.Response:
+        job_id = request.match_info["job_id"]
+        manifest = await self.manager.trigger_checkpoint(job_id)
+        self._log(
+            logging.INFO,
+            "checkpoint_triggered",
+            "作业已按请求完成 Checkpoint",
+            job_id=job_id,
+            checkpoint_id=manifest.checkpoint_id,
+            attempt_id=manifest.attempt_id,
+        )
+        return web.json_response(manifest.to_dict())
 
     async def _cancel(self, request: web.Request) -> web.Response:
         job_id = request.match_info["job_id"]

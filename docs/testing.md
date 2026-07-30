@@ -1,110 +1,95 @@
 # 测试与性能测量
 
-本文面向开发者和验收者。测试命令与覆盖率门槛的权威来源是
-`pyproject.toml`，具体行为证据位于 `tests/`。
+测试命令和覆盖率门槛的权威来源是 `pyproject.toml`，行为证据位于 `tests/`。
 
-## 安装开发环境
+## 质量门
+
+目标解释器为 Python 3.11：
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -e ".[dev]"
-```
-
-目标解释器是 Python 3.11。开发机上的其他兼容版本只能作为补充验证，不能替代
-Python 3.11 容器验证。
-
-## 质量门
-
-```powershell
-.\.venv\Scripts\python -m ruff check src tests
-.\.venv\Scripts\python -m ruff format --check src tests
+.\.venv\Scripts\ruff check .
+.\.venv\Scripts\ruff format --check .
 .\.venv\Scripts\python -m pytest
 ```
 
-`pytest` 默认启用分支覆盖并要求 `src/pystream` 总行覆盖率不低于 80%。任一命令
-失败都阻止基础阶段验收。
+pytest 默认启用 branch coverage，并要求 `src/pystream` 总覆盖率至少 80%。
+
+2026-07-30 最终本地门禁：
+
+```text
+372 passed
+84.40% total coverage
+108 files formatted
+Ruff check passed
+```
+
+完整日志：`reports/intermediate-python311-tests.log`。
 
 ## 测试分层
 
 | 层 | 路径 | 证明内容 |
 |---|---|---|
-| 契约 | `tests/contract/` | YAML/DAG、部署资产、文档入口和公共约束 |
-| 单元 | `tests/unit/` | 制品、UDF、协议、路由、算子、控制面、Worker、CLI |
-| 离线集成 | `tests/integration/` | TCP loopback、背压、多 Runtime WordCount、异常 EOF |
-| Docker 集成 | 部署文档流程 | Kafka、JobManager、3 Worker、共享卷和跨容器 Shuffle |
+| 契约 | `tests/contract/` | YAML/DAG、演示脚本、部署资产、文档和公共约束 |
+| 单元 | `tests/unit/` | Watermark、Retract、Store、Coordinator、恢复、fencing |
+| 离线集成 | `tests/integration/` | TCP loopback、DATA/CONTROL 保序、背压、多 Runtime |
+| Docker E2E | `run_intermediate_acceptance.ps1` | Kafka、3 Worker、Checkpoint、SIGKILL、恢复和 lag |
 
-离线集成测试使用本机 loopback 端口和 fake Kafka consumer，不需要 Docker。
-Docker 集成不能由 fake 替代。
+关键测试：
 
-## 关键证据
-
-- `test_job_api.py`：合法线性/分支/合流 DAG 与非法配置路径。
-- `test_artifact.py`：摘要、路径穿越、链接、超限、UDF 隔离。
-- `test_protocol.py`：半包、粘包、帧上限、身份和记录契约。
-- `test_data_channel.py`：发送顺序、有界队列和慢消费者背压。
-- `test_operators.py`：窗口边界、跨窗口、空窗口、状态清理。
-- `test_connectors.py`：坏记录策略、record_id、File Sink 分片与错误传播。
-- `test_task_runtime.py`：Map -> HASH -> Reduce -> Sink loopback 和异常 EOF。
-- `test_manager.py`：资源预检、部署回滚、Worker 超时、作业失败。
-- `test_deployment_assets.py`：固定镜像、Compose 服务与演示脚本。
+- `test_job_api.py`：execution/event-time/checkpoint/restart 与 DAG 能力传播。
+- `test_connectors.py`：事件时间、Watermark、replay skip、确定性 partition 分配。
+- `test_operators.py`：窗口、late record、changelog/retract 和状态 round-trip。
+- `test_checkpoint.py` / `test_store.py`：停流顺序、manifest-last、损坏回退。
+- `test_task_runtime.py`：CONTROL、多输入 Watermark、snapshot/restore。
+- `test_manager.py`：自动恢复、attempt fencing、取消竞态、Source 并发部署。
+- `test_demo_scripts.py`：At-least-once 多重集、显式 Checkpoint、Kafka lag 验证。
+- `test_deployment_assets.py`：固定镜像、非 root 卷权限、原生 Docker 编排。
 
 ## 选择性运行
 
 ```powershell
-.\.venv\Scripts\python -m pytest --no-cov tests/contract
-.\.venv\Scripts\python -m pytest --no-cov tests/unit
-.\.venv\Scripts\python -m pytest --no-cov tests/integration
-.\.venv\Scripts\python -m pytest --no-cov tests/integration/test_task_runtime.py -q
+.\.venv\Scripts\python -m pytest -o addopts="" tests/contract -q
+.\.venv\Scripts\python -m pytest -o addopts="" tests/unit/operators -q
+.\.venv\Scripts\python -m pytest -o addopts="" tests/unit/control -q
 ```
 
-聚焦运行使用 `--no-cov`，避免全仓 80% 门槛把未加载模块计为未覆盖；最终验收仍
-必须运行不带 `--no-cov` 的完整 `pytest`。
+局部测试关闭默认覆盖率参数，避免未加载模块造成假失败；最终必须运行完整 pytest。
 
-## Windows 符号链接
+## Python 3.11 容器门禁
 
-安全解压测试包含 ZIP 符号链接拒绝。在未开启开发者模式且无创建符号链接权限的
-Windows 上，该单个测试可能显示 `skipped`；其他路径穿越与链接元数据测试仍必须
-通过。Linux/Python 3.11 容器应执行完整测试。
+宿主机只有其他 Python 版本时，可以在候选镜像中挂载工作树：
 
-## Docker 验收
-
-按 [部署文档](deployment.md)执行完整流程。最少保存：
-
-- `docker compose ps`
-- JobManager `/health` 和 `/v1/workers`
-- 作业状态 JSON
-- `verify_wordcount.py` JSON 输出
-- JobManager/Worker 结构化日志
-- 停止一个 Worker 后的 `FAILED` 状态与 slot 释放
-
-当前仓库没有把 Docker E2E 纳入普通 pytest，因为执行环境可能不提供 Docker。
-正式验收机器必须单独执行，不能把静态 Compose 测试当成运行通过。
-
-## 性能测量口径
-
-基础阶段不设硬编码吞吐门槛。离线基准使用真实 Map、KeyBy、HASH、ReduceWindow
-和 File Sink，并记录：
-
-```text
-timestamp
-OS / CPU / memory
-Python / Docker / Compose version
-Kafka partitions
-Source/Map/KeyBy/Reduce/Sink parallelism
-window size
-input records
-completed records
-duration seconds
-throughput records/s
-p50 latency ms
-p95 latency ms
-error/drop count
+```powershell
+docker create --name pystream-python311-tests --user 0 `
+  -v "${PWD}:/workspace" -w /workspace pystream:0.2.0 `
+  /bin/sh -lc "/opt/venv/bin/pip install -e '.[dev]' && /opt/venv/bin/python -m pytest"
+docker start pystream-python311-tests
+docker inspect --format "{{.State.Status}} {{.State.ExitCode}}" pystream-python311-tests
+docker logs pystream-python311-tests
+docker rm -f pystream-python311-tests
 ```
 
-性能结果必须同时证明输入/输出记录正确，不能只报告速度。不同机器结果不可直接
-作为通过/失败线；同一环境回归时应保留参数和原始报告。
+Windows 长路径可能使宿主测试失败；Linux/Python 3.11 容器结果是发布门禁。
 
-运行默认 50,000 条基准：
+## Docker 故障验收
+
+按 [部署文档](deployment.md)运行标准脚本。至少保存：
+
+- 初级 WordCount 正确输出与跨 Worker HASH 证据。
+- baseline 与 recovery 输出多重集。
+- Checkpoint 1/2 状态。
+- RestartCount、StartedAt、incarnation、attempt/recovery attempts。
+- 所有 Task 的同一 restored checkpoint。
+- Kafka committed/end offset 与 lag=0。
+- `intermediate_acceptance=passed` 和 `compose_project_resources=0`。
+
+普通 pytest 不替代 Docker E2E。
+
+## 性能测量
+
+默认离线基准：
 
 ```powershell
 .\.venv\Scripts\python scripts\benchmark.py `
@@ -119,13 +104,5 @@ error/drop count
   --report reports\offline-benchmark.json
 ```
 
-结果解释、当前基线和范围限制见 [性能基线](performance.md)。该离线基准不包含
-Kafka、TCP、Docker 和调度，不能替代多容器端到端性能测试。
-
-## 结果解释
-
-- `records_out` 是发送到所有逻辑分支的总次数，分支图中可能大于输入条数。
-- `max_output_queue_depth <= output_queue_capacity` 是有界队列不变量。
-- 同 key 的记录只应进入一个 Reduce subtask。
-- 多 key 输出跨通道没有稳定全局顺序，验证应比较集合或按 key/window 排序。
-- 第一阶段故障测试预期作业失败，而非恢复后继续运行。
+该基准不包含 Kafka、TCP、Docker、Checkpoint 和恢复，不能替代多容器性能或暂停
+时间测量。结果解释见 [性能基线](performance.md)。

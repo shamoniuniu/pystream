@@ -161,6 +161,7 @@ class WorkerTaskManager:
                     arguments: dict[str, Any] = {
                         "job_id": task.job_id,
                         "config": config,
+                        "source_parallelism": task.parallelism,
                         "event_time_strategy": event_time_strategy,
                     }
                     if config.validator is not None:

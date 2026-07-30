@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
 
@@ -10,6 +11,7 @@ import pytest
 from pystream.api import (
     CheckpointConfig,
     ExecutionConfig,
+    OperatorType,
     RestartConfig,
     StreamGraph,
 )
@@ -145,6 +147,24 @@ class RecordingGateway:
         )
 
 
+class SourceBarrierGateway(RecordingGateway):
+    """要求同一 Source 的全部 subtasks 同时进入部署调用。"""
+
+    def __init__(self, expected_sources: int) -> None:
+        super().__init__()
+        self.expected_sources = expected_sources
+        self.source_entries = 0
+        self.source_barrier = asyncio.Event()
+
+    async def deploy_task(self, worker: WorkerNode, deployment: TaskDeployment) -> None:
+        if deployment.task.operator_type is OperatorType.SOURCE:
+            self.source_entries += 1
+            if self.source_entries == self.expected_sources:
+                self.source_barrier.set()
+            await asyncio.wait_for(self.source_barrier.wait(), timeout=1)
+        await super().deploy_task(worker, deployment)
+
+
 def manager_with_workers(
     tmp_path,
     gateway: RecordingGateway,
@@ -242,6 +262,24 @@ async def test_submit_job_保存制品_跨worker下游优先部署并可查询(
     view = manager.status_view("job-1")
     assert view["status"] == "RUNNING"
     assert all(item["worker_id"] is not None for item in view["tasks"])
+
+
+@pytest.mark.asyncio
+async def test_submit_job_同一source的subtasks并发加入消费组(
+    tmp_path,
+    linear_graph: StreamGraph,
+) -> None:
+    gateway = SourceBarrierGateway(expected_sources=2)
+    manager = manager_with_workers(tmp_path, gateway)
+
+    job = await manager.submit_job(linear_graph, b"bundle", job_id="job-source-barrier")
+
+    assert job.status is JobStatus.RUNNING
+    assert gateway.source_entries == 2
+    assert {task_id for _, task_id in gateway.deploy_calls[-2:]} == {
+        "job-source-barrier:words:0",
+        "job-source-barrier:words:1",
+    }
 
 
 @pytest.mark.asyncio

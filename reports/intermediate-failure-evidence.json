@@ -1,0 +1,44 @@
+{
+  "job_id": "ba4225fb878840a7aacd818d86e85dc0",
+  "target_operator": "word_totals",
+  "worker_id": "worker-1",
+  "container_id": "pystream-worker-1-1",
+  "injected_at": "2026-07-30T14:56:36.529501+00:00",
+  "restart_count": {
+    "before": 0,
+    "after": 1
+  },
+  "started_at": {
+    "before": "2026-07-30T14:53:45.036898389Z",
+    "after": "2026-07-30T14:56:38.332335104Z"
+  },
+  "incarnation_id": {
+    "before": "c592b31788c940709baa7d7068e6de9e",
+    "after": "b784029ddcf043e3997e7e3e0f18f91d"
+  },
+  "attempt": {
+    "before": 0,
+    "after": 1
+  },
+  "recovery_attempts": {
+    "before": 0,
+    "after": 1
+  },
+  "checkpoint_before_failure": 1,
+  "restored_checkpoint_ids": [
+    1
+  ],
+  "state_trace": [
+    {
+      "observed_at": "2026-07-30T14:56:40.166743+00:00",
+      "status": "DEPLOYING",
+      "attempt": 1
+    },
+    {
+      "observed_at": "2026-07-30T14:56:42.446960+00:00",
+      "status": "RUNNING",
+      "attempt": 1
+    }
+  ],
+  "result": "passed"
+}

@@ -1,0 +1,399 @@
+**********************
+Windows PowerShell transcript start
+Start time: 20260730224954
+Username: 5CD4279G2D-STO\Admin
+RunAs User: 5CD4279G2D-STO\Admin
+Configuration Name:
+Machine: 5CD4279G2D-STO (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\run_intermediate_acceptance.ps1 -PythonCommand .\.venv\Scripts\python.exe
+Process ID: 32388
+PSVersion: 5.1.26100.8655
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.8655
+BuildVersion: 10.0.26100.8655
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+compose_project_resources=0
+d9931784a7ccb7de906823a6d2f50c774546e7b3738ec76297c3858075c1ecb0
+pystream_pystream-artifacts
+pystream_pystream-checkpoints
+pystream_pystream-kafka
+pystream_pystream-output
+pystream_pystream-worker-1
+pystream_pystream-worker-2
+pystream_pystream-worker-3
+070612a7675d1f760011e9f4ed048e462475c09b4e05279cef1ce30dbcd2f53b
+4044e3272d6465f72eeafe7d0671695ba434ef596bc135097fb4a07d18e19aa7
+PS>TerminatingError(): "docker timed out after 60s: create --name pystream-jobmanager-1 --hostname jobmanager --label com.docker.compose.project=pystream --label com.docker.compose.service=jobmanager --user 10001:10001 --init --read-only --tmpfs /tmp:size=64m,mode=1777 --restart unless-stopped --stop-timeout 20 --security-opt no-new-privileges:true --cap-drop ALL --network pystream_pystream -p 8080:8080 -v pystream_pystream-artifacts:/data/artifacts -v pystream_pystream-checkpoints:/data/checkpoints --health-cmd python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8080/health', timeout=2)); assert d['status']=='ok'" --health-interval 5s --health-timeout 3s --health-retries 12 --health-start-period 5s --cpus 0.50 --memory 512m pystream:0.2.0 python -m pystream.service jobmanager --host 0.0.0.0 --port 8080 --artifact-root /data/artifacts
+a89bfcac0a0a94cdb8dcc2860dc4199eb2a03c6313347e643b63302b01cc5061"
+f36eaa958a98ade18017c1ff69eb9d5e823d380347938b0c62905e96be6622d5
+92e4d0137d4cf1a24f7f049a0827a985ef95a9f539890a8a792c75a2ae540924
+70502288b95676b99a4ae6262190a0bce47ba484c863f1318897b99841a06566
+PS>TerminatingError(): "docker timed out after 60s: start pystream-kafka-1 pystream-jobmanager-1
+"
+docker_start_cli_retry=1;pending=pystream-kafka-1,pystream-jobmanager-1
+PS>TerminatingError(): "docker timed out after 30s: inspect --format {{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}} pystream-kafka-1
+"
+service_healthy=kafka
+service_healthy=jobmanager
+PS>TerminatingError(): "docker timed out after 15s: inspect --format {{.State.Status}} {{.State.ExitCode}} pystream-kafka-init-1
+"
+Created topic words.
+Created topic intermediate-words.
+PS>TerminatingError(): "docker timed out after 30s: inspect --format {{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}} pystream-worker-1-1
+"
+service_healthy=worker-1
+service_healthy=worker-2
+service_healthy=worker-3
+== Basic WordCount compatibility ==
+2f3754bb17764ec59136a57875096dd7c7394ab0d8d76df6cc8b5b9e8cc27495
+已向 words 写入 3 条消息
+Topic words not found in cluster metadata
+80e7acb02134eb44378b4d5aa618fdf8ca990dcd15ae037cdbc761da9d536c0d
+PS>TerminatingError(): "docker timed out after 15s: inspect --format {{.State.Status}} {{.State.ExitCode}} pystream-tool-2
+"
+c4ea561876318c7cecb584682b8a6d7db3521d6d2b9591b7d5d37aca98d9a11c
+job_id=d97c84b61a8442ba8f6c41a009729cec
+output_files=/data/output/d97c84b61a8442ba8f6c41a009729cec/output/part-00000.csv
+b7601bb992855273c699f11de37719a2ca9e8e8a72473b8b466369348a7a2f30
+{
+  "job_id": "d97c84b61a8442ba8f6c41a009729cec",
+  "status": "RUNNING",
+  "workers": [
+    "worker-1",
+    "worker-2",
+    "worker-3"
+  ],
+  "task_count": 10,
+  "cross_worker_hash_channels": [
+    {
+      "source_task_id": "d97c84b61a8442ba8f6c41a009729cec:by_word:0",
+      "source_worker_id": "worker-2",
+      "target_task_id": "d97c84b61a8442ba8f6c41a009729cec:totals:0",
+      "target_worker_id": "worker-1",
+      "partitioning": "hash"
+    },
+    {
+      "source_task_id": "d97c84b61a8442ba8f6c41a009729cec:by_word:0",
+      "source_worker_id": "worker-2",
+      "target_task_id": "d97c84b61a8442ba8f6c41a009729cec:totals:2",
+      "target_worker_id": "worker-3",
+      "partitioning": "hash"
+    },
+    {
+      "source_task_id": "d97c84b61a8442ba8f6c41a009729cec:by_word:1",
+      "source_worker_id": "worker-3",
+      "target_task_id": "d97c84b61a8442ba8f6c41a009729cec:totals:0",
+      "target_worker_id": "worker-1",
+      "partitioning": "hash"
+    },
+    {
+      "source_task_id": "d97c84b61a8442ba8f6c41a009729cec:by_word:1",
+      "source_worker_id": "worker-3",
+      "target_task_id": "d97c84b61a8442ba8f6c41a009729cec:totals:1",
+      "target_worker_id": "worker-2",
+      "partitioning": "hash"
+    }
+  ],
+  "counts": {
+    "apple": 2,
+    "pie": 1
+  },
+  "rows": [
+    [
+      "2026/07/30T14:54:40",
+      "apple",
+      2
+    ],
+    [
+      "2026/07/30T14:54:40",
+      "pie",
+      1
+    ]
+  ],
+  "files": [
+    "/data/output/d97c84b61a8442ba8f6c41a009729cec/output/part-00000.csv"
+  ]
+}
+ffcaf15d9229b27af596519ec21cd2126532c140c90ac50d22a0bd166da76ffe
+job_id=d97c84b61a8442ba8f6c41a009729cec
+status=CANCELLED
+output_removed=True
+== Intermediate baseline and checkpoint ==
+63a60471793b359197a75fa69c00f37ac4a3265847f4e107aeb7c38d1bee36d7
+{
+  "phase": "baseline",
+  "topic": "intermediate-words",
+  "messages": [
+    {
+      "input_id": "baseline-apple-1",
+      "partition": 0,
+      "offset": 0
+    },
+    {
+      "input_id": "baseline-pie-1",
+      "partition": 1,
+      "offset": 0
+    },
+    {
+      "input_id": "baseline-apple-2",
+      "partition": 0,
+      "offset": 1
+    },
+    {
+      "input_id": "baseline-clock-1",
+      "partition": 0,
+      "offset": 2
+    },
+    {
+      "input_id": "baseline-clock-2",
+      "partition": 1,
+      "offset": 1
+    }
+  ]
+}
+Topic intermediate-words not found in cluster metadata
+307b58dc445db3cf60d4976233c8a937f62d16fb8d67c97cf523b90209073593
+2802e938c588e7dbc044f62f168b5bdd510ee3fc89be2f80939b596d28fda95c
+job_id=ba4225fb878840a7aacd818d86e85dc0
+phase=baseline
+output_files=/data/output/ba4225fb878840a7aacd818d86e85dc0/output/part-00000.csv
+observed_rows={('2026/07/29T00:00:05', 1, 1): 1, ('2026/07/29T00:00:05', 2, 1): 1}
+29872da90408d7f736b293eb542208f7b91e34b97304ff7a473826725a2443cd
+{
+  "job_id": "ba4225fb878840a7aacd818d86e85dc0",
+  "attempt": 0,
+  "checkpoint": {
+    "next_id": 2,
+    "last_completed_id": 1,
+    "consecutive_failures": 0
+  }
+}
+== Post-checkpoint records and fault injection ==
+c111f2d3715831b63f5d5dce9d0a5a44e393fcda27e1f35b42c62bdf96f0ac50
+{
+  "phase": "recovery",
+  "topic": "intermediate-words",
+  "messages": [
+    {
+      "input_id": "recovery-banana-1",
+      "partition": 0,
+      "offset": 3
+    },
+    {
+      "input_id": "recovery-kiwi-1",
+      "partition": 1,
+      "offset": 2
+    },
+    {
+      "input_id": "recovery-banana-2",
+      "partition": 0,
+      "offset": 4
+    },
+    {
+      "input_id": "recovery-next-1",
+      "partition": 0,
+      "offset": 5
+    },
+    {
+      "input_id": "recovery-next-2",
+      "partition": 1,
+      "offset": 3
+    }
+  ]
+}
+a28823e3eb919f87f0dda2cc3d37bc082a26c65f86f634834b2a2fdb56a1f706
+PS>TerminatingError(): "docker timed out after 30s: logs pystream-tool-11
+job_id=ba4225fb878840a7aacd818d86e85dc0
+phase=recovery
+output_files=/data/output/ba4225fb878840a7aacd818d86e85dc0/output/part-00000.csv
+observed_rows={('2026/07/29T00:00:05', 1, 1): 1, ('2026/07/29T00:00:05', 2, 1): 1, ('2026/07/29T00:00:10', 1, 1): 1, ('2026/07/29T00:00:10', 2, 2): 1}"
+job_id=ba4225fb878840a7aacd818d86e85dc0
+phase=recovery
+output_files=/data/output/ba4225fb878840a7aacd818d86e85dc0/output/part-00000.csv
+observed_rows={('2026/07/29T00:00:05', 1, 1): 1, ('2026/07/29T00:00:05', 2, 1): 1, ('2026/07/29T00:00:10', 1, 1): 1, ('2026/07/29T00:00:10', 2, 2): 1}
+{
+  "job_id": "ba4225fb878840a7aacd818d86e85dc0",
+  "target_operator": "word_totals",
+  "worker_id": "worker-1",
+  "container_id": "pystream-worker-1-1",
+  "injected_at": "2026-07-30T14:56:36.529501+00:00",
+  "restart_count": {
+    "before": 0,
+    "after": 1
+  },
+  "started_at": {
+    "before": "2026-07-30T14:53:45.036898389Z",
+    "after": "2026-07-30T14:56:38.332335104Z"
+  },
+  "incarnation_id": {
+    "before": "c592b31788c940709baa7d7068e6de9e",
+    "after": "b784029ddcf043e3997e7e3e0f18f91d"
+  },
+  "attempt": {
+    "before": 0,
+    "after": 1
+  },
+  "recovery_attempts": {
+    "before": 0,
+    "after": 1
+  },
+  "checkpoint_before_failure": 1,
+  "restored_checkpoint_ids": [
+    1
+  ],
+  "state_trace": [
+    {
+      "observed_at": "2026-07-30T14:56:40.166743+00:00",
+      "status": "DEPLOYING",
+      "attempt": 1
+    },
+    {
+      "observed_at": "2026-07-30T14:56:42.446960+00:00",
+      "status": "RUNNING",
+      "attempt": 1
+    }
+  ],
+  "result": "passed"
+}
+{
+  "job_id": "ba4225fb878840a7aacd818d86e85dc0",
+  "target_operator": "word_totals",
+  "worker_id": "worker-1",
+  "container_id": "pystream-worker-1-1",
+  "injected_at": "2026-07-30T14:56:36.529501+00:00",
+  "restart_count": {
+    "before": 0,
+    "after": 1
+  },
+  "started_at": {
+    "before": "2026-07-30T14:53:45.036898389Z",
+    "after": "2026-07-30T14:56:38.332335104Z"
+  },
+  "incarnation_id": {
+    "before": "c592b31788c940709baa7d7068e6de9e",
+    "after": "b784029ddcf043e3997e7e3e0f18f91d"
+  },
+  "attempt": {
+    "before": 0,
+    "after": 1
+  },
+  "recovery_attempts": {
+    "before": 0,
+    "after": 1
+  },
+  "checkpoint_before_failure": 1,
+  "restored_checkpoint_ids": [
+    1
+  ],
+  "state_trace": [
+    {
+      "observed_at": "2026-07-30T14:56:40.166743+00:00",
+      "status": "DEPLOYING",
+      "attempt": 1
+    },
+    {
+      "observed_at": "2026-07-30T14:56:42.446960+00:00",
+      "status": "RUNNING",
+      "attempt": 1
+    }
+  ],
+  "result": "passed"
+}
+== Post-recovery checkpoint and At-least-once verification ==
+PS>TerminatingError(): "docker timed out after 60s: create --name pystream-tool-12 --label com.docker.compose.project=pystream --label com.docker.compose.service=tools-run --network pystream_pystream --user 10001:10001 --read-only --tmpfs /tmp:size=64m,mode=1777 --security-opt no-new-privileges:true --cap-drop ALL -e PYSTREAM_JOBMANAGER_URL=http://jobmanager:8080 -e PYSTREAM_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 -e PYSTREAM_OUTPUT_ROOT=/data/output -v pystream_pystream-output:/data/output pystream:0.2.0 python /opt/pystream/scripts/wait_for_checkpoint.py --job-id ba4225fb878840a7aacd818d86e85dc0 --min-attempt 1 --require-post-recovery --trigger
+"
+29dd202ff27806129355628ea40811de399c9d984ed4288f7ad1b223517ead08
+{
+  "job_id": "ba4225fb878840a7aacd818d86e85dc0",
+  "attempt": 1,
+  "checkpoint": {
+    "next_id": 3,
+    "last_completed_id": 2,
+    "consecutive_failures": 0
+  }
+}
+e1eee3b3c79e45b15c183eb94de39172da7a2d66302006fca5d331678352cf2b
+{
+  "job_id": "ba4225fb878840a7aacd818d86e85dc0",
+  "status": "RUNNING",
+  "attempt": 1,
+  "restored_checkpoint_id": 1,
+  "observed_rows": [
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 1,
+      "word_count": 1,
+      "occurrences": 1
+    },
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 2,
+      "word_count": 1,
+      "occurrences": 1
+    },
+    {
+      "window_end": "2026/07/29T00:00:10",
+      "count": 1,
+      "word_count": 1,
+      "occurrences": 2
+    },
+    {
+      "window_end": "2026/07/29T00:00:10",
+      "count": 2,
+      "word_count": 2,
+      "occurrences": 2
+    }
+  ],
+  "allowed_duplicates": [
+    {
+      "window_end": "2026/07/29T00:00:10",
+      "count": 1,
+      "word_count": 1,
+      "extra_occurrences": 1
+    },
+    {
+      "window_end": "2026/07/29T00:00:10",
+      "count": 2,
+      "word_count": 2,
+      "extra_occurrences": 1
+    }
+  ],
+  "kafka_offsets": [
+    {
+      "partition": 0,
+      "committed_offset": 6,
+      "end_offset": 6,
+      "lag": 0
+    },
+    {
+      "partition": 1,
+      "committed_offset": 4,
+      "end_offset": 4,
+      "lag": 0
+    }
+  ],
+  "input_loss": false,
+  "sink_duplicates_observed": true,
+  "semantics": "at-least-once",
+  "exactly_once": false,
+  "files": [
+    "/data/output/ba4225fb878840a7aacd818d86e85dc0/output/part-00000.csv"
+  ]
+}
+826e2ca010a2ac8cf1424d7809b5ff27d8840fb820470bd66521c74c17bacc1d
+job_id=ba4225fb878840a7aacd818d86e85dc0
+status=CANCELLED
+output_removed=False
+intermediate_acceptance=passed
+job_id=ba4225fb878840a7aacd818d86e85dc0
+PS>TerminatingError(): "docker timed out after 30s: logs pystream-worker-3-1
+"
+compose_project_resources=0
+**********************
+Windows PowerShell transcript end
+End time: 20260730225851
+**********************

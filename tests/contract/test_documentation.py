@@ -56,17 +56,17 @@ def test_每个python模块都有中文模块docstring() -> None:
         )
 
 
-def test_文档明确第一阶段失败语义和docker验证状态() -> None:
+def test_文档明确中级恢复语义和docker验证状态() -> None:
     combined = "\n".join(
         (ROOT / relative).read_text(encoding="utf-8")
         for relative in ("README.md", "docs/deployment.md", "docs/roadmap.md")
     )
 
-    assert "不自动恢复" in combined
+    assert "自动恢复" in combined
     assert "At-least-once" in combined
     assert "Exactly-once" in combined
-    assert "没有 `docker` 命令" in combined
-    assert "多容器运行结果仍待" in combined
+    assert "Docker E2E" in combined
+    assert "compose_project_resources=0" in combined
 
 
 def test_文档生命周期包含权威来源和新鲜度控制() -> None:

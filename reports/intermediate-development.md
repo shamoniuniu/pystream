@@ -193,3 +193,78 @@
 - 上一回退点：`5ee80b3`
 - 结果提交：本条随本里程碑提交，SHA 将在提交后回填并写入 Git note
 - 回退提交：提交后使用 `git revert <本里程碑 SHA>`
+
+## 2026-07-30T15:00:00Z - Task 8 Docker E2E 与故障恢复验收
+
+- 状态：完成，待最终提交
+- 关键修复：
+  - Source 多并发改为确定性 manual partition assignment，消除 group rebalance
+    造成的跨 Runtime 重放
+  - 同 Runtime 重放 offset 直接跳过并记录 `records_replayed`
+  - 同一 Source subtasks 并发部署，恢复 attempt 保持相同 partition 身份
+  - 镜像预创建并授权 `/data/checkpoints`，修复非 root named volume 写入
+  - 原生 Docker 编排增加 resource ledger、命令硬超时、create/start 有界重试
+  - SIGKILL 改为终止 tini 的业务子进程，使 `unless-stopped` 自动拉起
+  - 验收使用显式 Checkpoint API 固定故障边界，不依赖墙钟周期
+  - Kafka lag 验证分离 metadata consumer 与 group offset consumer，避免 rebalance
+- 实证：
+  - 初级 WordCount：`apple=2, pie=1`
+  - 中级 baseline：`(1,1)`、`(2,1)` 各一次
+  - 故障前完整 Checkpoint：1
+  - Worker RestartCount：`0 -> 1`，StartedAt/incarnation 改变
+  - 作业恢复 attempt：`0 -> 1`；全任务 restored checkpoint 为 1
+  - 恢复后完整 Checkpoint：2
+  - recovery 两行各出现一次额外重复
+  - Kafka partition 0：`6/6/lag=0`
+  - Kafka partition 1：`4/4/lag=0`
+  - 最终：`intermediate_acceptance=passed`、`compose_project_resources=0`
+- 问题与处理：
+  - `docker kill` 被视为人工停止，不触发 `unless-stopped`；改杀业务子进程
+  - Docker CLI 可能超时但请求已生效；start 超时后 inspect，仍为 created 才重试
+  - 10s/60s 周期无法稳定形成重放窗口；增加显式完整 Checkpoint 端点
+  - consumer 未跟踪 topic 时 metadata 缓存为空；使用无 group metadata consumer
+  - 恢复可能快速跳过 RECOVERING；验收改查持久化 `recovery.attempts`
+- 证据：
+  - `reports/intermediate-acceptance.md`
+  - `reports/intermediate-acceptance.log`
+  - `reports/intermediate-runtime.log`
+  - `reports/intermediate-failure-evidence.json`
+- 上一回退点：`5c01f4e`
+- 结果提交：随最终中级里程碑提交，SHA 在提交后通过 Git note 关联
+- 回退提交：`git revert <最终中级里程碑 SHA>`
+
+## 2026-07-30T15:10:00Z - Task 9 最终质量门与文档
+
+- 状态：质量门完成，待 staged review/提交/推送
+- 自动化：
+  - Python 3.11：`372 passed`
+  - branch coverage：`84.40%`
+  - Ruff lint：通过
+  - Ruff format：`109 files already formatted`
+  - `git diff --check`：通过
+- 文档：
+  - README、API、架构、模块、部署、测试、排障和 roadmap 已更新到 0.2.0
+  - 明确停流 Checkpoint 暂停成本、共享卷/单 JobManager 故障域
+  - 明确 File Sink 追加重复和 Exactly-once 非目标
+- 制品边界：
+  - 基础 Python/Kafka 镜像使用 digest
+  - Python 包依赖仍为范围解析；本地镜像仅作验收候选，不对外发布
+- staged review 修复：
+  - 发现显式 Checkpoint 最长可运行 30 秒，但等待脚本沿用 10 秒 HTTP timeout
+  - `wait_for_checkpoint.py` 现将 CLI `--timeout` 同时传给 `JobManagerClient`
+  - 新增旧实现会失败的请求超时契约测试
+  - Python 3.11 最终镜像回归：`27 passed`
+- 最终本地候选制品：
+  - 输入 manifest：`7a444a3d8fafb30cf9e15b81771717809687d8f9`
+  - 镜像：`pystream:0.2.0`
+  - image ID：`sha256:6607f69ea1b6f4344eeb9a687931994d9e2794da84d5e911311fa711b3c88ad6`
+  - OCI revision 与输入 manifest 标签核对通过
+  - 镜像 smoke：`python=3.11.9; pystream=0.2.0; checkpoint_timeout_fix=present`
+- 环境恢复记录：
+  - Docker Desktop 重启后 Linux Engine 管道未恢复，日志报告 `WSL update required`
+  - 本机 WSL `2.7.11.0` 已是 Winget 当前版本，在线更新源返回 HTTP 403
+  - 未修改 WSL/Docker 配置或数据盘；停止残留 Desktop 进程、轮换宿主日志并干净启动
+  - Engine `29.6.2` 恢复后最终镜像构建成功
+  - 二次构建前 `com.docker.build` 历史端点锁死；仅重启 Build 子进程后增量构建完成
+- 待完成：
+  - staged diff 审查、独立提交、Git note 和功能分支推送
