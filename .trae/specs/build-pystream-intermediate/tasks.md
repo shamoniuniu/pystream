@@ -78,10 +78,10 @@
   - [x] 初级 WordCount 兼容回归
   - [x] Worker SIGKILL、重启、恢复与无丢失验证
 
-- [ ] Task 9: 文档、日志和最终验收
+- [x] Task 9: 文档、日志和最终验收
   - [x] 更新 README/API/架构/模块/部署/测试/排障/roadmap
   - [x] 开发日志逐提交完整
   - [x] 中级验收报告完整
   - [x] Ruff、格式、全量 pytest、覆盖率通过
   - [x] Docker E2E、故障注入、清理通过
-  - [ ] 功能分支推送，main 和 v0.1.0 未变化
+  - [x] 功能分支推送，main 和 v0.1.0 未变化

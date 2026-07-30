@@ -235,7 +235,7 @@
 
 ## 2026-07-30T15:10:00Z - Task 9 最终质量门与文档
 
-- 状态：质量门完成，待 staged review/提交/推送
+- 状态：完成并推送
 - 自动化：
   - Python 3.11：`372 passed`
   - branch coverage：`84.40%`
@@ -266,5 +266,7 @@
   - 未修改 WSL/Docker 配置或数据盘；停止残留 Desktop 进程、轮换宿主日志并干净启动
   - Engine `29.6.2` 恢复后最终镜像构建成功
   - 二次构建前 `com.docker.build` 历史端点锁死；仅重启 Build 子进程后增量构建完成
-- 待完成：
-  - staged diff 审查、独立提交、Git note 和功能分支推送
+- 结果提交：`91c5473` (`feat: complete intermediate fault recovery acceptance`)
+- 审查回执：Git note 已关联提交并推送 `refs/notes/commits`
+- 功能分支：已推送 `origin/feature/intermediate-v0.2`
+- 回退提交：`git revert 91c5473`
