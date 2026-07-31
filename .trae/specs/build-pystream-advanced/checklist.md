@@ -10,11 +10,11 @@
 
 ## 兼容性
 
-- [ ] `pystream/v1` 保持可解析
-- [ ] 无 execution 基础作业行为不变
-- [ ] execution 作业默认 exactly_once
-- [ ] 显式 at_least_once 继续通过中级回归
-- [ ] 不支持事务的 Sink 在 exactly_once 作业中被拒绝
+- [x] `pystream/v1` 保持可解析
+- [x] 无 execution 基础作业行为不变
+- [x] execution 作业默认 exactly_once
+- [x] 显式 at_least_once 继续通过中级回归
+- [x] 不支持事务的 Sink 在 exactly_once 作业中被拒绝
 
 ## Barrier
 
@@ -50,9 +50,9 @@
 
 ## Checkpoint 决定
 
-- [ ] 状态机转换完整且非法转换拒绝
+- [x] 状态机转换完整且非法转换拒绝
 - [ ] decision 只在任务全集和摘要合法后写入
-- [ ] DECIDED 不可逆
+- [x] DECIDED 不可逆
 - [ ] FINALIZED 可重试
 - [ ] 接管 leader 完成 DECIDED 未 FINALIZED
 - [ ] pre-decision failure 触发整作业恢复

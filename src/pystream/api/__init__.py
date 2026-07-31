@@ -13,6 +13,7 @@ from pystream.api.graph import DataStream, StreamEdge, StreamGraph, build_stream
 from pystream.api.models import (
     API_VERSION,
     CheckpointConfig,
+    DeliveryGuarantee,
     EdgeSpec,
     EventTimeExecutionConfig,
     EventTimeExtractorConfig,
@@ -45,6 +46,7 @@ __all__ = [
     "CheckpointConfig",
     "ConfigIssue",
     "DataStream",
+    "DeliveryGuarantee",
     "EdgeSpec",
     "EventTimeExecutionConfig",
     "EventTimeExtractorConfig",

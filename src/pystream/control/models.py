@@ -14,6 +14,14 @@ from pystream.api import OperatorType, Partitioning
 from pystream.control.errors import InvalidStateTransition
 
 
+class CoordinatorRole(StrEnum):
+    """JobManager 对持久协调状态的当前写权限。"""
+
+    STANDBY = "STANDBY"
+    ACTIVE = "ACTIVE"
+    PROTECTIVE = "PROTECTIVE"
+
+
 class JobStatus(StrEnum):
     """第一阶段作业状态。"""
 
@@ -301,6 +309,7 @@ class ResourceView:
 
 __all__ = [
     "ArtifactDescriptor",
+    "CoordinatorRole",
     "Job",
     "JobStatus",
     "PhysicalChannel",

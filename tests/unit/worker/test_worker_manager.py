@@ -98,7 +98,7 @@ class MemoryFetcher:
 
 class RecordingReporter:
     def __init__(self) -> None:
-        self.failures: list[tuple[str, str, int, str]] = []
+        self.failures: list[tuple[str, str, int, int, str]] = []
         self.reported = asyncio.Event()
 
     async def report_task_failed(
@@ -107,8 +107,10 @@ class RecordingReporter:
         task_id: str,
         attempt_id: int,
         error: str,
+        *,
+        coordinator_epoch: int = 0,
     ) -> None:
-        self.failures.append((job_id, task_id, attempt_id, error))
+        self.failures.append((job_id, task_id, attempt_id, coordinator_epoch, error))
         self.reported.set()
 
 
@@ -183,6 +185,7 @@ def source_deployment(
     *,
     worker_id: str = "worker-1",
     attempt_id: int = 0,
+    coordinator_epoch: int = 0,
 ) -> TaskDeployment:
     task = TaskInstance(
         task_id="job-1:words:0",
@@ -196,7 +199,13 @@ def source_deployment(
         worker_id=worker_id,
         slot_index=0,
     )
-    return TaskDeployment(task, descriptor, (), ())
+    return TaskDeployment(
+        task,
+        descriptor,
+        (),
+        (),
+        coordinator_epoch=coordinator_epoch,
+    )
 
 
 @pytest.mark.asyncio
@@ -312,6 +321,45 @@ async def test_manager_高attempt替换旧runtime并拒绝低attempt(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_manager_见到高epoch后跨task拒绝旧leader控制(tmp_path: Path) -> None:
+    content, descriptor = build_source_bundle(tmp_path)
+    first_consumer = BlockingConsumer()
+    second_consumer = BlockingConsumer()
+    consumers = [first_consumer, second_consumer]
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    manager = WorkerTaskManager(
+        "worker-1",
+        tmp_path / "work",
+        server,
+        MemoryFetcher(content),
+        consumer_factory=lambda *args, **kwargs: consumers.pop(0),
+    )
+    first = source_deployment(descriptor, attempt_id=0, coordinator_epoch=4)
+    second = source_deployment(descriptor, attempt_id=0, coordinator_epoch=5)
+    second.task.task_id = "job-1:words-shadow:0"
+    try:
+        await manager.deploy(first)
+        await manager.deploy(second)
+
+        assert not first_consumer.stopped
+        assert manager.get(second.task.task_id).coordinator_epoch == 5
+        with pytest.raises(WorkerTaskError, match="旧 coordinator epoch"):
+            await manager.arm_checkpoint(first.task.task_id, 0, 1, 4)
+        with pytest.raises(WorkerTaskError, match="旧 coordinator epoch"):
+            await manager.deploy(
+                source_deployment(
+                    descriptor,
+                    attempt_id=2,
+                    coordinator_epoch=4,
+                )
+            )
+    finally:
+        await manager.close()
+        await server.close()
+
+
+@pytest.mark.asyncio
 async def test_manager_拒绝错误worker和篡改制品(tmp_path: Path) -> None:
     content, descriptor = build_source_bundle(tmp_path)
     server = DataPlaneServer("127.0.0.1", 0)
@@ -363,7 +411,7 @@ async def test_manager_运行时异常上报_jobmanager(tmp_path: Path) -> None:
         status_reporter=reporter,
         consumer_factory=lambda *args, **kwargs: consumer,
     )
-    deployment = source_deployment(descriptor)
+    deployment = source_deployment(descriptor, coordinator_epoch=4)
 
     await manager.deploy(deployment)
     await asyncio.wait_for(reporter.reported.wait(), timeout=2)
@@ -372,7 +420,8 @@ async def test_manager_运行时异常上报_jobmanager(tmp_path: Path) -> None:
     assert snapshot.state is TaskRuntimeState.FAILED
     assert reporter.failures[0][:2] == ("job-1", deployment.task.task_id)
     assert reporter.failures[0][2] == 0
-    assert "broker disconnected" in reporter.failures[0][3]
+    assert reporter.failures[0][3] == 4
+    assert "broker disconnected" in reporter.failures[0][4]
     await manager.close()
     await server.close()
 

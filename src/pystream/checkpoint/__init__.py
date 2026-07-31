@@ -4,19 +4,29 @@ from pystream.checkpoint.codec import decode_state, encode_state
 from pystream.checkpoint.models import (
     CHECKPOINT_SCHEMA_VERSION,
     DEFAULT_MAX_SNAPSHOT_SIZE,
+    CheckpointDecision,
     CheckpointError,
+    CheckpointFinalization,
     CheckpointManifest,
+    CheckpointPhase,
+    CheckpointStateMachine,
     TaskSnapshotDescriptor,
+    TransactionDescriptor,
 )
 from pystream.checkpoint.store import LocalCheckpointStore
 
 __all__ = [
     "CHECKPOINT_SCHEMA_VERSION",
     "DEFAULT_MAX_SNAPSHOT_SIZE",
+    "CheckpointDecision",
     "CheckpointError",
+    "CheckpointFinalization",
     "CheckpointManifest",
+    "CheckpointPhase",
+    "CheckpointStateMachine",
     "LocalCheckpointStore",
     "TaskSnapshotDescriptor",
+    "TransactionDescriptor",
     "decode_state",
     "encode_state",
 ]

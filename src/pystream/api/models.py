@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -57,6 +57,13 @@ class Partitioning(StrEnum):
     FORWARD = "forward"
     REBALANCE = "rebalance"
     HASH = "hash"
+
+
+class DeliveryGuarantee(StrEnum):
+    """作业对状态、输入位置和 Sink 可见副作用的交付保证。"""
+
+    AT_LEAST_ONCE = "at_least_once"
+    EXACTLY_ONCE = "exactly_once"
 
 
 class JobMetadata(StrictModel):
@@ -141,8 +148,9 @@ class RestartConfig(StrictModel):
 
 
 class ExecutionConfig(StrictModel):
-    """可选中级运行语义；缺失时保持第一阶段行为。"""
+    """可选高级运行语义；缺失时保持第一阶段行为。"""
 
+    delivery_guarantee: DeliveryGuarantee = DeliveryGuarantee.EXACTLY_ONCE
     event_time: EventTimeExecutionConfig | None = None
     checkpoint: CheckpointConfig = CheckpointConfig()
     restart: RestartConfig = RestartConfig()
@@ -207,6 +215,8 @@ class EventTimeExtractorConfig(StrictModel):
 
 class FileSinkConfig(StrictModel):
     """CSV 文件 Sink 的连接器配置。"""
+
+    supports_exactly_once: ClassVar[bool] = True
 
     connector: Literal["file"]
     format: Literal["csv"] = "csv"
@@ -313,6 +323,7 @@ __all__ = [
     "API_VERSION",
     "CheckpointConfig",
     "ConnectorConfig",
+    "DeliveryGuarantee",
     "EdgeSpec",
     "EventTimeExecutionConfig",
     "EventTimeExtractorConfig",

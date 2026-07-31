@@ -34,8 +34,9 @@ class RecordingGateway:
         worker: WorkerNode,
         task_id: str,
         attempt_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
-        del attempt_id
+        del attempt_id, coordinator_epoch
         self.stops.append((worker.worker_id, task_id))
 
 
@@ -71,7 +72,11 @@ async def test_http_手动触发checkpoint返回manifest(tmp_path: Path, monkeyp
 @pytest.mark.asyncio
 async def test_http_注册三worker_提交查询下载和取消(tmp_path: Path) -> None:
     gateway = RecordingGateway()
-    manager = JobManager(LocalArtifactRepository(tmp_path / "store"), gateway)
+    manager = JobManager(
+        LocalArtifactRepository(tmp_path / "store"),
+        gateway,
+        coordinator_epoch=4,
+    )
     service = JobManagerHttpService(manager, reconcile_interval=60)
     client = TestClient(TestServer(service.create_app()))
     await client.start_server()
@@ -122,6 +127,29 @@ async def test_http_注册三worker_提交查询下载和取消(tmp_path: Path) 
         assert len(status["tasks"]) == 10
         assert len({item["worker_id"] for item in status["tasks"]}) >= 2
         assert len(gateway.deployments) == 10
+
+        task = status["tasks"][0]
+        missing_epoch = await client.post(
+            f"/jobs/{job_id}/tasks/{task['task_id']}/status",
+            json={
+                "status": "FAILED",
+                "attempt_id": task["attempt_id"],
+                "error": "missing epoch",
+            },
+        )
+        assert missing_epoch.status == 400
+
+        stale_report = await client.post(
+            f"/jobs/{job_id}/tasks/{task['task_id']}/status",
+            json={
+                "status": "FAILED",
+                "attempt_id": task["attempt_id"],
+                "coordinator_epoch": 3,
+                "error": "stale leader",
+            },
+        )
+        assert stale_report.status == 200
+        assert (await stale_report.json())["status"] == "RUNNING"
 
         artifact = await client.get(f"/jobs/{job_id}/artifacts/{bundle.sha256}")
         assert artifact.status == 200

@@ -24,6 +24,7 @@ def deployment_to_dict(deployment: TaskDeployment) -> dict[str, Any]:
     """把控制面部署对象转换为 HTTP JSON 文档。"""
     task = deployment.task
     return {
+        "coordinator_epoch": deployment.coordinator_epoch,
         "task": {
             "task_id": task.task_id,
             "job_id": task.job_id,
@@ -60,6 +61,7 @@ def deployment_from_dict(document: object) -> TaskDeployment:
             "incoming_channels",
             "outgoing_channels",
             "restore_descriptors",
+            "coordinator_epoch",
         },
         "$",
     )
@@ -144,6 +146,11 @@ def deployment_from_dict(document: object) -> TaskDeployment:
         incoming_channels=incoming,
         outgoing_channels=outgoing,
         restore_descriptors=restore_descriptors,
+        coordinator_epoch=_integer(
+            root["coordinator_epoch"],
+            "$.coordinator_epoch",
+            minimum=0,
+        ),
     )
 
 

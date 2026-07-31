@@ -42,6 +42,15 @@ class TaskDeployment:
     incoming_channels: tuple[PhysicalChannel, ...]
     outgoing_channels: tuple[PhysicalChannel, ...]
     restore_descriptors: tuple[TaskSnapshotDescriptor, ...] = ()
+    coordinator_epoch: int = 0
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.coordinator_epoch, bool)
+            or not isinstance(self.coordinator_epoch, int)
+            or self.coordinator_epoch < 0
+        ):
+            raise ValueError("coordinator_epoch 必须是非负整数")
 
 
 class WorkerGateway(Protocol):
@@ -55,6 +64,7 @@ class WorkerGateway(Protocol):
         worker: WorkerNode,
         task_id: str,
         attempt_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
         """停止物理任务；Worker 端实现应保持幂等。"""
 
@@ -64,6 +74,7 @@ class WorkerGateway(Protocol):
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
         """准备 Task 的 Checkpoint 状态机。"""
 
@@ -73,6 +84,7 @@ class WorkerGateway(Protocol):
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         """触发 Source Task 停流和快照。"""
 
@@ -82,6 +94,7 @@ class WorkerGateway(Protocol):
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         """等待普通 Task 收齐 DRAIN 并完成快照。"""
 
@@ -91,6 +104,7 @@ class WorkerGateway(Protocol):
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
         """确认全图 manifest 已完成。"""
 
@@ -100,6 +114,7 @@ class WorkerGateway(Protocol):
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
         """中止 Task 的活动 Checkpoint。"""
 

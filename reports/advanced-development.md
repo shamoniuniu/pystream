@@ -33,3 +33,39 @@
 - 上一回退点：`v0.2.0`
 - 结果提交：本里程碑提交 SHA 通过 Git note 关联
 - 回退：`git revert <Task 0 SHA>` 或从 `v0.2.0` 新建分支
+
+## 2026-07-31T03:19:57Z - Task 1 公共契约与高级状态机
+
+- 状态：实现和本地质量门完成，等待 staged review、提交和远端备份
+- 版本：包、Compose 和中级验收镜像标识升级到 `0.3.0`
+- 兼容：
+  - 缺少 `execution` 时继续使用基础 fail-fast 行为
+  - 存在 `execution` 时默认 `exactly_once`
+  - 中级示例显式固定 `at_least_once`
+  - Exactly-once Graph 拒绝未声明事务能力的 Sink
+- Checkpoint schema：
+  - schema version 从 1 升级到 2，旧文档明确拒绝
+  - 新增 `CheckpointPhase`、`CheckpointDecision`、`CheckpointFinalization`
+  - 新增严格 `TransactionDescriptor`，校验 identity、SHA、大小和相对路径
+  - `DECIDED` 禁止回退；`FINALIZING` 允许幂等自重试
+- Epoch fencing：
+  - `coordinator_epoch` 贯穿部署 DTO、快照、manifest、Worker 控制请求和失败上报
+  - Worker 保存全局最高 epoch，拒绝旧 leader 对任意 Task 的后续控制
+  - 单 JobManager 兼容 epoch 为 0；选举和租约行为留到 Task 5
+- 反例修复：
+  - 首轮 149/150 定向测试发现非法 job ID 在 schema 扩大后先触发大小限制；
+    调整为身份校验先于序列化和大小检查
+  - 不变量复核发现更高 epoch 只 fence 同 Task 的缺口；改为 Worker 全局最高 epoch
+- Python 3.11 质量门：
+  - pytest：386 passed
+  - branch coverage：84.48%
+  - Ruff check：通过
+  - Ruff format：80 files already formatted
+  - `git diff --check`：通过
+- 环境说明：
+  - 宿主 Python 3.13 的 checkpoint 临时路径受 Windows `MAX_PATH` 影响，不作证据
+  - Docker `run` 偶发退出后 CLI 不返回；改用 `create/start/inspect/rm`，测试容器
+    最终 `exit=0`
+- 上一回退点：`320eb52`
+- 结果提交：本里程碑提交 SHA 通过 Git note 关联
+- 回退：`git revert <Task 1 SHA>`

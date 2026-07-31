@@ -160,3 +160,13 @@ def test_snapshot大小和路径安全边界(tmp_path: Path) -> None:
             operator_id="map",
             state={},
         )
+    with pytest.raises(CheckpointError, match="coordinator_epoch"):
+        store.write_task_snapshot(
+            job_id="job-1",
+            checkpoint_id=1,
+            attempt_id=1,
+            coordinator_epoch=True,
+            task_id="map-0",
+            operator_id="map",
+            state={},
+        )

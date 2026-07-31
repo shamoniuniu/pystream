@@ -22,6 +22,7 @@ from pystream.control.http import JobManagerHttpService
 from pystream.control.manager import JobManager, JobRun
 from pystream.control.models import (
     ArtifactDescriptor,
+    CoordinatorRole,
     Job,
     JobStatus,
     PhysicalChannel,
@@ -42,6 +43,7 @@ __all__ = [
     "CheckpointCoordinationError",
     "CheckpointCoordinator",
     "ControlPlaneError",
+    "CoordinatorRole",
     "DeploymentError",
     "ExecutionGraph",
     "InsufficientSlots",

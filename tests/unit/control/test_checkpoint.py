@@ -39,8 +39,9 @@ class RecordingCheckpointGateway:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
-        del worker, attempt_id
+        del worker, attempt_id, coordinator_epoch
         self.calls.append(("arm", task_id, checkpoint_id))
         if task_id == self.fail_arm_task:
             raise ConnectionError("arm response lost")
@@ -51,10 +52,11 @@ class RecordingCheckpointGateway:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         del worker, attempt_id
         self.calls.append(("trigger", task_id, checkpoint_id))
-        return self._snapshot(task_id, checkpoint_id)
+        return self._snapshot(task_id, checkpoint_id, coordinator_epoch)
 
     async def wait_checkpoint(
         self,
@@ -62,12 +64,13 @@ class RecordingCheckpointGateway:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         del worker, attempt_id
         self.calls.append(("wait", task_id, checkpoint_id))
         if self.wait_delay:
             await asyncio.sleep(self.wait_delay)
-        return self._snapshot(task_id, checkpoint_id)
+        return self._snapshot(task_id, checkpoint_id, coordinator_epoch)
 
     async def complete_checkpoint(
         self,
@@ -75,8 +78,9 @@ class RecordingCheckpointGateway:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
-        del worker, attempt_id
+        del worker, attempt_id, coordinator_epoch
         self.calls.append(("complete", task_id, checkpoint_id))
         if task_id == self.fail_complete_task:
             raise ConnectionError("complete response lost")
@@ -87,16 +91,23 @@ class RecordingCheckpointGateway:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
-        del worker, attempt_id
+        del worker, attempt_id, coordinator_epoch
         self.calls.append(("abort", task_id, checkpoint_id))
 
-    def _snapshot(self, task_id: str, checkpoint_id: int) -> TaskSnapshotDescriptor:
+    def _snapshot(
+        self,
+        task_id: str,
+        checkpoint_id: int,
+        coordinator_epoch: int,
+    ) -> TaskSnapshotDescriptor:
         operator_id = task_id.rsplit(":", 2)[1]
         return self.store.write_task_snapshot(
             job_id="job-1",
             checkpoint_id=checkpoint_id,
             attempt_id=0,
+            coordinator_epoch=coordinator_epoch,
             task_id=task_id,
             operator_id=operator_id,
             state={"kind": "test", "snapshot": "{}"},

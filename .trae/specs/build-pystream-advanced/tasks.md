@@ -17,14 +17,14 @@
   - [x] 固化 plan/spec/tasks/checklist 和开发日志
   - [x] 提交并推送高级治理回退点
 
-- [ ] Task 1: 公共契约与高级状态机
-  - [ ] 包版本升级到 0.3.0
-  - [ ] 新增 DeliveryGuarantee/CheckpointPhase/CoordinatorRole
-  - [ ] execution 默认 exactly_once，可显式 at_least_once
-  - [ ] Graph 校验 Sink Exactly-once capability
-  - [ ] snapshot/decision/finalized schema
-  - [ ] coordinator_epoch 贯穿部署、状态和控制请求
-  - [ ] 状态机和兼容契约测试
+- [x] Task 1: 公共契约与高级状态机
+  - [x] 包版本升级到 0.3.0
+  - [x] 新增 DeliveryGuarantee/CheckpointPhase/CoordinatorRole
+  - [x] execution 默认 exactly_once，可显式 at_least_once
+  - [x] Graph 校验 Sink Exactly-once capability
+  - [x] snapshot/decision/finalized schema
+  - [x] coordinator_epoch 贯穿部署、状态和控制请求
+  - [x] 状态机和兼容契约测试
 
 - [ ] Task 2: 持续流 aligned Barrier
   - [ ] Source 短暂停顿注入 Barrier 后立即恢复

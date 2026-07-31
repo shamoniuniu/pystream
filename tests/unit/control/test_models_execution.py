@@ -8,6 +8,7 @@ import pytest
 
 from pystream.api import OperatorType, Partitioning, StreamGraph
 from pystream.control import (
+    CoordinatorRole,
     InvalidStateTransition,
     Job,
     JobStatus,
@@ -16,6 +17,14 @@ from pystream.control import (
     WorkerNode,
     build_execution_graph,
 )
+
+
+def test_coordinator_role_公开active_standby和protective状态() -> None:
+    assert {role.value for role in CoordinatorRole} == {
+        "STANDBY",
+        "ACTIVE",
+        "PROTECTIVE",
+    }
 
 
 def test_job_只允许声明过的状态转换():

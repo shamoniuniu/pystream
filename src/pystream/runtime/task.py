@@ -115,6 +115,7 @@ class RuntimeSnapshot:
     errors: int = 0
     operator_metrics: dict[str, int] = field(default_factory=dict)
     attempt_id: int = 0
+    coordinator_epoch: int = 0
     restored_checkpoint_id: int | None = None
 
 
@@ -280,6 +281,7 @@ class TaskRuntime:
             errors=self._failure_count,
             operator_metrics=self._operator_metrics(),
             attempt_id=task.attempt_id,
+            coordinator_epoch=self.deployment.coordinator_epoch,
             restored_checkpoint_id=task.restored_checkpoint_id,
         )
 
@@ -723,6 +725,7 @@ class TaskRuntime:
                 job_id=task.job_id,
                 checkpoint_id=checkpoint_id,
                 attempt_id=getattr(task, "attempt_id", 0),
+                coordinator_epoch=self.deployment.coordinator_epoch,
                 task_id=task.task_id,
                 operator_id=task.operator_id,
                 state=state,

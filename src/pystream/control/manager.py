@@ -49,6 +49,7 @@ class JobRun:
     artifact: ArtifactDescriptor | None = None
     deployed_task_ids: list[str] | None = None
     attempt_id: int = 0
+    coordinator_epoch: int = 0
     next_checkpoint_id: int = 1
     last_completed_checkpoint_id: int | None = None
     consecutive_checkpoint_failures: int = 0
@@ -83,12 +84,20 @@ class JobManager:
         registry: WorkerRegistry | None = None,
         scheduler: SlotScheduler | None = None,
         checkpoint_store: LocalCheckpointStore | None = None,
+        coordinator_epoch: int = 0,
     ) -> None:
+        if (
+            isinstance(coordinator_epoch, bool)
+            or not isinstance(coordinator_epoch, int)
+            or coordinator_epoch < 0
+        ):
+            raise ValueError("coordinator_epoch 必须是非负整数")
         self.artifact_repository = artifact_repository
         self.worker_gateway = worker_gateway
         self.registry = registry or WorkerRegistry(heartbeat_timeout)
         self.scheduler = scheduler or SlotScheduler()
         self.checkpoint_store = checkpoint_store
+        self.coordinator_epoch = coordinator_epoch
         self.checkpoint_coordinator = (
             CheckpointCoordinator(
                 checkpoint_store,
@@ -211,6 +220,7 @@ class JobManager:
             "job_id": run.job.job_id,
             "name": run.job.name,
             "status": run.job.status.value,
+            "coordinator_epoch": run.coordinator_epoch,
             "error": run.job.error,
             "attempt": run.attempt_id,
             "recovery": {
@@ -267,6 +277,7 @@ class JobManager:
         run = JobRun(
             job=job,
             execution_graph=execution_graph,
+            coordinator_epoch=self.coordinator_epoch,
             checkpoint_interval=(
                 execution.checkpoint.interval_seconds if execution is not None else None
             ),
@@ -346,6 +357,7 @@ class JobManager:
                     run.execution_graph,
                     checkpoint_id=checkpoint_id,
                     attempt_id=run.attempt_id,
+                    coordinator_epoch=run.coordinator_epoch,
                     timeout=run.checkpoint_timeout,
                 )
             except Exception as exc:
@@ -613,6 +625,7 @@ class JobManager:
             incoming_channels=run.execution_graph.incoming_channels(task.task_id),
             outgoing_channels=run.execution_graph.outgoing_channels(task.task_id),
             restore_descriptors=restore_descriptors,
+            coordinator_epoch=run.coordinator_epoch,
         )
 
     async def cancel_job(self, job_id: str) -> Job:
@@ -642,10 +655,26 @@ class JobManager:
         error: str | None = None,
         *,
         attempt_id: int = 0,
+        coordinator_epoch: int = 0,
     ) -> Job:
         """汇总 Worker 任务状态；任一 FAILED 触发全作业失败清理。"""
         run = self._runs[job_id]
         task = run.execution_graph.tasks[task_id]
+        if coordinator_epoch != run.coordinator_epoch:
+            log_event(
+                logging.getLogger(__name__),
+                logging.WARNING,
+                "stale_coordinator_report",
+                "忽略旧 coordinator epoch 的 Task 状态上报",
+                component="job_manager",
+                job_id=job_id,
+                operator_id=task.operator_id,
+                subtask=task.subtask_index,
+                task_id=task_id,
+                report_coordinator_epoch=coordinator_epoch,
+                current_coordinator_epoch=run.coordinator_epoch,
+            )
+            return run.job
         if attempt_id != task.attempt_id:
             log_event(
                 logging.getLogger(__name__),
@@ -856,6 +885,7 @@ class JobManager:
                     worker,
                     task.task_id,
                     task.attempt_id,
+                    run.coordinator_epoch,
                 )
                 if not was_failed:
                     task.transition(TaskStatus.CANCELLED)

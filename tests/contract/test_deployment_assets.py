@@ -16,13 +16,13 @@ from pystream.service import build_parser
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_intermediate版本身份一致() -> None:
+def test_v03版本身份一致() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     compose = yaml.safe_load((ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8"))
 
-    assert project["project"]["version"] == "0.2.0"
-    assert __version__ == "0.2.0"
-    assert compose["x-pystream-service"]["image"] == "pystream:0.2.0"
+    assert project["project"]["version"] == "0.3.0"
+    assert __version__ == "0.3.0"
+    assert compose["x-pystream-service"]["image"] == "pystream:0.3.0"
 
 
 def test_wordcount_样例契约和_udf(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from pystream.api.errors import ConfigIssue, JobConfigError
 from pystream.api.models import (
+    DeliveryGuarantee,
     EdgeSpec,
     JobDefinition,
     KafkaSourceConfig,
@@ -46,6 +47,7 @@ class StreamGraph:
         self._topological_order = self._sort_topologically()
         self._streams = self._propagate_stream_properties()
         self._validate_event_time_contract()
+        self._validate_delivery_guarantee()
         self._edges = tuple(self._normalize_edge(edge) for edge in definition.edges)
 
     @staticmethod
@@ -331,6 +333,25 @@ class StreamGraph:
                     continue
                 pending.extend(upstream_ids[operator_id])
 
+        if issues:
+            raise JobConfigError(issues)
+
+    def _validate_delivery_guarantee(self) -> None:
+        """拒绝无法提供作业级 Exactly-once 的 Sink。"""
+        execution = self.definition.execution
+        if execution is None or execution.delivery_guarantee is DeliveryGuarantee.AT_LEAST_ONCE:
+            return
+        issues: list[ConfigIssue] = []
+        for position, operator in enumerate(self.definition.operators):
+            if operator.type is not OperatorType.SINK:
+                continue
+            if not getattr(operator.config, "supports_exactly_once", False):
+                issues.append(
+                    ConfigIssue(
+                        f"operators[{position}].config",
+                        f"Sink {operator.id!r} 不支持 exactly_once",
+                    )
+                )
         if issues:
             raise JobConfigError(issues)
 

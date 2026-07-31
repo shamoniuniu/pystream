@@ -74,8 +74,9 @@ class RecordingGateway:
         worker: WorkerNode,
         task_id: str,
         attempt_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
-        del attempt_id
+        del attempt_id, coordinator_epoch
         self.stop_calls.append((worker.worker_id, task_id))
         if task_id == self.fail_stop_task:
             raise ConnectionError("simulated stop failure")
@@ -86,8 +87,9 @@ class RecordingGateway:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
-        del worker, attempt_id
+        del worker, attempt_id, coordinator_epoch
         self.checkpoint_calls.append(("arm", task_id, checkpoint_id))
 
     async def trigger_checkpoint(
@@ -96,12 +98,13 @@ class RecordingGateway:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         del worker, attempt_id
         self.checkpoint_calls.append(("trigger", task_id, checkpoint_id))
         if self.fail_checkpoint:
             raise ConnectionError("simulated checkpoint failure")
-        return self._snapshot(task_id, checkpoint_id)
+        return self._snapshot(task_id, checkpoint_id, coordinator_epoch)
 
     async def wait_checkpoint(
         self,
@@ -109,10 +112,11 @@ class RecordingGateway:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         del worker, attempt_id
         self.checkpoint_calls.append(("wait", task_id, checkpoint_id))
-        return self._snapshot(task_id, checkpoint_id)
+        return self._snapshot(task_id, checkpoint_id, coordinator_epoch)
 
     async def complete_checkpoint(
         self,
@@ -120,8 +124,9 @@ class RecordingGateway:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
-        del worker, attempt_id
+        del worker, attempt_id, coordinator_epoch
         self.checkpoint_calls.append(("complete", task_id, checkpoint_id))
 
     async def abort_checkpoint(
@@ -130,17 +135,24 @@ class RecordingGateway:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
-        del worker, attempt_id
+        del worker, attempt_id, coordinator_epoch
         self.checkpoint_calls.append(("abort", task_id, checkpoint_id))
 
-    def _snapshot(self, task_id: str, checkpoint_id: int) -> TaskSnapshotDescriptor:
+    def _snapshot(
+        self,
+        task_id: str,
+        checkpoint_id: int,
+        coordinator_epoch: int,
+    ) -> TaskSnapshotDescriptor:
         if self.checkpoint_store is None:
             raise AssertionError("测试 Gateway 缺少 Checkpoint Store")
         return self.checkpoint_store.write_task_snapshot(
             job_id=task_id.split(":", 1)[0],
             checkpoint_id=checkpoint_id,
             attempt_id=0,
+            coordinator_epoch=coordinator_epoch,
             task_id=task_id,
             operator_id=task_id.rsplit(":", 2)[1],
             state={"kind": "test", "snapshot": "{}"},
@@ -172,6 +184,7 @@ def manager_with_workers(
     worker_count: int = 3,
     slots: int = 4,
     heartbeat_at: datetime | None = None,
+    coordinator_epoch: int = 0,
 ) -> JobManager:
     """创建带本地制品仓库和固定 Worker 的 JobManager。"""
     checkpoint_store = LocalCheckpointStore(tmp_path / "checkpoints")
@@ -181,6 +194,7 @@ def manager_with_workers(
         gateway,
         heartbeat_timeout=timedelta(seconds=10),
         checkpoint_store=checkpoint_store,
+        coordinator_epoch=coordinator_epoch,
     )
     for index in range(worker_count):
         manager.register_worker(
@@ -421,6 +435,40 @@ async def test_report_task_status_忽略旧attempt上报(
     assert job.status is JobStatus.RUNNING
     assert task.status is TaskStatus.RUNNING
     assert gateway.stop_calls == []
+
+
+@pytest.mark.asyncio
+async def test_coordinator_epoch_贯穿部署状态并fence旧上报(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway()
+    manager = manager_with_workers(
+        tmp_path,
+        gateway,
+        worker_count=2,
+        slots=2,
+        coordinator_epoch=4,
+    )
+    await manager.submit_job(two_task_graph, b"bundle", job_id="job-epoch")
+    task_id = gateway.deploy_calls[0][1]
+    task = manager.get_execution_graph("job-epoch").tasks[task_id]
+
+    assert {item.coordinator_epoch for item in gateway.deployments} == {4}
+    assert manager.status_view("job-epoch")["coordinator_epoch"] == 4
+
+    job = await manager.report_task_status(
+        "job-epoch",
+        task_id,
+        TaskStatus.FAILED,
+        "stale leader",
+        attempt_id=0,
+        coordinator_epoch=3,
+    )
+
+    assert job.status is JobStatus.RUNNING
+    assert task.status is TaskStatus.RUNNING
+    await manager.cancel_job("job-epoch")
 
 
 @pytest.mark.asyncio

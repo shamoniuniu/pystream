@@ -9,6 +9,8 @@ import yaml
 
 from pystream.api import (
     API_VERSION,
+    DeliveryGuarantee,
+    FileSinkConfig,
     JobConfigError,
     OperatorType,
     Partitioning,
@@ -522,6 +524,7 @@ def test_事件时间作业解析默认值和毫秒属性() -> None:
     execution = graph.definition.execution
 
     assert execution is not None
+    assert execution.delivery_guarantee is DeliveryGuarantee.EXACTLY_ONCE
     assert execution.event_time is not None
     assert execution.event_time.max_out_of_orderness_milliseconds == 2_000
     assert execution.event_time.idle_timeout_seconds == 30
@@ -529,6 +532,29 @@ def test_事件时间作业解析默认值和毫秒属性() -> None:
     assert execution.checkpoint.timeout_seconds == 30
     assert execution.restart.delay_seconds == 2
     assert graph.operator("totals").window.time_characteristic == "event"
+
+
+def test_execution_可显式回退at_least_once() -> None:
+    document = event_time_job()
+    document["execution"]["delivery_guarantee"] = "at_least_once"
+
+    graph = parse_stream_graph(as_yaml(document))
+
+    assert graph.definition.execution.delivery_guarantee is DeliveryGuarantee.AT_LEAST_ONCE
+
+
+def test_exactly_once_拒绝无事务能力sink(monkeypatch) -> None:
+    monkeypatch.setattr(FileSinkConfig, "supports_exactly_once", False)
+
+    assert_config_error(
+        event_time_job(),
+        "operators[4].config",
+        "不支持 exactly_once",
+    )
+
+    compatible = event_time_job()
+    compatible["execution"]["delivery_guarantee"] = "at_least_once"
+    parse_stream_graph(as_yaml(compatible))
 
 
 def test_事件时间窗口要求_execution策略和所有source提取器() -> None:

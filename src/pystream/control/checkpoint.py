@@ -40,6 +40,7 @@ class CheckpointCoordinator:
         *,
         checkpoint_id: int,
         attempt_id: int,
+        coordinator_epoch: int = 0,
         timeout: float,
     ) -> CheckpointManifest:
         """完成一次全图快照；任一失败都会 abort 已 arm 的 Task。"""
@@ -61,6 +62,7 @@ class CheckpointCoordinator:
                     task.task_id,
                     task.attempt_id,
                     checkpoint_id,
+                    coordinator_epoch,
                 )
 
             source_tasks = tuple(
@@ -75,6 +77,7 @@ class CheckpointCoordinator:
                         task.task_id,
                         task.attempt_id,
                         checkpoint_id,
+                        coordinator_epoch,
                     )
                     for task in source_tasks
                 )
@@ -89,6 +92,7 @@ class CheckpointCoordinator:
                         task.task_id,
                         task.attempt_id,
                         checkpoint_id,
+                        coordinator_epoch,
                     )
                     for task in operator_tasks
                 )
@@ -100,6 +104,7 @@ class CheckpointCoordinator:
                     job_id=graph.job_id,
                     checkpoint_id=checkpoint_id,
                     attempt_id=attempt_id,
+                    coordinator_epoch=coordinator_epoch,
                     expected_task_ids=set(graph.tasks),
                     snapshots=snapshots,
                 )
@@ -110,19 +115,28 @@ class CheckpointCoordinator:
                     task.task_id,
                     task.attempt_id,
                     checkpoint_id,
+                    coordinator_epoch,
                 )
             return manifest
 
         try:
             return await asyncio.wait_for(execute(), timeout=timeout)
         except asyncio.CancelledError:
-            await self._abort(graph.job_id, checkpoint_id, attempt_id, armed, timeout)
+            await self._abort(
+                graph.job_id,
+                checkpoint_id,
+                attempt_id,
+                coordinator_epoch,
+                armed,
+                timeout,
+            )
             raise
         except Exception as exc:
             abort_errors = await self._abort(
                 graph.job_id,
                 checkpoint_id,
                 attempt_id,
+                coordinator_epoch,
                 armed,
                 timeout,
             )
@@ -138,6 +152,7 @@ class CheckpointCoordinator:
         job_id: str,
         checkpoint_id: int,
         attempt_id: int,
+        coordinator_epoch: int,
         armed: list[TaskInstance],
         timeout: float,
     ) -> list[str]:
@@ -150,6 +165,7 @@ class CheckpointCoordinator:
                     task.task_id,
                     task.attempt_id,
                     checkpoint_id,
+                    coordinator_epoch,
                 )
             except Exception as exc:
                 errors.append(f"{task.task_id}: {type(exc).__name__}: {exc}")

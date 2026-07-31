@@ -16,7 +16,7 @@ $ResolvedEvidencePath = Join-Path $Root $EvidencePath
 $ProjectLabel = "label=com.docker.compose.project=pystream"
 $NetworkName = "pystream_pystream"
 $OutputVolume = "pystream_pystream-output"
-$ImageName = "pystream:0.2.0"
+$ImageName = "pystream:0.3.0"
 $ProjectVolumeNames = @(
     "pystream_pystream-artifacts",
     "pystream_pystream-checkpoints",

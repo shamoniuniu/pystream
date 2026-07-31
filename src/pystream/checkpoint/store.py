@@ -104,11 +104,19 @@ class LocalCheckpointStore:
         job_id: str,
         checkpoint_id: int,
         attempt_id: int,
+        coordinator_epoch: int = 0,
         task_id: str,
         operator_id: str,
         state: dict[str, JsonValue],
     ) -> TaskSnapshotDescriptor:
         """原子写入一个当前 attempt 的 Task 状态。"""
+        self._validate_job_id(job_id)
+        if (
+            isinstance(coordinator_epoch, bool)
+            or not isinstance(coordinator_epoch, int)
+            or coordinator_epoch < 0
+        ):
+            raise CheckpointError("coordinator_epoch 必须是非负整数")
         if not isinstance(operator_id, str) or not operator_id:
             raise CheckpointError("operator_id 必须是非空字符串")
         if not isinstance(state, dict) or not all(isinstance(key, str) for key in state):
@@ -118,6 +126,7 @@ class LocalCheckpointStore:
             "job_id": job_id,
             "checkpoint_id": checkpoint_id,
             "attempt_id": attempt_id,
+            "coordinator_epoch": coordinator_epoch,
             "task_id": task_id,
             "operator_id": operator_id,
             "state": state,
@@ -144,6 +153,7 @@ class LocalCheckpointStore:
             relative_path=target.relative_to(self.root).as_posix(),
             sha256=hashlib.sha256(content).hexdigest(),
             size=len(content),
+            coordinator_epoch=coordinator_epoch,
         )
         self.read_task_snapshot(descriptor)
         return descriptor
@@ -178,6 +188,7 @@ class LocalCheckpointStore:
             "job_id",
             "checkpoint_id",
             "attempt_id",
+            "coordinator_epoch",
             "task_id",
             "operator_id",
             "state",
@@ -190,6 +201,7 @@ class LocalCheckpointStore:
             document["job_id"],
             document["checkpoint_id"],
             document["attempt_id"],
+            document["coordinator_epoch"],
             document["task_id"],
             document["operator_id"],
         )
@@ -197,6 +209,7 @@ class LocalCheckpointStore:
             descriptor.job_id,
             descriptor.checkpoint_id,
             descriptor.attempt_id,
+            descriptor.coordinator_epoch,
             descriptor.task_id,
             descriptor.operator_id,
         )
@@ -213,11 +226,18 @@ class LocalCheckpointStore:
         job_id: str,
         checkpoint_id: int,
         attempt_id: int,
+        coordinator_epoch: int = 0,
         expected_task_ids: set[str],
         snapshots: tuple[TaskSnapshotDescriptor, ...],
         created_at: datetime | None = None,
     ) -> CheckpointManifest:
         """验证任务全集后最后写入不可变 manifest。"""
+        if (
+            isinstance(coordinator_epoch, bool)
+            or not isinstance(coordinator_epoch, int)
+            or coordinator_epoch < 0
+        ):
+            raise CheckpointError("coordinator_epoch 必须是非负整数")
         if not expected_task_ids:
             raise CheckpointError("expected_task_ids 不能为空")
         if {item.task_id for item in snapshots} != expected_task_ids:
@@ -227,6 +247,7 @@ class LocalCheckpointStore:
                 descriptor.job_id != job_id
                 or descriptor.checkpoint_id != checkpoint_id
                 or descriptor.attempt_id != attempt_id
+                or descriptor.coordinator_epoch != coordinator_epoch
             ):
                 raise CheckpointError("Task snapshot descriptor 不属于当前 Checkpoint")
             self.read_task_snapshot(descriptor)
@@ -247,6 +268,7 @@ class LocalCheckpointStore:
             job_id=job_id,
             checkpoint_id=checkpoint_id,
             attempt_id=attempt_id,
+            coordinator_epoch=coordinator_epoch,
             created_at=(created_at or datetime.now(UTC)).astimezone(UTC),
             snapshots=sorted_snapshots,
         )

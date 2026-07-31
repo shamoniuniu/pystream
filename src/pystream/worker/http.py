@@ -244,9 +244,11 @@ class WorkerHttpService:
 
     async def _stop(self, request: web.Request) -> web.Response:
         attempt_id = _attempt_id(request)
+        coordinator_epoch = _coordinator_epoch(request)
         snapshot = await self.manager.stop(
             request.match_info["task_id"],
             attempt_id,
+            coordinator_epoch,
         )
         if snapshot is None:
             return web.Response(status=204)
@@ -275,39 +277,69 @@ class WorkerHttpService:
         return web.json_response(_snapshot_to_dict(snapshot))
 
     async def _checkpoint_arm(self, request: web.Request) -> web.Response:
-        task_id, attempt_id, checkpoint_id = _checkpoint_coordinates(request)
+        task_id, attempt_id, checkpoint_id, coordinator_epoch = _checkpoint_coordinates(request)
         await self._checkpoint_action(
-            self.manager.arm_checkpoint(task_id, attempt_id, checkpoint_id),
+            self.manager.arm_checkpoint(
+                task_id,
+                attempt_id,
+                checkpoint_id,
+                coordinator_epoch,
+            ),
         )
         return web.json_response(
-            {"task_id": task_id, "checkpoint_id": checkpoint_id, "status": "armed"}
+            {
+                "task_id": task_id,
+                "checkpoint_id": checkpoint_id,
+                "coordinator_epoch": coordinator_epoch,
+                "status": "armed",
+            }
         )
 
     async def _checkpoint_trigger(self, request: web.Request) -> web.Response:
-        task_id, attempt_id, checkpoint_id = _checkpoint_coordinates(request)
+        task_id, attempt_id, checkpoint_id, coordinator_epoch = _checkpoint_coordinates(request)
         descriptor = await self._checkpoint_action(
-            self.manager.trigger_checkpoint(task_id, attempt_id, checkpoint_id),
+            self.manager.trigger_checkpoint(
+                task_id,
+                attempt_id,
+                checkpoint_id,
+                coordinator_epoch,
+            ),
         )
         return web.json_response(descriptor.to_dict())
 
     async def _checkpoint_wait(self, request: web.Request) -> web.Response:
-        task_id, attempt_id, checkpoint_id = _checkpoint_coordinates(request)
+        task_id, attempt_id, checkpoint_id, coordinator_epoch = _checkpoint_coordinates(request)
         descriptor = await self._checkpoint_action(
-            self.manager.wait_checkpoint(task_id, attempt_id, checkpoint_id),
+            self.manager.wait_checkpoint(
+                task_id,
+                attempt_id,
+                checkpoint_id,
+                coordinator_epoch,
+            ),
         )
         return web.json_response(descriptor.to_dict())
 
     async def _checkpoint_complete(self, request: web.Request) -> web.Response:
-        task_id, attempt_id, checkpoint_id = _checkpoint_coordinates(request)
+        task_id, attempt_id, checkpoint_id, coordinator_epoch = _checkpoint_coordinates(request)
         await self._checkpoint_action(
-            self.manager.complete_checkpoint(task_id, attempt_id, checkpoint_id),
+            self.manager.complete_checkpoint(
+                task_id,
+                attempt_id,
+                checkpoint_id,
+                coordinator_epoch,
+            ),
         )
         return web.Response(status=204)
 
     async def _checkpoint_abort(self, request: web.Request) -> web.Response:
-        task_id, attempt_id, checkpoint_id = _checkpoint_coordinates(request)
+        task_id, attempt_id, checkpoint_id, coordinator_epoch = _checkpoint_coordinates(request)
         await self._checkpoint_action(
-            self.manager.abort_checkpoint(task_id, attempt_id, checkpoint_id),
+            self.manager.abort_checkpoint(
+                task_id,
+                attempt_id,
+                checkpoint_id,
+                coordinator_epoch,
+            ),
         )
         return web.Response(status=204)
 
@@ -417,12 +449,15 @@ class HttpJobManagerClient(_HttpClientBase, RegistrationClient):
         task_id: str,
         attempt_id: int,
         error: str,
+        *,
+        coordinator_epoch: int = 0,
     ) -> None:
         await self._post(
             f"/jobs/{quote(job_id, safe='')}/tasks/{quote(task_id, safe='')}/status",
             {
                 "status": TaskStatus.FAILED.value,
                 "attempt_id": attempt_id,
+                "coordinator_epoch": coordinator_epoch,
                 "error": error,
             },
         )
@@ -461,11 +496,12 @@ class HttpWorkerGateway(_HttpClientBase):
         worker: WorkerNode,
         task_id: str,
         attempt_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
         session = await self._get_session()
         async with session.delete(
             f"{worker.control_address.rstrip('/')}/tasks/{quote(task_id, safe='')}"
-            f"?attempt_id={attempt_id}"
+            f"?attempt_id={attempt_id}&coordinator_epoch={coordinator_epoch}"
         ) as response:
             try:
                 response.raise_for_status()
@@ -479,12 +515,14 @@ class HttpWorkerGateway(_HttpClientBase):
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
         await self._checkpoint_request(
             worker,
             task_id,
             attempt_id,
             checkpoint_id,
+            coordinator_epoch,
             "arm",
         )
 
@@ -494,12 +532,14 @@ class HttpWorkerGateway(_HttpClientBase):
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         document = await self._checkpoint_request(
             worker,
             task_id,
             attempt_id,
             checkpoint_id,
+            coordinator_epoch,
             "trigger",
         )
         return TaskSnapshotDescriptor.from_dict(document)
@@ -510,12 +550,14 @@ class HttpWorkerGateway(_HttpClientBase):
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         document = await self._checkpoint_request(
             worker,
             task_id,
             attempt_id,
             checkpoint_id,
+            coordinator_epoch,
             None,
         )
         return TaskSnapshotDescriptor.from_dict(document)
@@ -526,12 +568,14 @@ class HttpWorkerGateway(_HttpClientBase):
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
         await self._checkpoint_request(
             worker,
             task_id,
             attempt_id,
             checkpoint_id,
+            coordinator_epoch,
             "complete",
         )
 
@@ -541,12 +585,14 @@ class HttpWorkerGateway(_HttpClientBase):
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
         await self._checkpoint_request(
             worker,
             task_id,
             attempt_id,
             checkpoint_id,
+            coordinator_epoch,
             "abort",
         )
 
@@ -556,6 +602,7 @@ class HttpWorkerGateway(_HttpClientBase):
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int,
         action: str | None,
     ) -> object:
         path = (
@@ -564,7 +611,7 @@ class HttpWorkerGateway(_HttpClientBase):
         )
         if action is not None:
             path += f"/{action}"
-        path += f"?attempt_id={attempt_id}"
+        path += f"?attempt_id={attempt_id}&coordinator_epoch={coordinator_epoch}"
         session = await self._get_session()
         method = session.get if action is None else session.post
         # Checkpoint 的总超时由 JobManager coordinator 控制; 不能被 Gateway
@@ -588,7 +635,7 @@ def _snapshot_to_dict(snapshot: RuntimeSnapshot) -> dict[str, Any]:
     return document
 
 
-def _checkpoint_coordinates(request: web.Request) -> tuple[str, int, int]:
+def _checkpoint_coordinates(request: web.Request) -> tuple[str, int, int, int]:
     task_id = request.match_info["task_id"]
     try:
         checkpoint_id = int(request.match_info["checkpoint_id"])
@@ -596,7 +643,7 @@ def _checkpoint_coordinates(request: web.Request) -> tuple[str, int, int]:
         raise web.HTTPBadRequest(text="checkpoint_id 必须是非负整数") from exc
     if checkpoint_id < 0:
         raise web.HTTPBadRequest(text="checkpoint_id 必须是非负整数")
-    return task_id, _attempt_id(request), checkpoint_id
+    return task_id, _attempt_id(request), checkpoint_id, _coordinator_epoch(request)
 
 
 def _attempt_id(request: web.Request) -> int:
@@ -607,6 +654,16 @@ def _attempt_id(request: web.Request) -> int:
     if attempt_id < 0:
         raise web.HTTPBadRequest(text="attempt_id 必须是非负整数")
     return attempt_id
+
+
+def _coordinator_epoch(request: web.Request) -> int:
+    try:
+        coordinator_epoch = int(request.query["coordinator_epoch"])
+    except (KeyError, ValueError) as exc:
+        raise web.HTTPBadRequest(text="coordinator_epoch 必须是非负整数") from exc
+    if coordinator_epoch < 0:
+        raise web.HTTPBadRequest(text="coordinator_epoch 必须是非负整数")
+    return coordinator_epoch
 
 
 __all__ = [

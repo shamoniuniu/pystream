@@ -37,7 +37,10 @@ class StubRegistration:
         task_id: str,
         attempt_id: int,
         error: str,
+        *,
+        coordinator_epoch: int = 0,
     ) -> None:
+        del coordinator_epoch
         self.failures.append((job_id, task_id, attempt_id, error))
 
 
@@ -68,6 +71,7 @@ class StubManager:
             output_channels=len(deployment.outgoing_channels),
             records_in=0,
             records_out=0,
+            coordinator_epoch=deployment.coordinator_epoch,
         )
         self._snapshots[task.task_id] = snapshot
         return snapshot
@@ -76,8 +80,9 @@ class StubManager:
         self,
         task_id: str,
         attempt_id: int | None = None,
+        coordinator_epoch: int = 0,
     ) -> RuntimeSnapshot | None:
-        del attempt_id
+        del attempt_id, coordinator_epoch
         self.stopped.append(task_id)
         snapshot = self._snapshots.get(task_id)
         if snapshot is None:
@@ -91,8 +96,9 @@ class StubManager:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
-        del attempt_id
+        del attempt_id, coordinator_epoch
         self.checkpoint_actions.append(("arm", task_id, checkpoint_id))
 
     async def trigger_checkpoint(
@@ -100,28 +106,31 @@ class StubManager:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         del attempt_id
         self.checkpoint_actions.append(("trigger", task_id, checkpoint_id))
-        return self._descriptor(task_id, checkpoint_id)
+        return self._descriptor(task_id, checkpoint_id, coordinator_epoch)
 
     async def wait_checkpoint(
         self,
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         del attempt_id
         self.checkpoint_actions.append(("wait", task_id, checkpoint_id))
-        return self._descriptor(task_id, checkpoint_id)
+        return self._descriptor(task_id, checkpoint_id, coordinator_epoch)
 
     async def complete_checkpoint(
         self,
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
-        del attempt_id
+        del attempt_id, coordinator_epoch
         self.checkpoint_actions.append(("complete", task_id, checkpoint_id))
 
     async def abort_checkpoint(
@@ -129,12 +138,17 @@ class StubManager:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
-        del attempt_id
+        del attempt_id, coordinator_epoch
         self.checkpoint_actions.append(("abort", task_id, checkpoint_id))
 
     @staticmethod
-    def _descriptor(task_id: str, checkpoint_id: int) -> TaskSnapshotDescriptor:
+    def _descriptor(
+        task_id: str,
+        checkpoint_id: int,
+        coordinator_epoch: int,
+    ) -> TaskSnapshotDescriptor:
         return TaskSnapshotDescriptor(
             job_id="job-1",
             checkpoint_id=checkpoint_id,
@@ -144,6 +158,7 @@ class StubManager:
             relative_path=f"job-1/checkpoint-{checkpoint_id}/task.json",
             sha256="0" * 64,
             size=100,
+            coordinator_epoch=coordinator_epoch,
         )
 
     def get(self, task_id: str) -> RuntimeSnapshot:
@@ -211,30 +226,33 @@ async def test_worker_http_注册心跳_部署查询停止() -> None:
         )
         assert response.status == 201
         task_id = sample_deployment().task.task_id
-        assert (await response.json())["state"] == "RUNNING"
+        deployed_view = await response.json()
+        assert deployed_view["state"] == "RUNNING"
+        assert deployed_view["coordinator_epoch"] == 4
         assert (await (await client.get("/tasks")).json())["tasks"][0]["task_id"] == task_id
         assert (await client.get(f"/tasks/{task_id}")).status == 200
         assert (await client.get("/tasks/missing")).status == 404
 
-        arm = await client.post(f"/tasks/{task_id}/checkpoints/1/arm?attempt_id=0")
+        coordinates = "attempt_id=0&coordinator_epoch=4"
+        arm = await client.post(f"/tasks/{task_id}/checkpoints/1/arm?{coordinates}")
         assert (await arm.json())["status"] == "armed"
-        trigger = await client.post(f"/tasks/{task_id}/checkpoints/1/trigger?attempt_id=0")
+        trigger = await client.post(f"/tasks/{task_id}/checkpoints/1/trigger?{coordinates}")
         assert (await trigger.json())["checkpoint_id"] == 1
-        wait = await client.get(f"/tasks/{task_id}/checkpoints/1?attempt_id=0")
+        wait = await client.get(f"/tasks/{task_id}/checkpoints/1?{coordinates}")
         assert (await wait.json())["task_id"] == task_id
         assert (
-            await client.post(f"/tasks/{task_id}/checkpoints/1/complete?attempt_id=0")
+            await client.post(f"/tasks/{task_id}/checkpoints/1/complete?{coordinates}")
         ).status == 204
         assert (
-            await client.post(f"/tasks/{task_id}/checkpoints/2/abort?attempt_id=0")
+            await client.post(f"/tasks/{task_id}/checkpoints/2/abort?{coordinates}")
         ).status == 204
         assert (
-            await client.post(f"/tasks/{task_id}/checkpoints/not-int/arm?attempt_id=0")
+            await client.post(f"/tasks/{task_id}/checkpoints/not-int/arm?{coordinates}")
         ).status == 400
 
-        stopped = await client.delete(f"/tasks/{task_id}?attempt_id=0")
+        stopped = await client.delete(f"/tasks/{task_id}?{coordinates}")
         assert (await stopped.json())["state"] == "STOPPED"
-        assert (await client.delete("/tasks/missing?attempt_id=0")).status == 204
+        assert (await client.delete(f"/tasks/missing?{coordinates}")).status == 204
     finally:
         await client.close()
     assert manager.closed
@@ -270,22 +288,25 @@ async def test_http_worker_gateway_调用真实worker路由() -> None:
     deployment = sample_deployment()
     try:
         await gateway.deploy_task(worker, deployment)
-        await gateway.arm_checkpoint(worker, deployment.task.task_id, 0, 3)
+        epoch = deployment.coordinator_epoch
+        await gateway.arm_checkpoint(worker, deployment.task.task_id, 0, 3, epoch)
         triggered = await gateway.trigger_checkpoint(
             worker,
             deployment.task.task_id,
             0,
             3,
+            epoch,
         )
         waited = await gateway.wait_checkpoint(
             worker,
             deployment.task.task_id,
             0,
             3,
+            epoch,
         )
-        await gateway.complete_checkpoint(worker, deployment.task.task_id, 0, 3)
-        await gateway.abort_checkpoint(worker, deployment.task.task_id, 0, 4)
-        await gateway.stop_task(worker, deployment.task.task_id, 0)
+        await gateway.complete_checkpoint(worker, deployment.task.task_id, 0, 3, epoch)
+        await gateway.abort_checkpoint(worker, deployment.task.task_id, 0, 4, epoch)
+        await gateway.stop_task(worker, deployment.task.task_id, 0, epoch)
     finally:
         await gateway.close()
         await server.close()

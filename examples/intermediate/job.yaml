@@ -4,6 +4,7 @@ job:
   name: event-time-retract
 
 execution:
+  delivery_guarantee: at_least_once
   event_time:
     max_out_of_orderness: 2s
     idle_timeout: 30s

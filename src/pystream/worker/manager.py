@@ -53,6 +53,8 @@ class StatusReporter(Protocol):
         task_id: str,
         attempt_id: int,
         error: str,
+        *,
+        coordinator_epoch: int = 0,
     ) -> None:
         """报告任务失败；控制面负责停止其余任务。"""
 
@@ -93,6 +95,7 @@ class WorkerTaskManager:
         )
         self._runtimes: dict[str, TaskRuntime] = {}
         self._highest_attempts: dict[str, int] = {}
+        self._highest_coordinator_epoch = -1
         self._deployment_lock = asyncio.Lock()
         self._artifact_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
@@ -109,6 +112,11 @@ class WorkerTaskManager:
                 f"任务 {task.task_id} 分配给 {task.worker_id!r}, 不能部署到 {self.worker_id!r}"
             )
         async with self._deployment_lock:
+            if deployment.coordinator_epoch < self._highest_coordinator_epoch:
+                raise WorkerTaskError(
+                    f"拒绝旧 coordinator epoch {deployment.coordinator_epoch}, "
+                    f"Worker 当前最高 epoch={self._highest_coordinator_epoch}"
+                )
             highest_attempt = self._highest_attempts.get(task.task_id, -1)
             if task.attempt_id < highest_attempt:
                 raise WorkerTaskError(
@@ -118,22 +126,40 @@ class WorkerTaskManager:
             existing = self._runtimes.get(task.task_id)
             if existing is not None:
                 existing_attempt = existing.deployment.task.attempt_id
-                if task.attempt_id < existing_attempt:
+                existing_epoch = existing.deployment.coordinator_epoch
+                if deployment.coordinator_epoch < existing_epoch:
+                    raise WorkerTaskError(
+                        f"拒绝旧 coordinator epoch {deployment.coordinator_epoch}, "
+                        f"运行中 epoch={existing_epoch}"
+                    )
+                if (
+                    deployment.coordinator_epoch == existing_epoch
+                    and task.attempt_id < existing_attempt
+                ):
                     raise WorkerTaskError(
                         f"拒绝旧 attempt {task.attempt_id}, 运行中 attempt={existing_attempt}"
                     )
-                if task.attempt_id == existing_attempt and existing.state in {
-                    TaskRuntimeState.STARTING,
-                    TaskRuntimeState.RUNNING,
-                }:
+                if (
+                    deployment.coordinator_epoch == existing_epoch
+                    and task.attempt_id == existing_attempt
+                    and existing.state
+                    in {
+                        TaskRuntimeState.STARTING,
+                        TaskRuntimeState.RUNNING,
+                    }
+                ):
                     return existing.snapshot
-                if task.attempt_id == existing_attempt:
+                if (
+                    deployment.coordinator_epoch == existing_epoch
+                    and task.attempt_id == existing_attempt
+                ):
                     raise WorkerTaskError(
                         f"任务 {task.task_id} attempt={task.attempt_id} "
                         f"已存在且状态为 {existing.state.value}"
                     )
                 await existing.stop()
                 del self._runtimes[task.task_id]
+            self._highest_coordinator_epoch = deployment.coordinator_epoch
             self._highest_attempts[task.task_id] = task.attempt_id
             job_root = await self._prepare_artifact(deployment.artifact)
             loader: UDFLoader | None = None
@@ -224,12 +250,14 @@ class WorkerTaskManager:
                     task_id: str,
                     error: BaseException,
                     attempt_id: int = task.attempt_id,
+                    coordinator_epoch: int = deployment.coordinator_epoch,
                 ) -> None:
                     await self._report_failure(
                         job_id,
                         task_id,
                         attempt_id,
                         error,
+                        coordinator_epoch=coordinator_epoch,
                     )
 
                 runtime = TaskRuntime(
@@ -254,12 +282,22 @@ class WorkerTaskManager:
         self,
         task_id: str,
         attempt_id: int | None = None,
+        coordinator_epoch: int = 0,
     ) -> RuntimeSnapshot | None:
         """幂等停止任务；未知 task_id 返回 None。"""
         runtime = self._runtimes.get(task_id)
         if runtime is None:
             return None
+        if coordinator_epoch < self._highest_coordinator_epoch:
+            raise WorkerTaskError(
+                f"拒绝旧 coordinator epoch {coordinator_epoch}, "
+                f"Worker 当前最高 epoch={self._highest_coordinator_epoch}"
+            )
+        self._highest_coordinator_epoch = coordinator_epoch
         current_attempt = runtime.deployment.task.attempt_id
+        current_epoch = runtime.deployment.coordinator_epoch
+        if coordinator_epoch < current_epoch:
+            return runtime.snapshot
         if attempt_id is not None and attempt_id < current_attempt:
             return runtime.snapshot
         if attempt_id is not None and attempt_id > current_attempt:
@@ -274,45 +312,62 @@ class WorkerTaskManager:
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
         """为本地 Task 准备 Checkpoint。"""
-        await self._runtime(task_id, attempt_id).arm_checkpoint(checkpoint_id)
+        await self._runtime(task_id, attempt_id, coordinator_epoch).arm_checkpoint(checkpoint_id)
 
     async def trigger_checkpoint(
         self,
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         """触发本地 Source Task 快照。"""
-        return await self._runtime(task_id, attempt_id).trigger_checkpoint(checkpoint_id)
+        return await self._runtime(
+            task_id,
+            attempt_id,
+            coordinator_epoch,
+        ).trigger_checkpoint(checkpoint_id)
 
     async def wait_checkpoint(
         self,
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> TaskSnapshotDescriptor:
         """等待本地 Task 收齐 DRAIN 并完成快照。"""
-        return await self._runtime(task_id, attempt_id).wait_checkpoint(checkpoint_id)
+        return await self._runtime(
+            task_id,
+            attempt_id,
+            coordinator_epoch,
+        ).wait_checkpoint(checkpoint_id)
 
     async def complete_checkpoint(
         self,
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
         """通知本地 Task 全图 manifest 已完成。"""
-        await self._runtime(task_id, attempt_id).complete_checkpoint(checkpoint_id)
+        await self._runtime(
+            task_id,
+            attempt_id,
+            coordinator_epoch,
+        ).complete_checkpoint(checkpoint_id)
 
     async def abort_checkpoint(
         self,
         task_id: str,
         attempt_id: int,
         checkpoint_id: int,
+        coordinator_epoch: int = 0,
     ) -> None:
         """中止本地 Task 的活动 Checkpoint。"""
-        await self._runtime(task_id, attempt_id).abort_checkpoint(checkpoint_id)
+        await self._runtime(task_id, attempt_id, coordinator_epoch).abort_checkpoint(checkpoint_id)
 
     def get(self, task_id: str) -> RuntimeSnapshot:
         """查询单个本地任务。"""
@@ -321,12 +376,28 @@ class WorkerTaskManager:
         except KeyError as exc:
             raise WorkerTaskError(f"未知任务 {task_id!r}") from exc
 
-    def _runtime(self, task_id: str, attempt_id: int) -> TaskRuntime:
+    def _runtime(
+        self,
+        task_id: str,
+        attempt_id: int,
+        coordinator_epoch: int,
+    ) -> TaskRuntime:
         try:
             runtime = self._runtimes[task_id]
         except KeyError as exc:
             raise WorkerTaskError(f"未知任务 {task_id!r}") from exc
+        if coordinator_epoch < self._highest_coordinator_epoch:
+            raise WorkerTaskError(
+                f"拒绝旧 coordinator epoch {coordinator_epoch}, "
+                f"Worker 当前最高 epoch={self._highest_coordinator_epoch}"
+            )
         current_attempt = runtime.deployment.task.attempt_id
+        current_epoch = runtime.deployment.coordinator_epoch
+        if coordinator_epoch != current_epoch:
+            raise WorkerTaskError(
+                f"Task {task_id} coordinator epoch 不匹配: "
+                f"request={coordinator_epoch}, current={current_epoch}"
+            )
         if attempt_id != current_attempt:
             raise WorkerTaskError(
                 f"Task {task_id} attempt 不匹配: request={attempt_id}, current={current_attempt}"
@@ -398,6 +469,8 @@ class WorkerTaskManager:
         task_id: str,
         attempt_id: int,
         error: BaseException,
+        *,
+        coordinator_epoch: int = 0,
     ) -> None:
         if self.status_reporter is not None:
             await self.status_reporter.report_task_failed(
@@ -405,6 +478,7 @@ class WorkerTaskManager:
                 task_id,
                 attempt_id,
                 f"{type(error).__name__}: {error}",
+                coordinator_epoch=coordinator_epoch,
             )
 
 

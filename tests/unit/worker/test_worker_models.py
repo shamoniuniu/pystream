@@ -41,6 +41,7 @@ def sample_deployment() -> TaskDeployment:
         ArtifactDescriptor("job-1", "a" * 64, 42),
         (),
         (channel,),
+        coordinator_epoch=4,
     )
 
 
@@ -58,6 +59,7 @@ def test_deployment_json_严格往返() -> None:
         (lambda value: value.update({"unknown": True}), "未知 unknown"),
         (lambda value: value["task"].update({"subtask_index": -1}), "subtask_index"),
         (lambda value: value["artifact"].update({"job_id": "other"}), "必须与"),
+        (lambda value: value.update({"coordinator_epoch": -1}), "coordinator_epoch"),
         (
             lambda value: value["outgoing_channels"][0]["target_endpoint"].update(
                 {"task_id": "wrong"}
@@ -99,6 +101,7 @@ def test_deployment_json_恢复descriptor严格往返并拒绝当前attempt快�
         relative_path="job-1/checkpoint/tasks/map.json",
         sha256="b" * 64,
         size=100,
+        coordinator_epoch=3,
     )
     deployment = TaskDeployment(
         base.task,
