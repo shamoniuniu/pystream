@@ -1,0 +1,1 @@
+event=before_commit; review=ready; scope=advanced-m2-aligned-barrier; blockers=none; tests=396-python311; coverage=84.86; ruff=pass; format=pass
