@@ -1,0 +1,1 @@
+event=before_commit; review=ready; scope=advanced-m3-transactional-file-sink; blockers=none; tests=413-python311; recovery_tests=111; coverage=84.28; ruff=pass; format=pass; diff_check=pass; secret_scan=0
