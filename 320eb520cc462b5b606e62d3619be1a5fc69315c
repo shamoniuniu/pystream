@@ -1,0 +1,1 @@
+review=ready; scope=advanced-governance; staged_tree=6015a53f9e88f350be715c92e0a29b7709d4b2e8; baseline=v0.2.0; tests=373; coverage=84.40; ruff=pass; blockers=none; rollback=git revert 320eb52
