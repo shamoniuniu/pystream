@@ -1,0 +1,1 @@
+review=ready; scope=advanced-m1-contracts; staged_tree=94f95d20c10e89b99ee865ccf686a848874d55e8; blockers=none; tests=386 full Python3.11; coverage=84.48; ruff=pass; format=80; diff_check=pass; receipt_ref=refs/notes/agent-receipts; rollback=git revert ea64976
