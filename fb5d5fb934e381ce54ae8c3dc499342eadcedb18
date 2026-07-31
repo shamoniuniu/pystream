@@ -1,0 +1,1 @@
+review=ready; scope=advanced-m3-transactional-file-sink; staged_tree=e5d1bce830396bf9ef7a32a294b5e7b751a31c44; blockers=none; tests=413 full Python3.11; recovery_tests=111; coverage=84.28; ruff=pass; format=113; diff_check=pass; secret_scan=0; receipt_ref=refs/notes/agent-receipts; rollback=git revert fb5d5fb
