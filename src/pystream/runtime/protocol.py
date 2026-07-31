@@ -15,7 +15,7 @@ from typing import Protocol, cast
 
 from pystream.common import JsonValue, MessageType, RecordEnvelope, RecordValidationError
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 DEFAULT_MAX_FRAME_SIZE = 8 * 1024 * 1024
 DEFAULT_MAX_BATCH_RECORDS = 1_000
 _LENGTH_PREFIX_SIZE = 4
@@ -76,6 +76,7 @@ class ChannelIdentity:
     upstream_task_id: str
     downstream_task_id: str
     attempt_id: int = 0
+    coordinator_epoch: int = 0
 
     def __post_init__(self) -> None:
         for field_name in ("job_id", "upstream_task_id", "downstream_task_id"):
@@ -88,6 +89,12 @@ class ChannelIdentity:
             or self.attempt_id < 0
         ):
             raise HandshakeError("attempt_id 必须是非负整数")
+        if (
+            isinstance(self.coordinator_epoch, bool)
+            or not isinstance(self.coordinator_epoch, int)
+            or self.coordinator_epoch < 0
+        ):
+            raise HandshakeError("coordinator_epoch 必须是非负整数")
 
     def to_payload(self) -> dict[str, JsonValue]:
         """转换为 HELLO payload。"""
@@ -96,6 +103,7 @@ class ChannelIdentity:
             "upstream_task_id": self.upstream_task_id,
             "downstream_task_id": self.downstream_task_id,
             "attempt_id": self.attempt_id,
+            "coordinator_epoch": self.coordinator_epoch,
         }
 
 
@@ -271,10 +279,16 @@ def hello_frame(identity: ChannelIdentity) -> Frame:
 
 
 def validate_hello(frame: Frame, expected: ChannelIdentity) -> ChannelIdentity:
-    """校验首帧类型、字段和三元通道身份。"""
+    """校验首帧类型、任务坐标、attempt 和 coordinator epoch。"""
     if frame.frame_type is not FrameType.HELLO:
         raise HandshakeError(f"首帧必须是 HELLO, 实际为 {frame.frame_type.value}")
-    required = {"job_id", "upstream_task_id", "downstream_task_id", "attempt_id"}
+    required = {
+        "job_id",
+        "upstream_task_id",
+        "downstream_task_id",
+        "attempt_id",
+        "coordinator_epoch",
+    }
     missing = required - frame.payload.keys()
     extra = frame.payload.keys() - required
     if missing or extra:
@@ -290,6 +304,7 @@ def validate_hello(frame: Frame, expected: ChannelIdentity) -> ChannelIdentity:
             upstream_task_id=cast(str, frame.payload["upstream_task_id"]),
             downstream_task_id=cast(str, frame.payload["downstream_task_id"]),
             attempt_id=cast(int, frame.payload["attempt_id"]),
+            coordinator_epoch=cast(int, frame.payload["coordinator_epoch"]),
         )
     except (AttributeError, HandshakeError) as exc:
         raise HandshakeError(f"HELLO 身份字段无效: {exc}") from exc

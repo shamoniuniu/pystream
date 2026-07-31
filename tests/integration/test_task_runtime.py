@@ -37,6 +37,7 @@ from pystream.runtime import (
     BoundedDataChannel,
     ChannelIdentity,
     DataPlaneServer,
+    RuntimeLifecycleError,
     TaskRuntime,
     TaskRuntimeState,
     hello_frame,
@@ -92,6 +93,8 @@ class CheckpointMemorySource(MemorySource):
         self.paused = False
         self.resumes = 0
         self.checkpoint_commits = 0
+        self.frozen: dict[int, bytes] = {}
+        self.aborted: list[int] = []
 
     async def pause(self) -> None:
         self.paused = True
@@ -104,9 +107,23 @@ class CheckpointMemorySource(MemorySource):
         assert self.paused
         return encode_state("memory-source", {"records": len(self._records)})
 
-    async def commit_checkpoint(self) -> None:
+    def snapshot_checkpoint(self, checkpoint_id: int) -> bytes:
         assert self.paused
+        snapshot = self.snapshot_state()
+        self.frozen[checkpoint_id] = snapshot
+        return snapshot
+
+    async def commit_checkpoint(self, checkpoint_id: int | None = None) -> None:
+        if checkpoint_id is None:
+            assert self.paused
+        else:
+            assert not self.paused
+            assert self.frozen.pop(checkpoint_id) is not None
         self.checkpoint_commits += 1
+
+    def abort_checkpoint(self, checkpoint_id: int) -> None:
+        self.frozen.pop(checkpoint_id, None)
+        self.aborted.append(checkpoint_id)
 
 
 class RestoringMemorySource(CheckpointMemorySource):
@@ -182,8 +199,16 @@ def deployment(
     incoming: tuple[PhysicalChannel, ...] = (),
     outgoing: tuple[PhysicalChannel, ...] = (),
     restore: tuple[TaskSnapshotDescriptor, ...] = (),
+    coordinator_epoch: int = 0,
 ) -> TaskDeployment:
-    return TaskDeployment(task_instance, ARTIFACT, incoming, outgoing, restore)
+    return TaskDeployment(
+        task_instance,
+        ARTIFACT,
+        incoming,
+        outgoing,
+        restore,
+        coordinator_epoch=coordinator_epoch,
+    )
 
 
 def record(record_id: str, word: str) -> RecordEnvelope:
@@ -210,6 +235,16 @@ def checkpoint_drain(checkpoint_id: int, source_task_id: str) -> RecordEnvelope:
         payload={},
         processing_time=AT_WINDOW_START,
         message_type=MessageType.CHECKPOINT_DRAIN,
+        checkpoint_id=checkpoint_id,
+    )
+
+
+def checkpoint_barrier(checkpoint_id: int, source_task_id: str) -> RecordEnvelope:
+    return RecordEnvelope(
+        record_id=f"checkpoint-barrier:{source_task_id}:{checkpoint_id}",
+        payload={},
+        processing_time=AT_WINDOW_START,
+        message_type=MessageType.BARRIER,
         checkpoint_id=checkpoint_id,
     )
 
@@ -480,6 +515,310 @@ async def test_checkpoint按data_drain顺序完成全链路快照和source提交
 
 
 @pytest.mark.asyncio
+async def test_aligned_barrier_source注入后立即恢复并完成全链路快照(
+    tmp_path: Path,
+) -> None:
+    source_server = DataPlaneServer("127.0.0.1", 0)
+    target_server = DataPlaneServer("127.0.0.1", 0)
+    await source_server.start()
+    await target_server.start()
+    source_task = task("words", OperatorType.SOURCE)
+    target_task = task("normalize", OperatorType.MAP)
+    source_to_target = channel(
+        source_task,
+        target_task,
+        Partitioning.FORWARD,
+        target_server,
+    )
+    store = LocalCheckpointStore(tmp_path / "checkpoints")
+    source = CheckpointMemorySource([record("words:0:0", "APPLE")])
+    target_runtime = TaskRuntime(
+        deployment(target_task, incoming=(source_to_target,)),
+        target_server,
+        operator=MapOperator(OperatorContext("normalize"), lambda payload: payload),
+        checkpoint_enabled=True,
+        aligned_checkpoints=True,
+        checkpoint_store=store,
+    )
+    source_runtime = TaskRuntime(
+        deployment(source_task, outgoing=(source_to_target,)),
+        source_server,
+        source=source,
+        checkpoint_enabled=True,
+        aligned_checkpoints=True,
+        checkpoint_store=store,
+    )
+    try:
+        await target_runtime.start()
+        await source_runtime.start()
+        await wait_until(lambda: target_runtime.snapshot.records_in == 1)
+
+        await target_runtime.arm_checkpoint(1)
+        await source_runtime.arm_checkpoint(1)
+        source_descriptor = await source_runtime.trigger_checkpoint(1)
+        target_descriptor = await asyncio.wait_for(
+            target_runtime.wait_checkpoint(1),
+            timeout=2,
+        )
+
+        assert source.resumes == 1
+        assert not source.paused
+        assert set(source.frozen) == {1}
+        assert source_runtime.snapshot.source_pause_duration_ms >= 0
+        assert target_runtime.snapshot.barrier_blocked_inputs == 1
+        assert target_server.metrics["barrier_gate_waits"] == 1
+        assert target_server.metrics["barrier_gated_connections"] == 0
+
+        store.complete_checkpoint(
+            job_id="job-1",
+            checkpoint_id=1,
+            attempt_id=0,
+            expected_task_ids={source_task.task_id, target_task.task_id},
+            snapshots=(source_descriptor, target_descriptor),
+        )
+        await target_runtime.complete_checkpoint(1)
+        await source_runtime.complete_checkpoint(1)
+
+        assert source.checkpoint_commits == 1
+        assert source.frozen == {}
+        assert source.resumes == 1
+
+        source.release.set()
+        await asyncio.gather(source_runtime.wait(), target_runtime.wait())
+    finally:
+        await source_runtime.stop()
+        await target_runtime.stop()
+        await source_server.close()
+        await target_server.close()
+
+
+@pytest.mark.asyncio
+async def test_aligned_barrier_逐输入gate且未对齐通道继续处理(
+    tmp_path: Path,
+) -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    left = task("left", OperatorType.MAP)
+    right = task("right", OperatorType.MAP)
+    target = task("target", OperatorType.MAP)
+    incoming = (
+        channel(left, target, Partitioning.REBALANCE, server),
+        channel(right, target, Partitioning.REBALANCE, server),
+    )
+    seen: list[str] = []
+    runtime = TaskRuntime(
+        deployment(target, incoming=incoming),
+        server,
+        operator=MapOperator(
+            OperatorContext("target"),
+            lambda payload: seen.append(payload["word"]) or payload,
+        ),
+        checkpoint_enabled=True,
+        aligned_checkpoints=True,
+        checkpoint_store=LocalCheckpointStore(tmp_path / "checkpoints"),
+    )
+    outputs: list[BoundedDataChannel] = []
+    try:
+        await runtime.start()
+        await runtime.arm_checkpoint(1)
+        for upstream in (left, right):
+            _, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+            output = BoundedDataChannel(
+                writer,
+                ChannelIdentity("job-1", upstream.task_id, target.task_id),
+                queue_capacity=8,
+                batch_size=1,
+            )
+            await output.start()
+            outputs.append(output)
+
+        await outputs[0].send(record("left-pre", "left-pre"))
+        await outputs[0].send(checkpoint_barrier(1, left.task_id))
+        await outputs[0].send(record("left-post", "left-post"))
+        await wait_until(
+            lambda: seen == ["left-pre"] and server.metrics["barrier_gated_connections"] == 1
+        )
+
+        await outputs[1].send(record("right-pre", "right-pre"))
+        await wait_until(lambda: seen == ["left-pre", "right-pre"])
+        assert "left-post" not in seen
+
+        await outputs[1].send(checkpoint_barrier(1, right.task_id))
+        descriptor = await asyncio.wait_for(runtime.wait_checkpoint(1), timeout=2)
+        await wait_until(lambda: seen == ["left-pre", "right-pre", "left-post"])
+
+        assert descriptor.checkpoint_id == 1
+        assert runtime.snapshot.barrier_blocked_inputs == 2
+        assert server.metrics["max_barrier_gated_connections"] == 2
+        assert server.metrics["barrier_gated_connections"] == 0
+
+        await runtime.complete_checkpoint(1)
+        for output in outputs:
+            await output.close()
+        await runtime.wait()
+    finally:
+        for output in outputs:
+            await output.abort()
+        await runtime.stop()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_aligned_barrier_abort解除gate并拒绝错序编号(tmp_path: Path) -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    left = task("left", OperatorType.MAP)
+    right = task("right", OperatorType.MAP)
+    target = task("target", OperatorType.MAP)
+    incoming = (
+        channel(left, target, Partitioning.REBALANCE, server),
+        channel(right, target, Partitioning.REBALANCE, server),
+    )
+    seen: list[str] = []
+    runtime = TaskRuntime(
+        deployment(target, incoming=incoming),
+        server,
+        operator=MapOperator(
+            OperatorContext("target"),
+            lambda payload: seen.append(payload["word"]) or payload,
+        ),
+        checkpoint_enabled=True,
+        aligned_checkpoints=True,
+        checkpoint_store=LocalCheckpointStore(tmp_path / "checkpoints"),
+    )
+    outputs: list[BoundedDataChannel] = []
+    identities = tuple(
+        ChannelIdentity("job-1", item.source_task_id, target.task_id) for item in incoming
+    )
+    try:
+        await runtime.start()
+        await runtime.arm_checkpoint(2)
+        for identity in identities:
+            _, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+            output = BoundedDataChannel(writer, identity, queue_capacity=4, batch_size=1)
+            await output.start()
+            outputs.append(output)
+
+        await outputs[0].send(checkpoint_barrier(2, left.task_id))
+        await outputs[0].send(record("left-after-abort", "left-after-abort"))
+        await wait_until(lambda: server.metrics["barrier_gated_connections"] == 1)
+
+        await runtime.abort_checkpoint(2)
+        await wait_until(lambda: seen == ["left-after-abort"])
+        assert server.metrics["barrier_gated_connections"] == 0
+        assert runtime.state is TaskRuntimeState.RUNNING
+
+        await runtime.arm_checkpoint(3)
+        with pytest.raises(RuntimeLifecycleError, match="未 arm"):
+            await runtime.accept_control(
+                identities[0],
+                checkpoint_barrier(4, left.task_id),
+            )
+        await runtime.abort_checkpoint(3)
+
+        await runtime.arm_checkpoint(5)
+        await outputs[0].send(checkpoint_barrier(5, left.task_id))
+        await wait_until(lambda: server.metrics["barrier_gated_connections"] == 1)
+        await runtime.stop()
+        await wait_until(lambda: server.metrics["barrier_gated_connections"] == 0)
+    finally:
+        for output in outputs:
+            await output.abort()
+        await runtime.stop()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_aligned_barrier_未对齐输入断连使任务失败并释放gate(
+    tmp_path: Path,
+) -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    left = task("left", OperatorType.MAP)
+    right = task("right", OperatorType.MAP)
+    target = task("target", OperatorType.MAP)
+    incoming = (
+        channel(left, target, Partitioning.REBALANCE, server),
+        channel(right, target, Partitioning.REBALANCE, server),
+    )
+    runtime = TaskRuntime(
+        deployment(target, incoming=incoming),
+        server,
+        operator=MapOperator(OperatorContext("target"), lambda payload: payload),
+        checkpoint_enabled=True,
+        aligned_checkpoints=True,
+        checkpoint_store=LocalCheckpointStore(tmp_path / "checkpoints"),
+    )
+    outputs: list[BoundedDataChannel] = []
+    try:
+        await runtime.start()
+        await runtime.arm_checkpoint(1)
+        for upstream in (left, right):
+            _, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+            output = BoundedDataChannel(
+                writer,
+                ChannelIdentity("job-1", upstream.task_id, target.task_id),
+            )
+            await output.start()
+            outputs.append(output)
+        await wait_until(lambda: server.active_connection_count == 2)
+
+        await outputs[0].send(checkpoint_barrier(1, left.task_id))
+        await wait_until(lambda: server.metrics["barrier_gated_connections"] == 1)
+        await outputs[1].abort()
+
+        await wait_until(lambda: runtime.state is TaskRuntimeState.FAILED)
+        await wait_until(lambda: server.metrics["barrier_gated_connections"] == 0)
+        assert runtime.snapshot.error is not None
+        assert "入通道" in runtime.snapshot.error
+    finally:
+        for output in outputs:
+            await output.abort()
+        await runtime.stop()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_aligned_barrier_重复输入使任务失败(tmp_path: Path) -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    upstream = task("upstream", OperatorType.MAP)
+    target = task("target", OperatorType.MAP)
+    incoming = channel(upstream, target, Partitioning.FORWARD, server)
+    runtime = TaskRuntime(
+        deployment(target, incoming=(incoming,)),
+        server,
+        operator=MapOperator(OperatorContext("target"), lambda payload: payload),
+        checkpoint_enabled=True,
+        aligned_checkpoints=True,
+        checkpoint_store=LocalCheckpointStore(tmp_path / "checkpoints"),
+    )
+    output: BoundedDataChannel | None = None
+    try:
+        await runtime.start()
+        await runtime.arm_checkpoint(1)
+        _, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+        output = BoundedDataChannel(
+            writer,
+            ChannelIdentity("job-1", upstream.task_id, target.task_id),
+        )
+        await output.start()
+        await output.send(checkpoint_barrier(1, upstream.task_id))
+        await asyncio.wait_for(runtime.wait_checkpoint(1), timeout=2)
+
+        await output.send(checkpoint_barrier(1, upstream.task_id))
+        await wait_until(lambda: runtime.state is TaskRuntimeState.FAILED)
+
+        assert runtime.snapshot.error is not None
+        assert "重复 BARRIER" in runtime.snapshot.error
+    finally:
+        if output is not None:
+            await output.abort()
+        await runtime.stop()
+        await server.close()
+
+
+@pytest.mark.asyncio
 async def test_checkpoint多输入收齐与abort后的延迟drain隔离(tmp_path: Path) -> None:
     server = DataPlaneServer("127.0.0.1", 0)
     await server.start()
@@ -704,7 +1043,12 @@ async def test_未启用控制消息经独立帧传输后不会进入业务_udf(
         assert udf_calls == []
         assert runtime.state is TaskRuntimeState.FAILED
         assert runtime.snapshot.error is not None
-        assert f"尚未处理控制消息 {message_type.value}" in runtime.snapshot.error
+        expected = (
+            "at_least_once Runtime 不接受 BARRIER"
+            if message_type is MessageType.BARRIER
+            else f"尚未处理控制消息 {message_type.value}"
+        )
+        assert expected in runtime.snapshot.error
     finally:
         await output.abort()
         await runtime.stop()
@@ -873,6 +1217,43 @@ async def test_慢_file_sink_使_taskruntime_输入队列背压且记录不丢�
         assert rows == [f"2026/07/26T12:00:01,word-{index},1" for index in range(len(records))]
         assert runtime.snapshot.operator_metrics == {"records_written": len(records)}
     finally:
+        await runtime.stop()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_data_plane_拒绝旧coordinator_epoch连接() -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    upstream = task("upstream", OperatorType.MAP)
+    target = task("target", OperatorType.MAP)
+    incoming = channel(upstream, target, Partitioning.FORWARD, server)
+    runtime = TaskRuntime(
+        deployment(target, incoming=(incoming,), coordinator_epoch=4),
+        server,
+        operator=MapOperator(OperatorContext("target"), lambda payload: payload),
+    )
+    await runtime.start()
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+    del reader
+    await write_frame(
+        writer,
+        hello_frame(
+            ChannelIdentity(
+                "job-1",
+                upstream.task_id,
+                target.task_id,
+                coordinator_epoch=3,
+            )
+        ),
+    )
+    try:
+        await wait_until(lambda: server.metrics["connection_errors"] == 1)
+        assert runtime.state is TaskRuntimeState.RUNNING
+        assert server.active_connection_count == 0
+    finally:
+        writer.close()
+        await writer.wait_closed()
         await runtime.stop()
         await server.close()
 

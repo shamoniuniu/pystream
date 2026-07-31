@@ -26,14 +26,14 @@
   - [x] coordinator_epoch 贯穿部署、状态和控制请求
   - [x] 状态机和兼容契约测试
 
-- [ ] Task 2: 持续流 aligned Barrier
-  - [ ] Source 短暂停顿注入 Barrier 后立即恢复
-  - [ ] checkpoint-specific frozen offsets
-  - [ ] per-input Barrier gate
-  - [ ] all-input alignment 后 snapshot/forward/unblock
-  - [ ] abort/cancel/failure 无 gate 泄漏
-  - [ ] 对齐时间和 blocked input 指标
-  - [ ] 双输入、乱序、超时、断连和背压测试
+- [x] Task 2: 持续流 aligned Barrier
+  - [x] Source 短暂停顿注入 Barrier 后立即恢复
+  - [x] checkpoint-specific frozen offsets
+  - [x] per-input Barrier gate
+  - [x] all-input alignment 后 snapshot/forward/unblock
+  - [x] abort/cancel/failure 无 gate 泄漏
+  - [x] 对齐时间和 blocked input 指标
+  - [x] 双输入、乱序、超时、断连和背压测试
 
 - [ ] Task 3: 事务 File Sink 与两阶段提交
   - [ ] ACTIVE/PREPARED/COMMITTED/ABORTED 生命周期

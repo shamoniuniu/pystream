@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import logging
@@ -335,6 +336,90 @@ async def test_source_checkpoint_pauses_snapshots_exact_offsets_and_resumes() ->
         FakePartition("words", 0),
         FakePartition("words", 1),
     }
+    await source.close()
+
+
+@pytest.mark.asyncio
+async def test_source_barrier冻结checkpoint专属offset且恢复消费后不漂移() -> None:
+    consumer = FakeConsumer([FakeMessage(b'{"word":"apple","count":1}', partition=0, offset=3)])
+    source = KafkaJsonSource(
+        fixed_context(),
+        job_id="job-1",
+        config=source_config(),
+        consumer_factory=RecordingConsumerFactory(consumer),
+    )
+    await source.open()
+    _ = [record async for record in source.records()]
+
+    await source.pause()
+    frozen = decode_state(source.snapshot_checkpoint(7), "kafka-source")
+    await source.resume()
+    assert frozen["partitions"][0]["next_offset"] == 4
+    assert source.metrics["frozen_checkpoints"] == 1
+
+    consumer.messages.append(FakeMessage(b'{"word":"pie","count":1}', partition=0, offset=9))
+    _ = [record async for record in source.records()]
+    await source.commit_checkpoint(7)
+
+    committed = consumer.commit_payloads[-1]
+    assert committed is not None
+    assert {
+        (partition.topic, partition.partition): getattr(value, "offset", value)
+        for partition, value in committed.items()
+    } == {("words", 0): 4}
+    assert "frozen_checkpoints" not in source.metrics
+
+    await source.pause()
+    source.snapshot_checkpoint(8)
+    await source.resume()
+    source.abort_checkpoint(8)
+    with pytest.raises(KafkaSourceError, match="没有 frozen offset"):
+        await source.commit_checkpoint(8)
+    assert len(consumer.commit_payloads) == 1
+    await source.close()
+
+
+@pytest.mark.asyncio
+async def test_event_time_source_pause期间不生成watermark越过barrier() -> None:
+    consumer = FakeConsumer(
+        [
+            FakeMessage(
+                b'{"word":"apple","event_time":"2026-07-26T12:00:05Z"}',
+                partition=0,
+                offset=0,
+            )
+        ]
+    )
+    source = KafkaJsonSource(
+        fixed_context(),
+        job_id="job-1",
+        config=source_config(event_time={"pointer": "/event_time"}),
+        event_time_strategy=EventTimeExecutionConfig(
+            max_out_of_orderness="0s",
+            idle_timeout="30s",
+        ),
+        consumer_factory=RecordingConsumerFactory(consumer),
+    )
+    await source.open()
+    iterator = source.records().__aiter__()
+    data = await anext(iterator)
+    source.acknowledge(data)
+    await source.pause()
+
+    pending_watermark = asyncio.create_task(anext(iterator))
+    await asyncio.sleep(0.02)
+    frozen = decode_state(source.snapshot_checkpoint(1), "kafka-source")
+
+    assert not pending_watermark.done()
+    assert frozen["partitions"][0]["next_offset"] == 1
+    assert frozen["last_watermark"] is None
+
+    await source.resume()
+    watermark = await asyncio.wait_for(pending_watermark, timeout=1)
+    assert watermark.message_type is MessageType.WATERMARK
+    assert watermark.event_time == datetime(2026, 7, 26, 12, 0, 5, tzinfo=UTC)
+    source.abort_checkpoint(1)
+    await iterator.aclose()
     await source.close()
 
 

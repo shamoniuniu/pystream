@@ -92,6 +92,14 @@ class _PartitionEventTimeState:
     max_event_time: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _FrozenKafkaCheckpoint:
+    """Barrier 边界冻结的 Source 状态和精确 next offset。"""
+
+    snapshot: bytes
+    offsets: tuple[tuple[object, int | None], ...]
+
+
 def _create_aiokafka_consumer(*topics: str, **kwargs: Any) -> AsyncKafkaConsumer:
     """延迟创建生产 consumer，使 fake 测试不依赖正在运行的 broker。"""
     try:
@@ -160,6 +168,7 @@ class KafkaJsonSource:
         self._last_watermark: datetime | None = None
         self._next_offsets: dict[tuple[str, int], int] = {}
         self._checkpoint_partitions: tuple[object, ...] = ()
+        self._frozen_checkpoints: dict[int, _FrozenKafkaCheckpoint] = {}
         self._pending_restore: dict[
             tuple[str, int],
             tuple[int | None, datetime | None],
@@ -200,6 +209,8 @@ class KafkaJsonSource:
             metrics["records_replayed"] = self._records_replayed
         if self._event_time_strategy is not None:
             metrics["watermarks_emitted"] = self._watermarks_emitted
+        if self._frozen_checkpoints:
+            metrics["frozen_checkpoints"] = len(self._frozen_checkpoints)
         return metrics
 
     async def open(self) -> None:
@@ -280,12 +291,15 @@ class KafkaJsonSource:
                     restored = self._refresh_assignment(consumer)
                     if (message.topic, message.partition) in restored:
                         continue
-                    if not self._record_consumed(message):
+                    if not self._should_consume(message):
                         continue
                     record = self._decode(message)
                     if record is not None:
                         self._records_read += 1
                         yield record
+                        self.acknowledge(record)
+                    else:
+                        self._advance_offset(message.topic, message.partition, message.offset)
             except BadRecordError:
                 raise
             except Exception as exc:
@@ -305,6 +319,7 @@ class KafkaJsonSource:
                 done, _ = await asyncio.wait({pending}, timeout=poll_interval)
                 if not done:
                     self._refresh_assignment(consumer)
+                    await self._resume_event.wait()
                     watermark = self._next_watermark()
                     if watermark is not None:
                         yield watermark
@@ -319,16 +334,19 @@ class KafkaJsonSource:
                 restored = self._refresh_assignment(consumer)
                 if (message.topic, message.partition) in restored:
                     continue
-                if not self._record_consumed(message):
+                if not self._should_consume(message):
                     continue
                 record = self._decode(message)
                 if record is not None:
                     self._records_read += 1
-                    self._observe_event_time(message, record)
                     yield record
+                    self.acknowledge(record)
+                    await self._resume_event.wait()
                     watermark = self._next_watermark()
                     if watermark is not None:
                         yield watermark
+                else:
+                    self._advance_offset(message.topic, message.partition, message.offset)
         except BadRecordError:
             raise
         except asyncio.CancelledError:
@@ -348,6 +366,25 @@ class KafkaJsonSource:
             await consumer.commit()
         except Exception as exc:
             raise KafkaSourceError(f"提交 Kafka offset 失败: {exc}") from exc
+
+    def acknowledge(self, record: RecordEnvelope) -> None:
+        """确认 DATA 已排入全部下游，随后推进 checkpoint offset/time。"""
+        topic = record.headers.get("source_topic")
+        partition = record.headers.get("source_partition")
+        offset = record.headers.get("source_offset")
+        if (
+            topic != self.config.topic
+            or isinstance(partition, bool)
+            or not isinstance(partition, int)
+            or partition < 0
+            or isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or offset < 0
+        ):
+            raise KafkaSourceError("Source acknowledge 缺少合法 topic/partition/offset")
+        advanced = self._advance_offset(topic, partition, offset)
+        if advanced and self._event_time_strategy is not None:
+            self._observe_event_time(topic, partition, record)
 
     async def pause(self) -> None:
         """暂停当前 assignment，供停流 Checkpoint 排空数据。"""
@@ -381,9 +418,40 @@ class KafkaJsonSource:
         """返回分区 next offset 和 Watermark 基线。"""
         if not self._paused:
             raise KafkaSourceError("Kafka Source 只有在 pause 后才能 snapshot")
+        return self._snapshot_for_partitions(self._checkpoint_partitions)
+
+    def snapshot_checkpoint(self, checkpoint_id: int) -> bytes:
+        """冻结一个 Barrier checkpoint，后续消费不会修改该边界。"""
+        if (
+            isinstance(checkpoint_id, bool)
+            or not isinstance(checkpoint_id, int)
+            or checkpoint_id < 0
+        ):
+            raise KafkaSourceError("checkpoint_id 必须是非负整数")
+        if not self._paused:
+            raise KafkaSourceError("Kafka Source 只有在 pause 后才能冻结 Checkpoint")
+        existing = self._frozen_checkpoints.get(checkpoint_id)
+        if existing is not None:
+            return existing.snapshot
+        snapshot = self._snapshot_for_partitions(self._checkpoint_partitions)
+        offsets = tuple(
+            (
+                partition,
+                self._next_offsets.get((partition.topic, partition.partition)),
+            )
+            for partition in self._checkpoint_partitions
+        )
+        self._frozen_checkpoints[checkpoint_id] = _FrozenKafkaCheckpoint(
+            snapshot=snapshot,
+            offsets=offsets,
+        )
+        return snapshot
+
+    def _snapshot_for_partitions(self, source_partitions: tuple[object, ...]) -> bytes:
+        """编码指定 assignment 边界的 offset 与事件时间状态。"""
         partitions = []
         assigned = sorted(
-            self._checkpoint_partitions,
+            source_partitions,
             key=lambda item: (item.topic, item.partition),
         )
         for assigned_partition in assigned:
@@ -476,22 +544,30 @@ class KafkaJsonSource:
         self._last_watermark = last_watermark
         self._refresh_assignment(consumer)
 
-    async def commit_checkpoint(self) -> None:
-        """提交 snapshot 中记录的精确 next offsets。"""
+    async def commit_checkpoint(self, checkpoint_id: int | None = None) -> None:
+        """提交指定 frozen checkpoint；None 保留 DRAIN 兼容路径。"""
         consumer = self._require_open()
-        if not self._paused:
-            raise KafkaSourceError("Kafka Source 只有在 pause 后才能提交 Checkpoint")
-        assignment = getattr(consumer, "assignment", None)
-        if not callable(assignment):
-            raise KafkaSourceError("Kafka consumer 不支持 assignment")
+        if checkpoint_id is None:
+            if not self._paused:
+                raise KafkaSourceError("Kafka Source 只有在 pause 后才能提交 Checkpoint")
+            offsets = tuple(
+                (
+                    partition,
+                    self._next_offsets.get((partition.topic, partition.partition)),
+                )
+                for partition in self._checkpoint_partitions
+            )
+        else:
+            frozen = self._frozen_checkpoints.get(checkpoint_id)
+            if frozen is None:
+                raise KafkaSourceError(f"Checkpoint {checkpoint_id} 没有 frozen offset")
+            offsets = frozen.offsets
         mapping: dict[object, object] = {}
         try:
             from aiokafka.structs import OffsetAndMetadata
         except ImportError:  # pragma: no cover - 生产依赖包含 aiokafka
             OffsetAndMetadata = None  # type: ignore[assignment,misc]
-        for partition in self._checkpoint_partitions:
-            key = (partition.topic, partition.partition)
-            offset = self._next_offsets.get(key)
+        for partition, offset in offsets:
             if offset is None:
                 continue
             mapping[partition] = (
@@ -501,11 +577,18 @@ class KafkaJsonSource:
             await consumer.commit(mapping)
         except Exception as exc:
             raise KafkaSourceError(f"提交 Checkpoint Kafka offset 失败: {exc}") from exc
+        if checkpoint_id is not None:
+            self._frozen_checkpoints.pop(checkpoint_id, None)
+
+    def abort_checkpoint(self, checkpoint_id: int) -> None:
+        """丢弃未决定的 frozen offset，不触发 Kafka commit。"""
+        self._frozen_checkpoints.pop(checkpoint_id, None)
 
     async def close(self) -> None:
         """停止 consumer；重复关闭保持安全。"""
         consumer = self._consumer
         self._consumer = None
+        self._frozen_checkpoints.clear()
         if consumer is not None:
             try:
                 await consumer.stop()
@@ -632,12 +715,13 @@ class KafkaJsonSource:
 
     def _observe_event_time(
         self,
-        message: KafkaMessage,
+        topic: str,
+        partition: int,
         record: RecordEnvelope,
     ) -> None:
         if record.event_time is None:  # pragma: no cover - 构造契约保证
             raise KafkaSourceError("事件时间 Source 产生了 null event_time")
-        key = (message.topic, message.partition)
+        key = (topic, partition)
         state = self._partition_event_times.setdefault(
             key,
             _PartitionEventTimeState(last_activity=self.context.clock.monotonic()),
@@ -646,7 +730,7 @@ class KafkaJsonSource:
         if state.max_event_time is None or record.event_time > state.max_event_time:
             state.max_event_time = record.event_time
 
-    def _record_consumed(self, message: KafkaMessage) -> bool:
+    def _should_consume(self, message: KafkaMessage) -> bool:
         key = (message.topic, message.partition)
         next_offset = message.offset + 1
         previous = self._next_offsets.get(key)
@@ -666,6 +750,14 @@ class KafkaJsonSource:
                 offset=message.offset,
                 next_offset=previous,
             )
+            return False
+        return True
+
+    def _advance_offset(self, topic: str, partition: int, offset: int) -> bool:
+        key = (topic, partition)
+        next_offset = offset + 1
+        previous = self._next_offsets.get(key)
+        if previous is not None and next_offset <= previous:
             return False
         self._next_offsets[key] = next_offset
         return True

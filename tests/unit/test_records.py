@@ -95,6 +95,11 @@ def test_checkpoint_id_必须是非负整数(checkpoint_id):
         make_record(checkpoint_id=checkpoint_id)
 
 
+def test_barrier_必须包含checkpoint_id():
+    with pytest.raises(RecordValidationError, match="BARRIER 必须包含"):
+        make_record(message_type=MessageType.BARRIER)
+
+
 def test_from_dict_拒绝缺失和未知字段():
     document = make_record().to_dict()
     document.pop("key")

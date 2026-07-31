@@ -1,8 +1,8 @@
 """Worker 共享数据端口上的入站连接分派器。
 
-服务器读取每条 TCP 连接的首个 HELLO 帧，并按 job、上游 task、下游 task
-三元组分派给已注册 TaskRuntime。异常断连不会被当作正常流结束，而是显式
-通知目标任务失败，防止第一阶段静默产生数据缺口。
+服务器读取每条 TCP 连接的首个 HELLO 帧，并按 job、上下游 task、attempt
+和 coordinator epoch 分派给已注册 TaskRuntime。异常断连不会被当作正常流结束，
+而是显式通知目标任务失败。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Protocol, cast
 
-from pystream.common import JsonValue, RecordEnvelope
+from pystream.common import JsonValue, MessageType, RecordEnvelope
 from pystream.observability import log_event
 from pystream.runtime.errors import RuntimeConnectionError, RuntimeLifecycleError
 from pystream.runtime.protocol import (
@@ -86,6 +86,9 @@ class DataPlaneServer:
         self._connection_errors = 0
         self._batches_received = 0
         self._records_received = 0
+        self._barrier_gate_waits = 0
+        self._barrier_gated_connections = 0
+        self._max_barrier_gated_connections = 0
 
     @property
     def running(self) -> bool:
@@ -121,6 +124,9 @@ class DataPlaneServer:
             "connection_errors": self._connection_errors,
             "batches_received": self._batches_received,
             "records_received": self._records_received,
+            "barrier_gate_waits": self._barrier_gate_waits,
+            "barrier_gated_connections": self._barrier_gated_connections,
+            "max_barrier_gated_connections": self._max_barrier_gated_connections,
         }
 
     async def start(self) -> None:
@@ -267,7 +273,20 @@ class DataPlaneServer:
                 heartbeat_sequence = sequence
                 continue
             if frame.frame_type is FrameType.CONTROL:
-                await consumer.accept_control(identity, record_from_control(frame))
+                record = record_from_control(frame)
+                if record.message_type is MessageType.BARRIER:
+                    self._barrier_gate_waits += 1
+                    self._barrier_gated_connections += 1
+                    self._max_barrier_gated_connections = max(
+                        self._max_barrier_gated_connections,
+                        self._barrier_gated_connections,
+                    )
+                    try:
+                        await consumer.accept_control(identity, record)
+                    finally:
+                        self._barrier_gated_connections -= 1
+                else:
+                    await consumer.accept_control(identity, record)
                 continue
             if frame.frame_type is FrameType.END_OF_STREAM:
                 if frame.payload:
@@ -319,10 +338,17 @@ def _identity_from_hello(frame: Frame) -> ChannelIdentity:
     if frame.frame_type is not FrameType.HELLO:
         raise HandshakeError(f"首帧必须是 HELLO, 实际为 {frame.frame_type.value}")
     payload: dict[str, JsonValue] = frame.payload
-    required = {"job_id", "upstream_task_id", "downstream_task_id", "attempt_id"}
+    required = {
+        "job_id",
+        "upstream_task_id",
+        "downstream_task_id",
+        "attempt_id",
+        "coordinator_epoch",
+    }
     if set(payload) != required:
         raise HandshakeError(
-            "HELLO 字段必须恰好为 job_id/upstream_task_id/downstream_task_id/attempt_id"
+            "HELLO 字段必须恰好为 job_id/upstream_task_id/downstream_task_id/"
+            "attempt_id/coordinator_epoch"
         )
     string_fields = ("job_id", "upstream_task_id", "downstream_task_id")
     if not all(isinstance(payload[field], str) for field in string_fields):
@@ -330,11 +356,15 @@ def _identity_from_hello(frame: Frame) -> ChannelIdentity:
     attempt_id = payload["attempt_id"]
     if isinstance(attempt_id, bool) or not isinstance(attempt_id, int):
         raise HandshakeError("HELLO attempt_id 必须是非负整数")
+    coordinator_epoch = payload["coordinator_epoch"]
+    if isinstance(coordinator_epoch, bool) or not isinstance(coordinator_epoch, int):
+        raise HandshakeError("HELLO coordinator_epoch 必须是非负整数")
     return ChannelIdentity(
         job_id=cast(str, payload["job_id"]),
         upstream_task_id=cast(str, payload["upstream_task_id"]),
         downstream_task_id=cast(str, payload["downstream_task_id"]),
         attempt_id=attempt_id,
+        coordinator_epoch=coordinator_epoch,
     )
 
 

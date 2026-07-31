@@ -100,6 +100,8 @@ class RecordEnvelope:
             or self.checkpoint_id < 0
         ):
             raise RecordValidationError("checkpoint_id 必须是非负整数或 null")
+        if self.message_type is MessageType.BARRIER and self.checkpoint_id is None:
+            raise RecordValidationError("BARRIER 必须包含 checkpoint_id")
         if not isinstance(self.processing_time, datetime):
             raise RecordValidationError("processing_time 必须是带时区的 UTC 时间")
         _ensure_utc(self.processing_time, "processing_time")

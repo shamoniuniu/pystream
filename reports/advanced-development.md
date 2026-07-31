@@ -69,3 +69,39 @@
 - 上一回退点：`320eb52`
 - 结果提交：本里程碑提交 SHA 通过 Git note 关联
 - 回退：`git revert <Task 1 SHA>`
+
+## 2026-07-31T03:52:55Z - Task 2 持续流 aligned Barrier
+
+- 状态：实现和本地质量门完成，等待 staged review、提交和远端备份
+- 模式分派：
+  - `exactly_once` 使用 aligned BARRIER
+  - 显式 `at_least_once` 保留原 DRAIN 停流路径
+- 数据面：
+  - 协议升级到 v3，HELLO 使用 `attempt_id + coordinator_epoch` 双重 fencing
+  - BARRIER 与 DATA 复用同一有序输出队列
+  - 每条 TCP handler 在 BARRIER 入队后等待独立 gate，不读取 post-barrier frame
+  - 未对齐输入继续处理 pre-barrier DATA，无应用层 post-barrier 缓存
+- Source：
+  - pause 只覆盖冻结状态和 BARRIER 排队，随后立即 resume
+  - 每个 checkpoint 保存独立 frozen snapshot/offset mapping
+  - complete 按 checkpoint ID 提交 frozen offset；abort 只丢弃 mapping
+  - DATA 排入全部下游后才 acknowledge offset/event-time，避免 freeze 早于实际输出
+- Runtime：
+  - 全输入 Barrier 到齐后才 snapshot、forward、ready、unblock
+  - abort、stop、断连失败和 cleanup 均幂等释放全部 gate
+  - 记录 source pause、alignment duration、blocked inputs 和 data-plane gate 指标
+- 故障/反例：
+  - 双输入快慢 Barrier 证明已对齐通道 post-data 不被读取
+  - 覆盖 abort、stop、未对齐通道断连、重复/错序 Barrier、旧 epoch HELLO
+  - 覆盖 Source 恢复消费后 offset 推进但旧 frozen checkpoint 不漂移
+  - 交错审查修复 offset 在 DATA 入队前推进的 race
+- Python 3.11 质量门：
+  - pytest：396 passed
+  - branch coverage：84.86%
+  - Ruff check：通过
+  - Ruff format：80 files already formatted
+  - `git diff --check`：通过
+- 环境：测试容器 `pystream-m2-py311` 最终 `exit=0`
+- 上一回退点：`ea64976`
+- 结果提交：本里程碑提交 SHA 通过 Git note 关联
+- 回退：`git revert <Task 2 SHA>`

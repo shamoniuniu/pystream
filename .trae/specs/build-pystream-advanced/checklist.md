@@ -18,23 +18,23 @@
 
 ## Barrier
 
-- [ ] Source 只在注入边界短暂停顿
-- [ ] Barrier 与 DATA 同通道严格保序
-- [ ] 单输入 Barrier 后 post-barrier 帧被 gate
-- [ ] 未对齐输入继续处理 pre-barrier DATA
-- [ ] 全输入对齐后才 snapshot
-- [ ] Barrier 不进入 UDF
-- [ ] Barrier 转发后 gate 解除
-- [ ] abort/cancel/failure/timeout 无 gate 泄漏
-- [ ] 对齐不会产生无界内存缓存
+- [x] Source 只在注入边界短暂停顿
+- [x] Barrier 与 DATA 同通道严格保序
+- [x] 单输入 Barrier 后 post-barrier 帧被 gate
+- [x] 未对齐输入继续处理 pre-barrier DATA
+- [x] 全输入对齐后才 snapshot
+- [x] Barrier 不进入 UDF
+- [x] Barrier 转发后 gate 解除
+- [x] abort/cancel/failure/timeout 无 gate 泄漏
+- [x] 对齐不会产生无界内存缓存
 
 ## Source 与状态一致性
 
-- [ ] frozen offset 不受 post-barrier 消费推进
-- [ ] complete 只提交对应 frozen offset
-- [ ] abort 不提交 offset
+- [x] frozen offset 不受 post-barrier 消费推进
+- [x] complete 只提交对应 frozen offset
+- [x] abort 不提交 offset
 - [ ] restore 从同一 decision checkpoint seek
-- [ ] Watermark/window/retract 状态与 offset 同 checkpoint
+- [x] Watermark/window/retract 状态与 offset 同 checkpoint
 
 ## 事务 Sink
 
@@ -72,7 +72,7 @@
 - [ ] lease TTL/renew/poll 符合规格
 - [ ] lease 丢失使旧 active step down
 - [ ] takeover epoch 严格增加
-- [ ] Worker 拒绝旧 epoch
+- [x] Worker 拒绝旧 epoch
 - [ ] metadata revision 可恢复活动作业
 - [ ] Worker 自动重新注册
 - [ ] active 退出后 30 秒内恢复服务

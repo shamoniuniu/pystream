@@ -120,6 +120,7 @@ def build_source_bundle(
     validator: str | None = None,
     bad_record_policy: str = "fail",
     checkpoint: bool = False,
+    delivery_guarantee: str | None = None,
 ) -> tuple[bytes, ArtifactDescriptor]:
     source = tmp_path / "source"
     source.mkdir()
@@ -163,6 +164,8 @@ def build_source_bundle(
             },
             "restart": {"max_attempts": 3, "delay": "2s"},
         }
+        if delivery_guarantee is not None:
+            document["execution"]["delivery_guarantee"] = delivery_guarantee
     (source / "job.yaml").write_text(
         yaml.safe_dump(document, sort_keys=False),
         encoding="utf-8",
@@ -260,6 +263,7 @@ async def test_manager_转发checkpoint生命周期并复用共享store(tmp_path
     task_id = deployment.task.task_id
     try:
         await manager.deploy(deployment)
+        assert manager._runtimes[task_id]._aligned_checkpoints
         await manager.arm_checkpoint(task_id, 0, 1)
         descriptor = await manager.trigger_checkpoint(task_id, 0, 1)
         assert await manager.wait_checkpoint(task_id, 0, 1) == descriptor
@@ -278,6 +282,42 @@ async def test_manager_转发checkpoint生命周期并复用共享store(tmp_path
         await manager.arm_checkpoint(task_id, 0, 2)
         await manager.abort_checkpoint(task_id, 0, 2)
         assert consumer.commits == [{}]
+    finally:
+        await manager.close()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_manager_显式at_least_once继续使用drain停流路径(tmp_path: Path) -> None:
+    content, descriptor = build_source_bundle(
+        tmp_path,
+        checkpoint=True,
+        delivery_guarantee="at_least_once",
+    )
+    consumer = BlockingConsumer()
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    manager = WorkerTaskManager(
+        "worker-1",
+        tmp_path / "work",
+        server,
+        MemoryFetcher(content),
+        consumer_factory=lambda *args, **kwargs: consumer,
+        checkpoint_root=tmp_path / "shared-checkpoints",
+    )
+    deployment = source_deployment(descriptor)
+    task_id = deployment.task.task_id
+    try:
+        await manager.deploy(deployment)
+        assert not manager._runtimes[task_id]._aligned_checkpoints
+
+        await manager.arm_checkpoint(task_id, 0, 1)
+        await manager.trigger_checkpoint(task_id, 0, 1)
+        source = manager._runtimes[task_id].source
+        assert source is not None and source._paused
+
+        await manager.abort_checkpoint(task_id, 0, 1)
+        assert not source._paused
     finally:
         await manager.close()
         await server.close()

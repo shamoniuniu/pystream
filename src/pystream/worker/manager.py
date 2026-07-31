@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from pystream.api import (
+    DeliveryGuarantee,
     FileSinkConfig,
     KafkaSourceConfig,
     OperatorType,
@@ -237,6 +238,11 @@ class WorkerTaskManager:
                 runtime_arguments = dict(self.runtime_options)
                 runtime_arguments.setdefault("monotonic_clock", context.clock.monotonic)
                 runtime_arguments.setdefault("checkpoint_enabled", execution is not None)
+                runtime_arguments.setdefault(
+                    "aligned_checkpoints",
+                    execution is not None
+                    and execution.delivery_guarantee is DeliveryGuarantee.EXACTLY_ONCE,
+                )
                 if execution is not None or deployment.restore_descriptors:
                     runtime_arguments.setdefault("checkpoint_store", self.checkpoint_store)
                 if event_time_strategy is not None:

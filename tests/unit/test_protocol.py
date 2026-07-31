@@ -151,15 +151,32 @@ def test_协议版本不兼容被拒绝():
 
 
 def test_hello_校验完整身份和首帧类型():
-    expected = ChannelIdentity("job-1", "map-0", "reduce-1")
+    expected = ChannelIdentity(
+        "job-1",
+        "map-0",
+        "reduce-1",
+        attempt_id=2,
+        coordinator_epoch=4,
+    )
 
     assert validate_hello(hello_frame(expected), expected) == expected
+    assert hello_frame(expected).payload["coordinator_epoch"] == 4
 
     with pytest.raises(HandshakeError, match="身份不匹配"):
         validate_hello(
-            hello_frame(ChannelIdentity("job-1", "map-1", "reduce-1")),
+            hello_frame(
+                ChannelIdentity(
+                    "job-1",
+                    "map-0",
+                    "reduce-1",
+                    attempt_id=2,
+                    coordinator_epoch=3,
+                )
+            ),
             expected,
         )
+    with pytest.raises(HandshakeError, match="coordinator_epoch"):
+        ChannelIdentity("job-1", "map-0", "reduce-1", coordinator_epoch=True)
     with pytest.raises(HandshakeError, match="首帧必须"):
         validate_hello(heartbeat_frame(0), expected)
 
