@@ -1,0 +1,1 @@
+review=ready; scope=advanced-m2-aligned-barrier; staged_tree=3248b317cc7ea51642fae8ba5939a282544239f1; blockers=none; tests=396 full Python3.11; coverage=84.86; ruff=pass; format=80; diff_check=pass; receipt_ref=refs/notes/agent-receipts; rollback=git revert cdfbcd7
