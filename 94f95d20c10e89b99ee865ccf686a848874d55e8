@@ -1,0 +1,1 @@
+event=before_commit; review=ready; scope=advanced-m1-contracts; blockers=none; tests=386-python311; coverage=84.48; ruff=pass; format=pass
