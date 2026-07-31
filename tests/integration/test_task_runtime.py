@@ -12,6 +12,7 @@ import pytest
 from pystream.api import FileSinkConfig, OperatorType, Partitioning
 from pystream.checkpoint import (
     LocalCheckpointStore,
+    LocalFileOutputCommitter,
     TaskSnapshotDescriptor,
     decode_state,
     encode_state,
@@ -135,6 +136,13 @@ class RestoringMemorySource(CheckpointMemorySource):
 
     async def restore_state(self, snapshot: bytes) -> None:
         self.restored_snapshot = snapshot
+
+    def prepare_restored_checkpoint(
+        self,
+        checkpoint_id: int,
+        snapshot: bytes,
+    ) -> None:
+        self.frozen[checkpoint_id] = snapshot
 
 
 class SlowFlushFile:
@@ -590,6 +598,253 @@ async def test_aligned_barrier_source注入后立即恢复并完成全链路快�
         await target_runtime.stop()
         await source_server.close()
         await target_server.close()
+
+
+@pytest.mark.asyncio
+async def test_aligned_barrier_precommits_transactional_sink_and_complete_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    upstream = task("totals", OperatorType.REDUCE)
+    target = task("output", OperatorType.SINK)
+    incoming = channel(upstream, target, Partitioning.FORWARD, server)
+    store = LocalCheckpointStore(tmp_path / "checkpoints")
+    transaction_ids = iter(("checkpoint-1", "checkpoint-2", "active"))
+    sink = FileSinkOperator(
+        OperatorContext("output"),
+        job_id="job-1",
+        config=FileSinkConfig(
+            connector="file",
+            output_path=str(tmp_path / "output"),
+        ),
+        transactional=True,
+        transaction_id_factory=lambda: next(transaction_ids),
+    )
+    runtime = TaskRuntime(
+        deployment(target, incoming=(incoming,)),
+        server,
+        operator=sink,
+        checkpoint_enabled=True,
+        aligned_checkpoints=True,
+        checkpoint_store=store,
+    )
+    identity = ChannelIdentity("job-1", upstream.task_id, target.task_id)
+    try:
+        await runtime.start()
+        await runtime.arm_checkpoint(1)
+        await runtime.accept_records(identity, (sink_record(1),))
+        await wait_until(lambda: runtime.snapshot.records_in == 1)
+        await runtime.accept_control(
+            identity,
+            RecordEnvelope(
+                record_id="barrier-1",
+                payload={},
+                processing_time=AT_WINDOW_END,
+                message_type=MessageType.BARRIER,
+                checkpoint_id=1,
+            ),
+        )
+        descriptor = await runtime.wait_checkpoint(1)
+
+        assert len(descriptor.transactions) == 1
+        first_transaction = descriptor.transactions[0]
+        assert (tmp_path / "output" / first_transaction.pending_path).is_file()
+        assert store.read_task_snapshot(descriptor)["kind"] == "operator"
+
+        await runtime.complete_checkpoint(1)
+        await runtime.complete_checkpoint(1)
+        committed = (
+            tmp_path
+            / "output"
+            / "job-1"
+            / "output"
+            / "committed"
+            / "checkpoint-00000000000000000001"
+            / "part-00000.csv"
+        )
+        assert committed.is_file()
+
+        await runtime.arm_checkpoint(2)
+        await runtime.accept_records(identity, (sink_record(2),))
+        await wait_until(lambda: runtime.snapshot.records_in == 2)
+        await runtime.accept_control(
+            identity,
+            RecordEnvelope(
+                record_id="barrier-2",
+                payload={},
+                processing_time=AT_WINDOW_END,
+                message_type=MessageType.BARRIER,
+                checkpoint_id=2,
+            ),
+        )
+        second_descriptor = await runtime.wait_checkpoint(2)
+        pending = tmp_path / "output" / second_descriptor.transactions[0].pending_path
+
+        await runtime.abort_checkpoint(2)
+
+        assert not pending.exists()
+        assert sink.metrics["transactions_committed"] == 1
+        assert sink.metrics["transactions_aborted"] == 1
+    finally:
+        await runtime.stop()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_decided_checkpoint_finalizes_after_source_and_sink_restart(
+    tmp_path: Path,
+) -> None:
+    server = DataPlaneServer("127.0.0.1", 0)
+    await server.start()
+    store = LocalCheckpointStore(tmp_path / "checkpoints")
+    output_root = tmp_path / "output"
+    checkpoint_id = 12
+    source_task_id = "job-1:words:0"
+    upstream_task_id = "job-1:totals:0"
+    sink_task_id = "job-1:output:0"
+    source_inner = encode_state(
+        "kafka-source",
+        {
+            "topic": "words",
+            "partitions": [
+                {
+                    "topic": "words",
+                    "partition": 0,
+                    "next_offset": 5,
+                    "max_event_time": None,
+                }
+            ],
+            "last_watermark": None,
+        },
+    )
+    source_descriptor = store.write_task_snapshot(
+        job_id="job-1",
+        checkpoint_id=checkpoint_id,
+        attempt_id=0,
+        task_id=source_task_id,
+        operator_id="words",
+        state={
+            "kind": "source",
+            "snapshot": source_inner.decode("utf-8"),
+            "input_watermarks": [],
+            "last_output_watermark": None,
+        },
+    )
+    original_sink = FileSinkOperator(
+        OperatorContext("output"),
+        job_id="job-1",
+        config=FileSinkConfig(
+            connector="file",
+            output_path=str(output_root),
+        ),
+        transactional=True,
+        transaction_id_factory=iter(("decided", "post-barrier")).__next__,
+    )
+    original_sink.open()
+    original_sink.process(sink_record(12))
+    transaction = original_sink.pre_commit(checkpoint_id)
+    sink_descriptor = store.write_task_snapshot(
+        job_id="job-1",
+        checkpoint_id=checkpoint_id,
+        attempt_id=0,
+        task_id=sink_task_id,
+        operator_id="output",
+        state={
+            "kind": "operator",
+            "snapshot": encode_state("stateless-operator", {}).decode("utf-8"),
+            "input_watermarks": [
+                {
+                    "upstream_task_id": upstream_task_id,
+                    "watermark": None,
+                }
+            ],
+            "last_output_watermark": None,
+        },
+        transactions=(transaction,),
+    )
+    decision = store.decide_checkpoint(
+        job_id="job-1",
+        checkpoint_id=checkpoint_id,
+        attempt_id=0,
+        coordinator_epoch=0,
+        expected_task_ids={source_task_id, sink_task_id},
+        expected_transaction_task_ids={sink_task_id},
+        snapshots=(source_descriptor, sink_descriptor),
+    )
+    original_sink.close()
+    committer = LocalFileOutputCommitter()
+    committer.finalize_transactions(
+        decision,
+        output_roots={"output": output_root},
+    )
+
+    source_task = task("words", OperatorType.SOURCE)
+    source_task.attempt_id = 1
+    source_task.restored_checkpoint_id = checkpoint_id
+    upstream = task("totals", OperatorType.REDUCE)
+    sink_task = task("output", OperatorType.SINK)
+    sink_task.attempt_id = 1
+    sink_task.restored_checkpoint_id = checkpoint_id
+    incoming = channel(upstream, sink_task, Partitioning.FORWARD, server)
+    source = RestoringMemorySource()
+    replacement_sink = FileSinkOperator(
+        OperatorContext("output"),
+        job_id="job-1",
+        config=FileSinkConfig(
+            connector="file",
+            output_path=str(output_root),
+        ),
+        transactional=True,
+        attempt_id=1,
+        transaction_id_factory=lambda: "replacement-active",
+    )
+    source_runtime = TaskRuntime(
+        deployment(source_task, restore=(source_descriptor,)),
+        server,
+        source=source,
+        checkpoint_enabled=True,
+        aligned_checkpoints=True,
+        checkpoint_store=store,
+    )
+    sink_runtime = TaskRuntime(
+        deployment(
+            sink_task,
+            incoming=(incoming,),
+            restore=(sink_descriptor,),
+        ),
+        server,
+        operator=replacement_sink,
+        checkpoint_enabled=True,
+        aligned_checkpoints=True,
+        checkpoint_store=store,
+    )
+    try:
+        await source_runtime.start()
+        await sink_runtime.start()
+
+        assert source_runtime._restored_checkpoint_pending == checkpoint_id
+        assert sink_runtime._restored_checkpoint_pending == checkpoint_id
+        await sink_runtime.complete_checkpoint(checkpoint_id)
+        await source_runtime.complete_checkpoint(checkpoint_id)
+
+        output_manifests = committer.publish(
+            decision,
+            output_roots={"output": output_root},
+        )
+        finalization = store.finalize_checkpoint(
+            decision,
+            output_manifests=output_manifests,
+        )
+
+        assert source.checkpoint_commits == 1
+        assert source.frozen == {}
+        assert replacement_sink.metrics["transactions_committed"] == 1
+        assert Path(finalization.output_manifests[0]).is_file()
+    finally:
+        await source_runtime.stop()
+        await sink_runtime.stop()
+        await server.close()
 
 
 @pytest.mark.asyncio

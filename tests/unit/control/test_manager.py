@@ -10,6 +10,7 @@ import pytest
 
 from pystream.api import (
     CheckpointConfig,
+    DeliveryGuarantee,
     ExecutionConfig,
     OperatorType,
     RestartConfig,
@@ -211,6 +212,7 @@ def manager_with_workers(
 def checkpoint_graph(
     graph: StreamGraph,
     *,
+    delivery_guarantee: DeliveryGuarantee = DeliveryGuarantee.AT_LEAST_ONCE,
     max_consecutive_failures: int = 3,
     max_recovery_attempts: int = 3,
     recovery_delay: str = "0s",
@@ -218,6 +220,7 @@ def checkpoint_graph(
     definition = graph.definition.model_copy(
         update={
             "execution": ExecutionConfig(
+                delivery_guarantee=delivery_guarantee,
                 checkpoint=CheckpointConfig(
                     interval="3600s",
                     timeout="2s",
@@ -558,6 +561,33 @@ async def test_checkpoint连续失败达到阈值后触发整作业恢复且编�
     assert {
         checkpoint_id for action, _, checkpoint_id in gateway.checkpoint_calls if action == "arm"
     } == {1, 2}
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_exactly_once_predecision失败立即触发整作业恢复(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway(fail_checkpoint=True)
+    manager = manager_with_workers(tmp_path, gateway, worker_count=2, slots=2)
+    graph = checkpoint_graph(
+        two_task_graph,
+        delivery_guarantee=DeliveryGuarantee.EXACTLY_ONCE,
+        max_consecutive_failures=3,
+    )
+    await manager.submit_job(graph, b"bundle", job_id="job-exact-fail")
+
+    with pytest.raises(CheckpointCoordinationError, match="simulated checkpoint failure"):
+        await manager.trigger_checkpoint("job-exact-fail")
+
+    recovery = manager._runs["job-exact-fail"].recovery_task
+    assert recovery is not None
+    await recovery
+
+    assert manager.get_job("job-exact-fail").status is JobStatus.RUNNING
+    assert manager._runs["job-exact-fail"].attempt_id == 1
+    assert manager._runs["job-exact-fail"].consecutive_checkpoint_failures == 0
     await manager.close()
 
 

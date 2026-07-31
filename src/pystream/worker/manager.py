@@ -204,7 +204,17 @@ class WorkerTaskManager:
                     config = operator_spec.config
                     if not isinstance(config, FileSinkConfig):
                         raise WorkerTaskError("Sink 缺少文件配置")
-                    operator = FileSinkOperator(context, job_id=task.job_id, config=config)
+                    operator = FileSinkOperator(
+                        context,
+                        job_id=task.job_id,
+                        config=config,
+                        transactional=(
+                            execution is not None
+                            and execution.delivery_guarantee is DeliveryGuarantee.EXACTLY_ONCE
+                        ),
+                        attempt_id=task.attempt_id,
+                        coordinator_epoch=deployment.coordinator_epoch,
+                    )
                 else:
                     loader = UDFLoader(job_root, job_id=f"{task.job_id}-{task.task_id}")
                     if operator_spec.udf is None:  # pragma: no cover - API 模型保证

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
 import io
 import logging
 from dataclasses import dataclass
@@ -254,7 +255,6 @@ async def test_source_subtasks_share_group_disable_auto_commit_and_use_distinct_
 async def test_parallel_source_按subtask确定性分配partition避免rebalance重放() -> None:
     consumer = FakeConsumer(
         assigned_partitions={
-            FakePartition("words", 0),
             FakePartition("words", 1),
         }
     )
@@ -512,6 +512,56 @@ async def test_source_restore_seeks_current_assignment_and_preserves_watermark_b
         record.event_time for record in records if record.message_type is MessageType.WATERMARK
     ] == [datetime(2026, 7, 26, 12, 0, 5, tzinfo=UTC)]
     await restored.close()
+
+
+@pytest.mark.asyncio
+async def test_source_rebuilds_and_commits_frozen_offsets_from_durable_decision() -> None:
+    consumer = FakeConsumer(
+        assigned_partitions={
+            FakePartition("words", 1),
+        }
+    )
+    source = KafkaJsonSource(
+        fixed_context(),
+        job_id="job-1",
+        config=source_config(),
+        consumer_factory=RecordingConsumerFactory(consumer),
+    )
+    snapshot = encode_state(
+        "kafka-source",
+        {
+            "topic": "words",
+            "partitions": [
+                {
+                    "topic": "words",
+                    "partition": 0,
+                    "next_offset": 4,
+                    "max_event_time": None,
+                },
+                {
+                    "topic": "words",
+                    "partition": 1,
+                    "next_offset": 8,
+                    "max_event_time": None,
+                },
+            ],
+            "last_watermark": None,
+        },
+    )
+    await source.open()
+    await source.restore_state(snapshot)
+
+    source.prepare_restored_checkpoint(11, snapshot)
+    await source.commit_checkpoint(11)
+
+    committed = consumer.commit_payloads[-1]
+    assert committed is not None
+    assert {
+        (partition.topic, partition.partition): getattr(value, "offset", value)
+        for partition, value in committed.items()
+    } == {("words", 1): 8}
+    assert "frozen_checkpoints" not in source.metrics
+    await source.close()
 
 
 @pytest.mark.asyncio
@@ -1181,3 +1231,161 @@ def test_first_phase_file_sink_transaction_boundaries_are_explicitly_unsupported
     ):
         with pytest.raises(UnsupportedStateOperation, match="第一阶段"):
             method()
+
+
+def test_transactional_file_sink_prepares_fsyncs_and_commits_idempotently(
+    tmp_path: Path,
+) -> None:
+    transaction_ids = iter(("first", "second"))
+    sink = FileSinkOperator(
+        fixed_context(operator_id="output"),
+        job_id="job-1",
+        config=sink_config(tmp_path),
+        transactional=True,
+        attempt_id=2,
+        coordinator_epoch=4,
+        transaction_id_factory=lambda: next(transaction_ids),
+    )
+    sink.open()
+    sink.process(sink_record(word="durable", count=3))
+
+    descriptor = sink.pre_commit(7)
+    pending = tmp_path / descriptor.pending_path
+
+    assert descriptor.task_id == "job-1:output:0"
+    assert descriptor.attempt_id == 2
+    assert descriptor.coordinator_epoch == 4
+    assert descriptor.pending_path == (
+        "job-1/output/pending/attempt-00000002/tx-first/part-00000.csv"
+    )
+    assert descriptor.size == pending.stat().st_size
+    assert descriptor.sha256 == hashlib.sha256(pending.read_bytes()).hexdigest()
+    assert sink.active_transaction_path is not None
+    assert sink.active_transaction_path.name == "part-00000.csv"
+    assert sink.pre_commit(7) == descriptor
+
+    assert sink.commit_transaction(7) == descriptor
+    assert sink.commit_transaction(7) == descriptor
+    committed = (
+        tmp_path
+        / "job-1"
+        / "output"
+        / "committed"
+        / "checkpoint-00000000000000000007"
+        / "part-00000.csv"
+    )
+    assert not pending.exists()
+    assert committed.read_text(encoding="utf-8") == ("2026/07/26T12:05:00,durable,3\n")
+    assert sink.metrics == {
+        "records_written": 1,
+        "transactions_active": 1,
+        "transactions_prepared": 0,
+        "transactions_committed": 1,
+        "transactions_aborted": 0,
+    }
+    sink.close()
+    assert committed.is_file()
+
+
+def test_transactional_file_sink_abort_and_committed_state_are_irreversible(
+    tmp_path: Path,
+) -> None:
+    transaction_ids = iter(("abort-me", "commit-me", "active"))
+    sink = FileSinkOperator(
+        fixed_context(operator_id="output"),
+        job_id="job-1",
+        config=sink_config(tmp_path),
+        transactional=True,
+        transaction_id_factory=lambda: next(transaction_ids),
+    )
+    sink.open()
+    sink.process(sink_record())
+    aborted = sink.pre_commit(1)
+    aborted_path = tmp_path / aborted.pending_path
+
+    sink.abort_transaction(1)
+    sink.abort_transaction(1)
+
+    assert not aborted_path.exists()
+    assert sink.metrics["transactions_aborted"] == 1
+
+    sink.process(sink_record(word="committed"))
+    committed = sink.pre_commit(2)
+    sink.commit_transaction(2)
+    with pytest.raises(FileSinkError, match="禁止 abort"):
+        sink.abort_transaction(2)
+
+    target = (
+        tmp_path
+        / "job-1"
+        / "output"
+        / "committed"
+        / "checkpoint-00000000000000000002"
+        / "part-00000.csv"
+    )
+    target.write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(FileSinkError, match="完整性不匹配"):
+        sink.commit_transaction(2)
+    assert committed.checkpoint_id == 2
+    sink.close()
+
+
+def test_transactional_file_sink_restores_prepared_descriptor(
+    tmp_path: Path,
+) -> None:
+    transaction_ids = iter(("prepared", "post-barrier"))
+    first = FileSinkOperator(
+        fixed_context(operator_id="output"),
+        job_id="job-1",
+        config=sink_config(tmp_path),
+        transactional=True,
+        attempt_id=3,
+        coordinator_epoch=5,
+        transaction_id_factory=lambda: next(transaction_ids),
+    )
+    first.open()
+    first.process(sink_record(word="recover"))
+    descriptor = first.pre_commit(9)
+    first.close()
+
+    replacement = FileSinkOperator(
+        fixed_context(operator_id="output"),
+        job_id="job-1",
+        config=sink_config(tmp_path),
+        transactional=True,
+        attempt_id=4,
+        coordinator_epoch=6,
+        transaction_id_factory=lambda: "replacement",
+    )
+    replacement.open()
+    replacement.restore_transaction(descriptor)
+    replacement.commit_transaction(9)
+
+    assert replacement.metrics["transactions_committed"] == 1
+    replacement.close()
+
+
+def test_transactional_file_sink_orphan_cleanup_preserves_protected_transaction(
+    tmp_path: Path,
+) -> None:
+    sink = FileSinkOperator(
+        fixed_context(operator_id="output"),
+        job_id="job-1",
+        config=sink_config(tmp_path),
+        transactional=True,
+    )
+    pending = tmp_path / "job-1" / "output" / "pending" / "attempt-00000001"
+    protected = pending / "tx-protected"
+    orphan = pending / "tx-orphan"
+    protected.mkdir(parents=True)
+    orphan.mkdir(parents=True)
+    (protected / "part-00000.csv").write_text("keep", encoding="utf-8")
+    (orphan / "part-00000.csv").write_text("delete", encoding="utf-8")
+
+    removed = sink.cleanup_orphaned_pending(
+        protected_transaction_ids={"protected"},
+    )
+
+    assert removed == 1
+    assert protected.is_dir()
+    assert not orphan.exists()

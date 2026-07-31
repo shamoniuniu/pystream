@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from pystream.api import Partitioning, StreamGraph
+from pystream.api import DeliveryGuarantee, FileSinkConfig, OperatorType, Partitioning, StreamGraph
 from pystream.control.models import PhysicalChannel, TaskEndpoint, TaskInstance, WorkerNode
 
 
@@ -20,6 +20,8 @@ class ExecutionGraph:
     topological_order: tuple[str, ...]
     tasks: dict[str, TaskInstance]
     channels: tuple[PhysicalChannel, ...]
+    delivery_guarantee: DeliveryGuarantee | None
+    sink_output_roots: dict[str, str]
     _tasks_by_operator: dict[str, tuple[str, ...]] = field(repr=False)
 
     @property
@@ -130,6 +132,16 @@ def build_execution_graph(job_id: str, graph: StreamGraph) -> ExecutionGraph:
         topological_order=graph.topological_order,
         tasks=tasks,
         channels=tuple(channels),
+        delivery_guarantee=(
+            graph.definition.execution.delivery_guarantee
+            if graph.definition.execution is not None
+            else None
+        ),
+        sink_output_roots={
+            operator.id: operator.config.output_path
+            for operator in graph.operators
+            if operator.type is OperatorType.SINK and isinstance(operator.config, FileSinkConfig)
+        },
         _tasks_by_operator=tasks_by_operator,
     )
 

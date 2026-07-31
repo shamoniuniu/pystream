@@ -147,6 +147,7 @@ services:
     volumes:
       - pystream-artifacts:/data/artifacts
       - pystream-checkpoints:/data/checkpoints
+      - pystream-output:/data/output
     healthcheck:
       test:
         - CMD

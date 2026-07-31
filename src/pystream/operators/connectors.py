@@ -2,19 +2,23 @@
 
 Source 使用可注入的异步 consumer 工厂，生产环境延迟导入 ``aiokafka``，测试环境
 则使用内存 fake。所有 Source subtasks 共享同一消费组但使用不同 client id；
-``enable_auto_commit=False`` 明确保持第一阶段的手动 offset 模式。
+``enable_auto_commit=False`` 明确保持手动 offset 模式。
 
-Sink 复用 :class:`~pystream.operators.base.BaseOperator` 生命周期，将每个 subtask
-写入独立 CSV 分片。第一阶段采用普通追加写，不提供恢复或 Exactly-once 语义。
+Sink 在显式 At-least-once 模式继续追加独占分片；Exactly-once 模式则在 Barrier
+边界冻结不可变 pending fragment，并由 DECIDED checkpoint 幂等提交。
 """
 
 from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
 import json
 import logging
+import os
 import re
+import shutil
+import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -23,7 +27,12 @@ from pathlib import Path
 from typing import Any, Protocol, TextIO, cast
 
 from pystream.api import EventTimeExecutionConfig, FileSinkConfig, KafkaSourceConfig
-from pystream.checkpoint import CheckpointError, decode_state, encode_state
+from pystream.checkpoint import (
+    CheckpointError,
+    TransactionDescriptor,
+    decode_state,
+    encode_state,
+)
 from pystream.common import (
     JsonPointerError,
     JsonValue,
@@ -123,8 +132,13 @@ def _open_text_append(path: Path) -> TextIO:
     return path.open("a", encoding="utf-8", newline="")
 
 
+def _open_text_exclusive(path: Path) -> TextIO:
+    """以 UTF-8 独占创建事务 pending 文件。"""
+    return path.open("x", encoding="utf-8", newline="")
+
+
 def _require_safe_segment(value: str, *, field: str) -> str:
-    if _SAFE_SEGMENT.fullmatch(value) is None or value in {".", ".."}:
+    if not isinstance(value, str) or _SAFE_SEGMENT.fullmatch(value) is None or value in {".", ".."}:
         raise ValueError(f"{field} 只能包含字母、数字、点、下划线和连字符, 且不能是路径片段")
     return value
 
@@ -173,6 +187,7 @@ class KafkaJsonSource:
             tuple[str, int],
             tuple[int | None, datetime | None],
         ] = {}
+        self._restored_offsets: dict[tuple[str, int], int | None] = {}
         self._restore_applied: set[tuple[str, int]] = set()
         self._paused = False
         self._resume_event = asyncio.Event()
@@ -540,9 +555,42 @@ class KafkaJsonSource:
             else _parse_snapshot_datetime(raw_watermark, "last_watermark")
         )
         self._pending_restore = restored
+        self._restored_offsets = {key: next_offset for key, (next_offset, _) in restored.items()}
         self._restore_applied.clear()
         self._last_watermark = last_watermark
         self._refresh_assignment(consumer)
+
+    def prepare_restored_checkpoint(
+        self,
+        checkpoint_id: int,
+        snapshot: bytes,
+    ) -> None:
+        """从 durable decision 重建可幂等提交的 frozen offset mapping。"""
+        consumer = self._require_open()
+        if isinstance(checkpoint_id, bool) or not isinstance(checkpoint_id, int):
+            raise KafkaSourceError("checkpoint_id 必须是非负整数")
+        if checkpoint_id < 0:
+            raise KafkaSourceError("checkpoint_id 必须是非负整数")
+        if checkpoint_id in self._frozen_checkpoints:
+            raise KafkaSourceError(f"Checkpoint {checkpoint_id} frozen offset 已存在")
+        assignment = getattr(consumer, "assignment", None)
+        assigned_keys = (
+            {(partition.topic, partition.partition) for partition in assignment()}
+            if callable(assignment)
+            else set()
+        )
+        offsets = tuple(
+            (
+                self._topic_partition_factory(topic, partition),
+                next_offset,
+            )
+            for (topic, partition), next_offset in sorted(self._restored_offsets.items())
+            if not assigned_keys or (topic, partition) in assigned_keys
+        )
+        self._frozen_checkpoints[checkpoint_id] = _FrozenKafkaCheckpoint(
+            snapshot=snapshot,
+            offsets=offsets,
+        )
 
     async def commit_checkpoint(self, checkpoint_id: int | None = None) -> None:
         """提交指定 frozen checkpoint；None 保留 DRAIN 兼容路径。"""
@@ -579,6 +627,7 @@ class KafkaJsonSource:
             raise KafkaSourceError(f"提交 Checkpoint Kafka offset 失败: {exc}") from exc
         if checkpoint_id is not None:
             self._frozen_checkpoints.pop(checkpoint_id, None)
+            self._restored_offsets.clear()
 
     def abort_checkpoint(self, checkpoint_id: int) -> None:
         """丢弃未决定的 frozen offset，不触发 Kafka commit。"""
@@ -589,6 +638,7 @@ class KafkaJsonSource:
         consumer = self._consumer
         self._consumer = None
         self._frozen_checkpoints.clear()
+        self._restored_offsets.clear()
         if consumer is not None:
             try:
                 await consumer.stop()
@@ -832,7 +882,7 @@ def _parse_snapshot_datetime(value: object, field_name: str) -> datetime:
 
 
 class FileSinkOperator(BaseOperator):
-    """将窗口结果追加到当前 subtask 独占的 CSV 分片。"""
+    """兼容追加模式或 checkpoint 事务模式的 CSV Sink。"""
 
     def __init__(
         self,
@@ -840,45 +890,88 @@ class FileSinkOperator(BaseOperator):
         *,
         job_id: str,
         config: FileSinkConfig,
-        file_opener: FileOpener = _open_text_append,
+        file_opener: FileOpener | None = None,
+        transactional: bool = False,
+        attempt_id: int = 0,
+        coordinator_epoch: int = 0,
+        transaction_id_factory: Callable[[], str] | None = None,
     ) -> None:
         super().__init__(context)
         self.job_id = _require_safe_segment(job_id, field="job_id")
         _require_safe_segment(context.operator_id, field="operator_id")
+        for field_name, value in (
+            ("attempt_id", attempt_id),
+            ("coordinator_epoch", coordinator_epoch),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{field_name} 必须是非负整数")
         self.config = config
-        self._file_opener = file_opener
+        self.transactional = transactional
+        self.attempt_id = attempt_id
+        self.coordinator_epoch = coordinator_epoch
+        self.task_id = f"{job_id}:{context.operator_id}:{context.subtask_index}"
+        self._transaction_id_factory = transaction_id_factory or (lambda: uuid.uuid4().hex)
+        self._file_opener = file_opener or (
+            _open_text_exclusive if transactional else _open_text_append
+        )
         self._file: TextIO | None = None
         self._writer: Any = None
         self._records_written = 0
-        root = Path(config.output_path).resolve()
-        parent = (root / self.job_id / context.operator_id).resolve()
-        if not parent.is_relative_to(root):
+        self._root = Path(config.output_path).resolve()
+        self._operator_root = (self._root / self.job_id / context.operator_id).resolve()
+        if not self._operator_root.is_relative_to(self._root):
             raise ValueError("文件 Sink 目标路径不能逃逸 output_path")
-        self._output_path = parent / f"part-{context.subtask_index:05d}.csv"
+        self._output_path = self._operator_root / f"part-{context.subtask_index:05d}.csv"
+        self._active_transaction_id: str | None = None
+        self._active_transaction_path: Path | None = None
+        self._prepared: dict[int, TransactionDescriptor] = {}
+        self._committed: dict[int, TransactionDescriptor] = {}
+        self._transactions_started = 0
+        self._transactions_aborted = 0
 
     @property
     def output_path(self) -> Path:
-        """返回当前 subtask 的确定性输出文件路径。"""
+        """返回兼容追加模式的确定性输出文件路径。"""
         return self._output_path
+
+    @property
+    def active_transaction_path(self) -> Path | None:
+        """返回当前 ACTIVE pending fragment。"""
+        return self._active_transaction_path
+
+    @property
+    def prepared_transactions(self) -> tuple[TransactionDescriptor, ...]:
+        """按 checkpoint 返回当前 PREPARED transactions。"""
+        return tuple(self._prepared[key] for key in sorted(self._prepared))
 
     @property
     def metrics(self) -> dict[str, int]:
         """返回已成功刷新到文件的记录数。"""
-        return {"records_written": self._records_written}
+        metrics = {"records_written": self._records_written}
+        if self.transactional:
+            metrics.update(
+                {
+                    "transactions_active": int(self._active_transaction_path is not None),
+                    "transactions_prepared": len(self._prepared),
+                    "transactions_committed": len(self._committed),
+                    "transactions_aborted": self._transactions_aborted,
+                }
+            )
+        return metrics
 
     def open(self) -> None:
-        """创建隔离目录并打开当前 subtask 的追加文件。"""
+        """创建隔离目录并打开追加文件或首个 ACTIVE transaction。"""
         if self.state is not OperatorState.CREATED:
             super().open()
             return
         try:
-            self._output_path.parent.mkdir(parents=True, exist_ok=True)
-            file_handle = self._file_opener(self._output_path)
-            writer = csv.writer(file_handle, lineterminator="\n")
+            self._operator_root.mkdir(parents=True, exist_ok=True)
+            if self.transactional:
+                self._start_transaction()
+            else:
+                self._open_output(self._output_path)
         except (OSError, csv.Error) as exc:
-            raise FileSinkError(f"打开文件 Sink {self._output_path} 失败: {exc}") from exc
-        self._file = file_handle
-        self._writer = writer
+            raise FileSinkError(f"打开文件 Sink {self._operator_root} 失败: {exc}") from exc
         super().open()
 
     def process(self, record: RecordT) -> list[RecordT]:
@@ -915,13 +1008,15 @@ class FileSinkOperator(BaseOperator):
             self._writer.writerow(row)
             self._file.flush()
         except (OSError, csv.Error) as exc:
-            raise FileSinkError(f"写入文件 Sink {self._output_path} 失败: {exc}") from exc
+            target = self._active_transaction_path or self._output_path
+            raise FileSinkError(f"写入文件 Sink {target} 失败: {exc}") from exc
         self._records_written += 1
         return []
 
     def close(self) -> None:
-        """关闭输出文件；关闭错误向 TaskRuntime 传播。"""
+        """关闭输出文件；ACTIVE transaction 作为不可见孤儿清理。"""
         file_handle = self._file
+        active_path = self._active_transaction_path
         self._file = None
         self._writer = None
         error: OSError | None = None
@@ -930,25 +1025,311 @@ class FileSinkOperator(BaseOperator):
                 file_handle.close()
             except OSError as exc:
                 error = exc
+        if self.transactional and active_path is not None:
+            active_path.unlink(missing_ok=True)
+            self._cleanup_transaction_directory(active_path)
+            self._transactions_aborted += 1
+            self._active_transaction_id = None
+            self._active_transaction_path = None
         super().close()
         if error is not None:
-            raise FileSinkError(f"关闭文件 Sink {self._output_path} 失败: {error}") from error
+            raise FileSinkError(f"关闭文件 Sink {self._operator_root} 失败: {error}") from error
 
     def begin_transaction(self) -> None:
-        """预留第三阶段事务边界；第一阶段明确不支持。"""
-        raise UnsupportedStateOperation("第一阶段文件 Sink 不支持事务 begin")
+        """显式创建 ACTIVE transaction；open 已默认创建第一个。"""
+        self._require_transactional("begin")
+        self._require_open()
+        if self._active_transaction_path is not None:
+            raise FileSinkError("文件 Sink 已存在 ACTIVE transaction")
+        self._start_transaction()
 
-    def pre_commit(self) -> None:
-        """预留第三阶段事务边界；第一阶段明确不支持。"""
-        raise UnsupportedStateOperation("第一阶段文件 Sink 不支持事务 pre-commit")
+    def pre_commit(self, checkpoint_id: int | None = None) -> TransactionDescriptor:
+        """冻结 ACTIVE fragment，持久刷新并为下一边界创建新 transaction。"""
+        self._require_transactional("pre-commit")
+        self._require_open()
+        resolved_checkpoint_id = _require_non_negative_int(
+            checkpoint_id,
+            field="checkpoint_id",
+        )
+        existing = self._prepared.get(resolved_checkpoint_id)
+        if existing is not None:
+            if self._active_transaction_path is None:
+                self._start_transaction()
+            return existing
+        if resolved_checkpoint_id in self._committed:
+            return self._committed[resolved_checkpoint_id]
+        if self._prepared and resolved_checkpoint_id <= max(self._prepared):
+            raise FileSinkError("File Sink checkpoint_id 必须严格递增")
+        file_handle = self._file
+        pending_path = self._active_transaction_path
+        transaction_id = self._active_transaction_id
+        if file_handle is None or pending_path is None or transaction_id is None:
+            raise FileSinkError("文件 Sink 缺少 ACTIVE transaction")
+        failure: OSError | None = None
+        try:
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
+        except OSError as exc:
+            failure = exc
+        finally:
+            try:
+                file_handle.close()
+            except OSError as exc:
+                failure = failure or exc
+            self._file = None
+            self._writer = None
+        if failure is not None:
+            raise FileSinkError(f"持久化 transaction {pending_path} 失败: {failure}") from failure
+        try:
+            size, digest = _file_identity(pending_path)
+            descriptor = TransactionDescriptor(
+                job_id=self.job_id,
+                checkpoint_id=resolved_checkpoint_id,
+                attempt_id=self.attempt_id,
+                coordinator_epoch=self.coordinator_epoch,
+                task_id=self.task_id,
+                operator_id=self.context.operator_id,
+                transaction_id=transaction_id,
+                pending_path=pending_path.relative_to(self._root).as_posix(),
+                sha256=digest,
+                size=size,
+            )
+        except (OSError, ValueError) as exc:
+            raise FileSinkError(f"生成 transaction descriptor 失败: {exc}") from exc
+        self._prepared[resolved_checkpoint_id] = descriptor
+        self._active_transaction_id = None
+        self._active_transaction_path = None
+        self._start_transaction()
+        return descriptor
 
-    def commit_transaction(self) -> None:
-        """预留第三阶段事务边界；第一阶段明确不支持。"""
-        raise UnsupportedStateOperation("第一阶段文件 Sink 不支持事务 commit")
+    def commit_transaction(
+        self,
+        checkpoint_id: int | None = None,
+    ) -> TransactionDescriptor:
+        """把 PREPARED fragment 幂等移动到确定性 committed 路径。"""
+        self._require_transactional("commit")
+        resolved_checkpoint_id = _require_non_negative_int(
+            checkpoint_id,
+            field="checkpoint_id",
+        )
+        committed = self._committed.get(resolved_checkpoint_id)
+        if committed is not None:
+            self._verify_committed_fragment(committed)
+            return committed
+        descriptor = self._prepared.get(resolved_checkpoint_id)
+        if descriptor is None:
+            raise FileSinkError(f"Checkpoint {resolved_checkpoint_id} 没有 PREPARED transaction")
+        pending = self._pending_path(descriptor)
+        target = self._committed_path(descriptor)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            _verify_file_identity(target, descriptor)
+            pending.unlink(missing_ok=True)
+        else:
+            if pending.is_symlink() or not pending.is_file():
+                raise FileSinkError(f"PREPARED transaction 不存在: {pending}")
+            _verify_file_identity(pending, descriptor)
+            try:
+                os.replace(pending, target)
+            except OSError as exc:
+                raise FileSinkError(f"提交 transaction {pending} 失败: {exc}") from exc
+            _verify_file_identity(target, descriptor)
+        self._cleanup_transaction_directory(pending)
+        self._prepared.pop(resolved_checkpoint_id, None)
+        self._committed[resolved_checkpoint_id] = descriptor
+        return descriptor
 
-    def abort_transaction(self) -> None:
-        """预留第三阶段事务边界；第一阶段明确不支持。"""
-        raise UnsupportedStateOperation("第一阶段文件 Sink 不支持事务 abort")
+    def abort_transaction(self, checkpoint_id: int | None = None) -> None:
+        """删除未决 PREPARED fragment；已提交 transaction 永不回滚。"""
+        self._require_transactional("abort")
+        resolved_checkpoint_id = _require_non_negative_int(
+            checkpoint_id,
+            field="checkpoint_id",
+        )
+        if resolved_checkpoint_id in self._committed:
+            raise FileSinkError(
+                f"Checkpoint {resolved_checkpoint_id} transaction 已提交, 禁止 abort"
+            )
+        descriptor = self._prepared.pop(resolved_checkpoint_id, None)
+        if descriptor is None:
+            return
+        pending = self._pending_path(descriptor)
+        pending.unlink(missing_ok=True)
+        self._cleanup_transaction_directory(pending)
+        self._transactions_aborted += 1
+
+    def restore_transaction(self, descriptor: TransactionDescriptor) -> None:
+        """复验同一 Task 的 PREPARED/COMMITTED fragment 并恢复幂等状态。"""
+        self._require_transactional("restore")
+        self._validate_transaction_identity(descriptor)
+        committed = self._committed_path(descriptor)
+        if committed.is_file() and not committed.is_symlink():
+            _verify_file_identity(committed, descriptor)
+            self._committed[descriptor.checkpoint_id] = descriptor
+            return
+        pending = self._pending_path(descriptor)
+        _verify_file_identity(pending, descriptor)
+        self._prepared[descriptor.checkpoint_id] = descriptor
+
+    def cleanup_orphaned_pending(
+        self,
+        *,
+        protected_transaction_ids: set[str] | frozenset[str] = frozenset(),
+    ) -> int:
+        """清理不属于未完成 decision 的 pending fragments。"""
+        self._require_transactional("cleanup")
+        pending_root = self._operator_root / "pending"
+        if not pending_root.exists():
+            return 0
+        if pending_root.is_symlink() or not pending_root.is_dir():
+            raise FileSinkError("pending 路径必须是普通目录")
+        removed = 0
+        for transaction_root in sorted(pending_root.glob("attempt-*/tx-*")):
+            if transaction_root.is_symlink() or not transaction_root.is_dir():
+                raise FileSinkError(f"拒绝清理异常 transaction 路径: {transaction_root}")
+            transaction_id = transaction_root.name.removeprefix("tx-")
+            if transaction_id in protected_transaction_ids:
+                continue
+            shutil.rmtree(transaction_root)
+            removed += 1
+        for attempt_root in sorted(pending_root.glob("attempt-*"), reverse=True):
+            if (
+                attempt_root.is_dir()
+                and not attempt_root.is_symlink()
+                and not any(attempt_root.iterdir())
+            ):
+                attempt_root.rmdir()
+        if pending_root.is_dir() and not any(pending_root.iterdir()):
+            pending_root.rmdir()
+        return removed
+
+    def _start_transaction(self) -> None:
+        if self._active_transaction_path is not None or self._file is not None:
+            raise FileSinkError("文件 Sink 已存在 ACTIVE transaction")
+        transaction_id = _require_safe_segment(
+            self._transaction_id_factory(),
+            field="transaction_id",
+        )
+        transaction_root = (
+            self._operator_root
+            / "pending"
+            / f"attempt-{self.attempt_id:08d}"
+            / f"tx-{transaction_id}"
+        )
+        path = transaction_root / f"part-{self.context.subtask_index:05d}.csv"
+        try:
+            transaction_root.mkdir(parents=True, exist_ok=False)
+            self._open_output(path)
+        except (OSError, csv.Error, ValueError) as exc:
+            shutil.rmtree(transaction_root, ignore_errors=True)
+            raise FileSinkError(f"创建 ACTIVE transaction {path} 失败: {exc}") from exc
+        self._active_transaction_id = transaction_id
+        self._active_transaction_path = path
+        self._transactions_started += 1
+
+    def _open_output(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_handle = self._file_opener(path)
+        try:
+            writer = csv.writer(file_handle, lineterminator="\n")
+        except BaseException:
+            file_handle.close()
+            raise
+        self._file = file_handle
+        self._writer = writer
+
+    def _pending_path(self, descriptor: TransactionDescriptor) -> Path:
+        self._validate_transaction_identity(descriptor)
+        path = (self._root / descriptor.pending_path).resolve()
+        if not path.is_relative_to(self._root):
+            raise FileSinkError("transaction pending_path 越过 output_path")
+        expected = (
+            self._operator_root
+            / "pending"
+            / f"attempt-{descriptor.attempt_id:08d}"
+            / f"tx-{descriptor.transaction_id}"
+            / f"part-{self.context.subtask_index:05d}.csv"
+        )
+        if path != expected:
+            raise FileSinkError("transaction pending_path 与 descriptor 身份不匹配")
+        return path
+
+    def _committed_path(self, descriptor: TransactionDescriptor) -> Path:
+        self._validate_transaction_identity(descriptor)
+        return (
+            self._operator_root
+            / "committed"
+            / f"checkpoint-{descriptor.checkpoint_id:020d}"
+            / f"part-{self.context.subtask_index:05d}.csv"
+        )
+
+    def _verify_committed_fragment(self, descriptor: TransactionDescriptor) -> None:
+        _verify_file_identity(self._committed_path(descriptor), descriptor)
+
+    def _validate_transaction_identity(self, descriptor: TransactionDescriptor) -> None:
+        expected = (
+            self.job_id,
+            self.task_id,
+            self.context.operator_id,
+        )
+        actual = (
+            descriptor.job_id,
+            descriptor.task_id,
+            descriptor.operator_id,
+        )
+        if (
+            actual != expected
+            or descriptor.attempt_id > self.attempt_id
+            or descriptor.coordinator_epoch > self.coordinator_epoch
+        ):
+            raise FileSinkError("transaction descriptor 与 File Sink 身份不匹配")
+
+    @staticmethod
+    def _cleanup_transaction_directory(path: Path) -> None:
+        transaction_root = path.parent
+        if transaction_root.is_dir() and not transaction_root.is_symlink():
+            with suppress(OSError):
+                transaction_root.rmdir()
+        attempt_root = transaction_root.parent
+        if attempt_root.is_dir() and not attempt_root.is_symlink():
+            with suppress(OSError):
+                attempt_root.rmdir()
+
+    def _require_transactional(self, operation: str) -> None:
+        if not self.transactional:
+            raise UnsupportedStateOperation(
+                f"第一阶段/非事务文件 Sink 不支持 transaction {operation}"
+            )
+
+
+def _require_non_negative_int(value: int | None, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise FileSinkError(f"{field} 必须是非负整数")
+    return value
+
+
+def _file_identity(path: Path) -> tuple[int, str]:
+    if path.is_symlink() or not path.is_file():
+        raise FileSinkError(f"transaction fragment 不存在或不是普通文件: {path}")
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            size += len(chunk)
+            digest.update(chunk)
+    return size, digest.hexdigest()
+
+
+def _verify_file_identity(path: Path, descriptor: TransactionDescriptor) -> None:
+    try:
+        size, digest = _file_identity(path)
+    except OSError as exc:
+        raise FileSinkError(f"读取 transaction fragment {path} 失败: {exc}") from exc
+    if size != descriptor.size or digest != descriptor.sha256:
+        raise FileSinkError(
+            f"transaction fragment 完整性不匹配: {path}; "
+            f"expected={descriptor.size}/{descriptor.sha256}, actual={size}/{digest}"
+        )
 
 
 def _csv_cell(value: JsonValue) -> object:

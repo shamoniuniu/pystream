@@ -6,10 +6,12 @@ import asyncio
 from collections.abc import Callable
 from functools import partial
 
-from pystream.api import OperatorType
+from pystream.api import DeliveryGuarantee, OperatorType
 from pystream.checkpoint import (
+    CheckpointDecision,
     CheckpointManifest,
     LocalCheckpointStore,
+    LocalFileOutputCommitter,
 )
 from pystream.control.errors import ControlPlaneError
 from pystream.control.execution import ExecutionGraph
@@ -29,10 +31,13 @@ class CheckpointCoordinator:
         store: LocalCheckpointStore,
         worker_gateway: WorkerGateway,
         worker_lookup: Callable[[str], WorkerNode],
+        *,
+        output_committer: LocalFileOutputCommitter | None = None,
     ) -> None:
         self.store = store
         self.worker_gateway = worker_gateway
         self.worker_lookup = worker_lookup
+        self.output_committer = output_committer or LocalFileOutputCommitter()
 
     async def run(
         self,
@@ -43,7 +48,7 @@ class CheckpointCoordinator:
         coordinator_epoch: int = 0,
         timeout: float,
     ) -> CheckpointManifest:
-        """完成一次全图快照；任一失败都会 abort 已 arm 的 Task。"""
+        """完成一次全图快照；decision 之前可 abort，之后只允许 finalize。"""
         if timeout <= 0:
             raise ValueError("Checkpoint timeout 必须大于 0")
         tasks = graph.deployment_order()
@@ -52,8 +57,10 @@ class CheckpointCoordinator:
         if any(task.status is not TaskStatus.RUNNING for task in tasks):
             raise CheckpointCoordinationError("Checkpoint 只允许在全部 Task RUNNING 时执行")
         armed: list[TaskInstance] = []
+        decision: CheckpointDecision | None = None
 
         async def execute() -> CheckpointManifest:
+            nonlocal decision
             for task in tasks:
                 # 请求结果未知时 Worker 可能已经 arm; 必须把本次尝试纳入 abort。
                 armed.append(task)
@@ -98,6 +105,27 @@ class CheckpointCoordinator:
                 )
             )
             snapshots = tuple(source_snapshots) + tuple(operator_snapshots)
+            if graph.delivery_guarantee is DeliveryGuarantee.EXACTLY_ONCE:
+                sink_task_ids = {
+                    task.task_id for task in tasks if task.operator_type is OperatorType.SINK
+                }
+                decision = await _uncancellable_to_thread(
+                    partial(
+                        self.store.decide_checkpoint,
+                        job_id=graph.job_id,
+                        checkpoint_id=checkpoint_id,
+                        attempt_id=attempt_id,
+                        coordinator_epoch=coordinator_epoch,
+                        expected_task_ids=set(graph.tasks),
+                        expected_transaction_task_ids=sink_task_ids,
+                        snapshots=snapshots,
+                    )
+                )
+                return await self._finalize_decision(
+                    graph,
+                    tasks,
+                    decision,
+                )
             manifest = await _uncancellable_to_thread(
                 partial(
                     self.store.complete_checkpoint,
@@ -122,6 +150,11 @@ class CheckpointCoordinator:
         try:
             return await asyncio.wait_for(execute(), timeout=timeout)
         except asyncio.CancelledError:
+            if decision is not None or self.store.has_decision(
+                graph.job_id,
+                checkpoint_id,
+            ):
+                raise
             await self._abort(
                 graph.job_id,
                 checkpoint_id,
@@ -132,6 +165,14 @@ class CheckpointCoordinator:
             )
             raise
         except Exception as exc:
+            if decision is not None or self.store.has_decision(
+                graph.job_id,
+                checkpoint_id,
+            ):
+                raise CheckpointCoordinationError(
+                    f"Checkpoint {checkpoint_id} 已 DECIDED, "
+                    f"只能重试 finalize: {type(exc).__name__}: {exc}"
+                ) from exc
             abort_errors = await self._abort(
                 graph.job_id,
                 checkpoint_id,
@@ -146,6 +187,88 @@ class CheckpointCoordinator:
             raise CheckpointCoordinationError(
                 f"Checkpoint {checkpoint_id} 协调失败: {details}"
             ) from exc
+
+    async def resume_decision(
+        self,
+        graph: ExecutionGraph,
+        *,
+        checkpoint_id: int,
+        timeout: float,
+    ) -> CheckpointManifest:
+        """不重新 arm/对齐，幂等重放一个 DECIDED 未 FINALIZED checkpoint。"""
+        if timeout <= 0:
+            raise ValueError("Checkpoint timeout 必须大于 0")
+        tasks = graph.deployment_order()
+        decision = self.store.read_decision(
+            graph.job_id,
+            checkpoint_id,
+            expected_task_ids=set(graph.tasks),
+            expected_transaction_task_ids={
+                task.task_id for task in tasks if task.operator_type is OperatorType.SINK
+            },
+        )
+        try:
+            return await asyncio.wait_for(
+                self._finalize_decision(graph, tasks, decision),
+                timeout=timeout,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise CheckpointCoordinationError(
+                f"Checkpoint {checkpoint_id} finalize 重试失败: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    async def _finalize_decision(
+        self,
+        graph: ExecutionGraph,
+        tasks: tuple[TaskInstance, ...],
+        decision: CheckpointDecision,
+    ) -> CheckpointManifest:
+        """重复未知结果操作，直到 Worker、manifest 和 finalized 全部完成。"""
+        while True:
+            try:
+                await _uncancellable_to_thread(
+                    partial(
+                        self.output_committer.finalize_transactions,
+                        decision,
+                        output_roots=graph.sink_output_roots,
+                    )
+                )
+                for task in tasks:
+                    await self.worker_gateway.complete_checkpoint(
+                        self._worker(task),
+                        task.task_id,
+                        task.attempt_id,
+                        decision.checkpoint_id,
+                        decision.coordinator_epoch,
+                    )
+                output_manifests = await _uncancellable_to_thread(
+                    partial(
+                        self.output_committer.publish,
+                        decision,
+                        output_roots=graph.sink_output_roots,
+                    )
+                )
+                await _uncancellable_to_thread(
+                    partial(
+                        self.store.finalize_checkpoint,
+                        decision,
+                        output_manifests=output_manifests,
+                    )
+                )
+                return CheckpointManifest(
+                    job_id=decision.job_id,
+                    checkpoint_id=decision.checkpoint_id,
+                    attempt_id=decision.attempt_id,
+                    coordinator_epoch=decision.coordinator_epoch,
+                    created_at=decision.decided_at,
+                    snapshots=decision.snapshots,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await asyncio.sleep(0.05)
 
     async def _abort(
         self,

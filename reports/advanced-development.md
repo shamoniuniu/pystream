@@ -105,3 +105,43 @@
 - 上一回退点：`ea64976`
 - 结果提交：本里程碑提交 SHA 通过 Git note 关联
 - 回退：`git revert <Task 2 SHA>`
+
+## 2026-07-31T04:47:06Z - Task 3 事务 File Sink 与两阶段提交
+
+- 状态：实现和本地质量门完成，等待 staged review、提交和远端备份
+- Transaction Sink：
+  - Exactly-once open 创建 ACTIVE pending fragment；At-least-once 继续 append
+  - Barrier 对齐后执行 flush、fsync、close、size/SHA-256 descriptor，再启动下一事务
+  - PREPARED fragment 使用确定性 checkpoint 目标和 `os.replace` 幂等提交
+  - 已提交目标必须复验 size/SHA；COMMITTED 状态拒绝 abort
+- Checkpoint Store：
+  - Task snapshot 内容和摘要覆盖 transaction descriptors
+  - 验证全 Task/Sink transaction 集合后写不可变 `decision.json`
+  - `decision.json` 出现后 Store 和 Coordinator 均禁止回到 abort
+  - output manifest 发布完成后写 `finalized.json`，并验证 decision SHA
+- Manifest-last：
+  - JobManager 挂载共享 output volume
+  - 所有 committed fragments 先完成完整性校验，再按 Sink 原子发布 output manifest
+  - pending/committed fragment 本身不作为读取可见性真值
+- 故障恢复：
+  - pre-decision 失败立即 abort 并触发整作业恢复
+  - post-decision 未知结果只重放 finalize，不发送 abort
+  - Worker 丢失后新 attempt 从 decision snapshot 恢复 transaction 与 frozen offsets
+  - 新 Source 提交恢复 offset 后才发布 output manifest/finalized
+  - Task 停止期间清理所有未被 durable decision 保护的 pending 目录
+- 反例验证：
+  - 覆盖 Barrier/PREPARED 前失败、PREPARED 后 decision 前失败
+  - 覆盖 DECIDED 后 complete 响应丢失和 Source/Sink 进程重启
+  - 覆盖重复 commit/finalize、目标篡改、descriptor 篡改和 orphan 保护
+- Python 3.11 质量门：
+  - pytest：413 passed
+  - branch coverage：84.28%
+  - Ruff check：通过
+  - Ruff format：113 files already formatted
+  - `git diff --check`：通过
+- 未在本里程碑宣称：
+  - JobManager 接管、对象存储持久化、mTLS、Prometheus 和 Docker 故障验收
+  - Kafka broker、Docker 主机或 File output volume HA
+- 上一回退点：`cdfbcd7`
+- 结果提交：本里程碑提交 SHA 通过 Git note 关联
+- 回退：`git revert <Task 3 SHA>`

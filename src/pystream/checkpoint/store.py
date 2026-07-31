@@ -14,9 +14,12 @@ from pathlib import Path
 from pystream.checkpoint.models import (
     CHECKPOINT_SCHEMA_VERSION,
     DEFAULT_MAX_SNAPSHOT_SIZE,
+    CheckpointDecision,
     CheckpointError,
+    CheckpointFinalization,
     CheckpointManifest,
     TaskSnapshotDescriptor,
+    TransactionDescriptor,
 )
 from pystream.common import JsonValue
 
@@ -108,6 +111,7 @@ class LocalCheckpointStore:
         task_id: str,
         operator_id: str,
         state: dict[str, JsonValue],
+        transactions: tuple[TransactionDescriptor, ...] = (),
     ) -> TaskSnapshotDescriptor:
         """原子写入一个当前 attempt 的 Task 状态。"""
         self._validate_job_id(job_id)
@@ -121,6 +125,15 @@ class LocalCheckpointStore:
             raise CheckpointError("operator_id 必须是非空字符串")
         if not isinstance(state, dict) or not all(isinstance(key, str) for key in state):
             raise CheckpointError("Task state 必须是字符串键的 JSON object")
+        validated_transactions = self._validate_transactions(
+            transactions,
+            job_id=job_id,
+            checkpoint_id=checkpoint_id,
+            attempt_id=attempt_id,
+            coordinator_epoch=coordinator_epoch,
+            task_id=task_id,
+            operator_id=operator_id,
+        )
         document = {
             "schema_version": CHECKPOINT_SCHEMA_VERSION,
             "job_id": job_id,
@@ -130,6 +143,7 @@ class LocalCheckpointStore:
             "task_id": task_id,
             "operator_id": operator_id,
             "state": state,
+            "transactions": [item.to_dict() for item in validated_transactions],
         }
         content = _canonical_json(document)
         if len(content) > self.max_snapshot_size:
@@ -154,6 +168,7 @@ class LocalCheckpointStore:
             sha256=hashlib.sha256(content).hexdigest(),
             size=len(content),
             coordinator_epoch=coordinator_epoch,
+            transactions=validated_transactions,
         )
         self.read_task_snapshot(descriptor)
         return descriptor
@@ -163,6 +178,7 @@ class LocalCheckpointStore:
         descriptor: TaskSnapshotDescriptor,
     ) -> dict[str, JsonValue]:
         """复验 descriptor 并返回 Task state。"""
+        descriptor = TaskSnapshotDescriptor.from_dict(descriptor.to_dict())
         expected = self._snapshot_path(
             descriptor.job_id,
             descriptor.checkpoint_id,
@@ -192,6 +208,7 @@ class LocalCheckpointStore:
             "task_id",
             "operator_id",
             "state",
+            "transactions",
         }
         if set(document) != expected_fields:
             raise CheckpointError("Task snapshot 字段集合不匹配")
@@ -215,10 +232,48 @@ class LocalCheckpointStore:
         )
         if identity != expected_identity:
             raise CheckpointError("Task snapshot 内容身份与 descriptor 不一致")
+        raw_transactions = document["transactions"]
+        if not isinstance(raw_transactions, list):
+            raise CheckpointError("Task snapshot transactions 必须是 array")
+        transactions = tuple(TransactionDescriptor.from_dict(item) for item in raw_transactions)
+        if transactions != descriptor.transactions:
+            raise CheckpointError("Task snapshot transaction descriptor 不匹配")
         state = document["state"]
         if not isinstance(state, dict) or not all(isinstance(key, str) for key in state):
             raise CheckpointError("Task snapshot state 必须是 JSON object")
         return state
+
+    @staticmethod
+    def _validate_transactions(
+        transactions: tuple[TransactionDescriptor, ...],
+        *,
+        job_id: str,
+        checkpoint_id: int,
+        attempt_id: int,
+        coordinator_epoch: int,
+        task_id: str,
+        operator_id: str,
+    ) -> tuple[TransactionDescriptor, ...]:
+        if not isinstance(transactions, tuple):
+            raise CheckpointError("transactions 必须是 tuple")
+        validated: list[TransactionDescriptor] = []
+        for item in transactions:
+            if not isinstance(item, TransactionDescriptor):
+                raise CheckpointError("transactions 只能包含 TransactionDescriptor")
+            descriptor = TransactionDescriptor.from_dict(item.to_dict())
+            if (
+                descriptor.job_id != job_id
+                or descriptor.checkpoint_id != checkpoint_id
+                or descriptor.attempt_id != attempt_id
+                or descriptor.coordinator_epoch != coordinator_epoch
+                or descriptor.task_id != task_id
+                or descriptor.operator_id != operator_id
+            ):
+                raise CheckpointError("transaction descriptor 与 Task snapshot 身份不一致")
+            validated.append(descriptor)
+        if len({item.transaction_id for item in validated}) != len(validated):
+            raise CheckpointError("Task snapshot 包含重复 transaction_id")
+        return tuple(validated)
 
     def complete_checkpoint(
         self,
@@ -281,6 +336,205 @@ class LocalCheckpointStore:
             expected_task_ids=expected_task_ids,
         )
 
+    def decide_checkpoint(
+        self,
+        *,
+        job_id: str,
+        checkpoint_id: int,
+        attempt_id: int,
+        coordinator_epoch: int,
+        expected_task_ids: set[str],
+        expected_transaction_task_ids: set[str],
+        snapshots: tuple[TaskSnapshotDescriptor, ...],
+        decided_at: datetime | None = None,
+    ) -> CheckpointDecision:
+        """验证全图和 Sink transaction 全集后写入不可逆 decision。"""
+        if not expected_task_ids:
+            raise CheckpointError("expected_task_ids 不能为空")
+        if {item.task_id for item in snapshots} != expected_task_ids:
+            raise CheckpointError("Task snapshot 集合与执行图不一致")
+        transactions: list[TransactionDescriptor] = []
+        for descriptor in snapshots:
+            if (
+                descriptor.job_id != job_id
+                or descriptor.checkpoint_id != checkpoint_id
+                or descriptor.attempt_id != attempt_id
+                or descriptor.coordinator_epoch != coordinator_epoch
+            ):
+                raise CheckpointError("Task snapshot descriptor 不属于当前 Checkpoint")
+            self.read_task_snapshot(descriptor)
+            transactions.extend(descriptor.transactions)
+        transaction_task_ids = [item.task_id for item in transactions]
+        if set(transaction_task_ids) != expected_transaction_task_ids or len(
+            transaction_task_ids
+        ) != len(expected_transaction_task_ids):
+            raise CheckpointError("PREPARED transaction 集合与 Sink Task 全集不一致")
+        if len({item.transaction_id for item in transactions}) != len(transactions):
+            raise CheckpointError("Checkpoint 包含重复 transaction_id")
+
+        sorted_snapshots = tuple(sorted(snapshots, key=lambda item: item.task_id))
+        target = self._checkpoint_root(job_id, checkpoint_id) / "decision.json"
+        if target.exists():
+            existing = self.read_decision(
+                job_id,
+                checkpoint_id,
+                expected_task_ids=expected_task_ids,
+                expected_transaction_task_ids=expected_transaction_task_ids,
+            )
+            if (
+                existing.attempt_id != attempt_id
+                or existing.coordinator_epoch != coordinator_epoch
+                or existing.snapshots != sorted_snapshots
+            ):
+                raise CheckpointError("已决定 Checkpoint decision 不可覆盖")
+            if decided_at is not None and existing.decided_at != decided_at.astimezone(UTC):
+                raise CheckpointError("已决定 Checkpoint decision 不可覆盖")
+            return existing
+        decision = CheckpointDecision(
+            job_id=job_id,
+            checkpoint_id=checkpoint_id,
+            attempt_id=attempt_id,
+            coordinator_epoch=coordinator_epoch,
+            decided_at=(decided_at or datetime.now(UTC)).astimezone(UTC),
+            snapshots=sorted_snapshots,
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self._atomic_write(target, _canonical_json(decision.to_dict()))
+        return self.read_decision(
+            job_id,
+            checkpoint_id,
+            expected_task_ids=expected_task_ids,
+            expected_transaction_task_ids=expected_transaction_task_ids,
+        )
+
+    def read_decision(
+        self,
+        job_id: str,
+        checkpoint_id: int,
+        *,
+        expected_task_ids: set[str] | None = None,
+        expected_transaction_task_ids: set[str] | None = None,
+    ) -> CheckpointDecision:
+        """读取并复验不可逆 checkpoint decision。"""
+        path = self._checkpoint_root(job_id, checkpoint_id) / "decision.json"
+        if path.is_symlink() or not path.is_file():
+            raise CheckpointError("Checkpoint decision 不存在或不是普通文件")
+        decision = CheckpointDecision.from_dict(
+            _load_json(path.read_bytes(), "Checkpoint decision")
+        )
+        if decision.job_id != job_id or decision.checkpoint_id != checkpoint_id:
+            raise CheckpointError("Checkpoint decision 路径与内容身份不一致")
+        task_ids = {item.task_id for item in decision.snapshots}
+        if expected_task_ids is not None and task_ids != expected_task_ids:
+            raise CheckpointError("Checkpoint decision 任务集合与执行图不一致")
+        transactions = tuple(
+            transaction for snapshot in decision.snapshots for transaction in snapshot.transactions
+        )
+        if len({item.transaction_id for item in transactions}) != len(transactions):
+            raise CheckpointError("Checkpoint decision 包含重复 transaction_id")
+        transaction_task_ids = [item.task_id for item in transactions]
+        if expected_transaction_task_ids is not None and (
+            set(transaction_task_ids) != expected_transaction_task_ids
+            or len(transaction_task_ids) != len(expected_transaction_task_ids)
+        ):
+            raise CheckpointError("Checkpoint decision transaction 集合与 Sink Task 不一致")
+        for descriptor in decision.snapshots:
+            self.read_task_snapshot(descriptor)
+        return decision
+
+    def finalize_checkpoint(
+        self,
+        decision: CheckpointDecision,
+        *,
+        output_manifests: tuple[str, ...],
+        finalized_at: datetime | None = None,
+    ) -> CheckpointFinalization:
+        """为已决定 checkpoint 幂等写入 finalized 凭据。"""
+        persisted = self.read_decision(
+            decision.job_id,
+            decision.checkpoint_id,
+        )
+        if persisted != decision:
+            raise CheckpointError("finalize decision 与持久化 decision 不一致")
+        decision_sha256 = hashlib.sha256(_canonical_json(persisted.to_dict())).hexdigest()
+        target = self._checkpoint_root(decision.job_id, decision.checkpoint_id) / "finalized.json"
+        if target.exists():
+            existing = self.read_finalization(
+                decision.job_id,
+                decision.checkpoint_id,
+            )
+            if (
+                existing.attempt_id != decision.attempt_id
+                or existing.coordinator_epoch != decision.coordinator_epoch
+                or existing.decision_sha256 != decision_sha256
+                or existing.output_manifests != output_manifests
+            ):
+                raise CheckpointError("已完成 Checkpoint finalization 不可覆盖")
+            if finalized_at is not None and existing.finalized_at != finalized_at.astimezone(UTC):
+                raise CheckpointError("已完成 Checkpoint finalization 不可覆盖")
+            return existing
+        finalization = CheckpointFinalization(
+            job_id=decision.job_id,
+            checkpoint_id=decision.checkpoint_id,
+            attempt_id=decision.attempt_id,
+            coordinator_epoch=decision.coordinator_epoch,
+            finalized_at=(finalized_at or datetime.now(UTC)).astimezone(UTC),
+            decision_sha256=decision_sha256,
+            output_manifests=output_manifests,
+        )
+        self._atomic_write(target, _canonical_json(finalization.to_dict()))
+        return self.read_finalization(
+            decision.job_id,
+            decision.checkpoint_id,
+        )
+
+    def read_finalization(
+        self,
+        job_id: str,
+        checkpoint_id: int,
+    ) -> CheckpointFinalization:
+        """读取 finalized 凭据并复验其 decision 摘要。"""
+        path = self._checkpoint_root(job_id, checkpoint_id) / "finalized.json"
+        if path.is_symlink() or not path.is_file():
+            raise CheckpointError("Checkpoint finalization 不存在或不是普通文件")
+        finalization = CheckpointFinalization.from_dict(
+            _load_json(path.read_bytes(), "Checkpoint finalization")
+        )
+        if finalization.job_id != job_id or finalization.checkpoint_id != checkpoint_id:
+            raise CheckpointError("Checkpoint finalization 路径与内容身份不一致")
+        decision = self.read_decision(job_id, checkpoint_id)
+        expected_sha256 = hashlib.sha256(_canonical_json(decision.to_dict())).hexdigest()
+        if (
+            finalization.attempt_id != decision.attempt_id
+            or finalization.coordinator_epoch != decision.coordinator_epoch
+            or finalization.decision_sha256 != expected_sha256
+        ):
+            raise CheckpointError("Checkpoint finalization 与 decision 不一致")
+        return finalization
+
+    def unfinalized_decisions(self, job_id: str) -> tuple[CheckpointDecision, ...]:
+        """按 checkpoint_id 返回全部合法 DECIDED 未 FINALIZED checkpoint。"""
+        root = self._job_root(job_id)
+        if not root.is_dir():
+            return ()
+        decisions: list[CheckpointDecision] = []
+        for path in root.iterdir():
+            match = _CHECKPOINT_DIRECTORY.fullmatch(path.name)
+            if (
+                not path.is_dir()
+                or path.is_symlink()
+                or match is None
+                or not (path / "decision.json").is_file()
+                or (path / "finalized.json").exists()
+            ):
+                continue
+            decisions.append(self.read_decision(job_id, int(match.group("id"))))
+        return tuple(sorted(decisions, key=lambda item: item.checkpoint_id))
+
+    def has_decision(self, job_id: str, checkpoint_id: int) -> bool:
+        """返回 decision 对象是否已经出现；损坏文件也禁止回到 abort。"""
+        return (self._checkpoint_root(job_id, checkpoint_id) / "decision.json").exists()
+
     def read_manifest(
         self,
         job_id: str,
@@ -321,6 +575,22 @@ class LocalCheckpointStore:
                 candidates.append(int(match.group("id")))
         for checkpoint_id in sorted(candidates, reverse=True):
             try:
+                decision = self.read_decision(
+                    job_id,
+                    checkpoint_id,
+                    expected_task_ids=expected_task_ids,
+                )
+                return CheckpointManifest(
+                    job_id=decision.job_id,
+                    checkpoint_id=decision.checkpoint_id,
+                    attempt_id=decision.attempt_id,
+                    coordinator_epoch=decision.coordinator_epoch,
+                    created_at=decision.decided_at,
+                    snapshots=decision.snapshots,
+                )
+            except CheckpointError:
+                pass
+            try:
                 return self.read_manifest(
                     job_id,
                     checkpoint_id,
@@ -336,9 +606,11 @@ class LocalCheckpointStore:
         checkpoint_id: int,
         attempt_id: int,
     ) -> None:
-        """删除未完成 attempt；已完成 manifest 保持不可变。"""
+        """删除未决定 attempt；decision/manifest 一旦存在就保持不可变。"""
         checkpoint_root = self._checkpoint_root(job_id, checkpoint_id)
-        if (checkpoint_root / "manifest.json").exists():
+        if (checkpoint_root / "decision.json").exists() or (
+            checkpoint_root / "manifest.json"
+        ).exists():
             return
         attempt_root = checkpoint_root / f"attempt-{attempt_id:08d}"
         if attempt_root.is_symlink():

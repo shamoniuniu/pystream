@@ -13,7 +13,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from pystream.api import OperatorType, StreamGraph
+from pystream.api import DeliveryGuarantee, OperatorType, StreamGraph
 from pystream.checkpoint import CheckpointManifest, LocalCheckpointStore
 from pystream.control.checkpoint import (
     CheckpointCoordinationError,
@@ -343,6 +343,7 @@ class JobManager:
                 raise CheckpointCoordinationError(
                     f"作业 {job_id} 状态 {run.job.status.value} 不能执行 Checkpoint"
                 )
+            await self._resume_finalize_backlog(run)
             checkpoint_id = run.next_checkpoint_id
             run.next_checkpoint_id += 1
             self._log_checkpoint(
@@ -371,7 +372,16 @@ class JobManager:
                     error=f"{type(exc).__name__}: {exc}",
                     exc_info=exc,
                 )
-                if run.consecutive_checkpoint_failures >= run.max_consecutive_checkpoint_failures:
+                decision_exists = (
+                    self.checkpoint_store is not None
+                    and self.checkpoint_store.has_decision(job_id, checkpoint_id)
+                )
+                if (
+                    run.execution_graph.delivery_guarantee is DeliveryGuarantee.EXACTLY_ONCE
+                    and not decision_exists
+                ) or (
+                    run.consecutive_checkpoint_failures >= run.max_consecutive_checkpoint_failures
+                ):
                     await self._request_recovery(
                         run,
                         "Checkpoint 连续失败达到上限: "
@@ -390,6 +400,56 @@ class JobManager:
                 snapshots=len(manifest.snapshots),
             )
             return manifest
+
+    async def _resume_finalize_backlog(self, run: JobRun) -> None:
+        coordinator = self.checkpoint_coordinator
+        store = self.checkpoint_store
+        if (
+            coordinator is None
+            or store is None
+            or run.execution_graph.delivery_guarantee is not DeliveryGuarantee.EXACTLY_ONCE
+        ):
+            return
+        for decision in store.unfinalized_decisions(run.job.job_id):
+            try:
+                manifest = await coordinator.resume_decision(
+                    run.execution_graph,
+                    checkpoint_id=decision.checkpoint_id,
+                    timeout=run.checkpoint_timeout,
+                )
+            except Exception as exc:
+                run.consecutive_checkpoint_failures += 1
+                self._log_checkpoint(
+                    logging.ERROR,
+                    "checkpoint_finalize_retry_failed",
+                    "JobManager 重放 DECIDED checkpoint 失败",
+                    run,
+                    decision.checkpoint_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                    exc_info=exc,
+                )
+                if run.consecutive_checkpoint_failures >= run.max_consecutive_checkpoint_failures:
+                    await self._request_recovery(
+                        run,
+                        "Checkpoint finalize 连续失败达到上限: "
+                        f"{run.consecutive_checkpoint_failures}; "
+                        f"last_error={type(exc).__name__}: {exc}",
+                    )
+                raise
+            run.last_completed_checkpoint_id = manifest.checkpoint_id
+            run.next_checkpoint_id = max(
+                run.next_checkpoint_id,
+                manifest.checkpoint_id + 1,
+            )
+            run.consecutive_checkpoint_failures = 0
+            self._log_checkpoint(
+                logging.INFO,
+                "checkpoint_finalize_retried",
+                "JobManager 已完成 DECIDED checkpoint 重放",
+                run,
+                manifest.checkpoint_id,
+                snapshots=len(manifest.snapshots),
+            )
 
     async def close(self) -> None:
         """停止全部周期 Checkpoint 和 Recovery 协程。"""
@@ -460,6 +520,38 @@ class JobManager:
                     cleanup_errors
                 )
 
+            if (
+                self.checkpoint_store is not None
+                and self.checkpoint_coordinator is not None
+                and run.execution_graph.delivery_guarantee is DeliveryGuarantee.EXACTLY_ONCE
+            ):
+                try:
+                    decisions = self.checkpoint_store.unfinalized_decisions(run.job.job_id)
+                    for decision in decisions:
+                        await asyncio.to_thread(
+                            self.checkpoint_coordinator.output_committer.finalize_transactions,
+                            decision,
+                            output_roots=run.execution_graph.sink_output_roots,
+                        )
+                    protected_pending_paths = {
+                        transaction.pending_path
+                        for decision in decisions
+                        for snapshot in decision.snapshots
+                        for transaction in snapshot.transactions
+                    }
+                    await asyncio.to_thread(
+                        self.checkpoint_coordinator.output_committer.cleanup_orphans,
+                        job_id=run.job.job_id,
+                        output_roots=run.execution_graph.sink_output_roots,
+                        protected_pending_paths=protected_pending_paths,
+                    )
+                except Exception as exc:
+                    await self._fail_run(
+                        run,
+                        f"恢复事务文件失败: {type(exc).__name__}: {exc}",
+                    )
+                    return
+
             manifest = (
                 self.checkpoint_store.latest_manifest(
                     run.job.job_id,
@@ -500,6 +592,7 @@ class JobManager:
                     self.scheduler.schedule(run.execution_graph, self.registry)
                     run.job.transition(JobStatus.DEPLOYING, run.last_failure)
                     await self._deploy_run_tasks(run)
+                    await self._resume_finalize_backlog(run)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:

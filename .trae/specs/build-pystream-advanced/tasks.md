@@ -35,14 +35,14 @@
   - [x] 对齐时间和 blocked input 指标
   - [x] 双输入、乱序、超时、断连和背压测试
 
-- [ ] Task 3: 事务 File Sink 与两阶段提交
-  - [ ] ACTIVE/PREPARED/COMMITTED/ABORTED 生命周期
-  - [ ] flush/fsync/hash transaction descriptor
-  - [ ] DECIDED/FINALIZED Checkpoint
-  - [ ] 幂等 fragment finalize
-  - [ ] output manifest-last 可见性
-  - [ ] pending transaction 恢复清理
-  - [ ] 三个提交窗口 test hooks 与状态机测试
+- [x] Task 3: 事务 File Sink 与两阶段提交
+  - [x] ACTIVE/PREPARED/COMMITTED/ABORTED 生命周期
+  - [x] flush/fsync/hash transaction descriptor
+  - [x] DECIDED/FINALIZED Checkpoint
+  - [x] 幂等 fragment finalize
+  - [x] output manifest-last 可见性
+  - [x] pending transaction 恢复清理
+  - [x] 三个提交窗口状态机与恢复测试
 
 - [ ] Task 4: S3 对象存储与持久元数据
   - [ ] Local/S3 repository ports

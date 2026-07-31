@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from pystream.checkpoint import CheckpointError, LocalCheckpointStore
+from pystream.checkpoint import (
+    CheckpointError,
+    LocalCheckpointStore,
+    TaskSnapshotDescriptor,
+    TransactionDescriptor,
+)
 
 
 def write(
@@ -159,6 +164,141 @@ def test_snapshot大小和路径安全边界(tmp_path: Path) -> None:
             task_id="map-0",
             operator_id="map",
             state={},
+        )
+
+
+def test_task_snapshot_hash_binds_transaction_descriptor(tmp_path: Path) -> None:
+    store = LocalCheckpointStore(tmp_path)
+    transaction = TransactionDescriptor(
+        job_id="job-1",
+        checkpoint_id=7,
+        attempt_id=2,
+        coordinator_epoch=4,
+        task_id="job-1:output:0",
+        operator_id="output",
+        transaction_id="tx-1",
+        pending_path=("job-1/output/pending/attempt-00000002/tx-tx-1/part-00000.csv"),
+        sha256="a" * 64,
+        size=42,
+    )
+    descriptor = store.write_task_snapshot(
+        job_id="job-1",
+        checkpoint_id=7,
+        attempt_id=2,
+        coordinator_epoch=4,
+        task_id="job-1:output:0",
+        operator_id="output",
+        state={"kind": "operator"},
+        transactions=(transaction,),
+    )
+
+    assert descriptor.transactions == (transaction,)
+    assert store.read_task_snapshot(descriptor) == {"kind": "operator"}
+
+    tampered = TaskSnapshotDescriptor(
+        job_id=descriptor.job_id,
+        checkpoint_id=descriptor.checkpoint_id,
+        attempt_id=descriptor.attempt_id,
+        coordinator_epoch=descriptor.coordinator_epoch,
+        task_id=descriptor.task_id,
+        operator_id=descriptor.operator_id,
+        relative_path=descriptor.relative_path,
+        sha256=descriptor.sha256,
+        size=descriptor.size,
+        transactions=(
+            TransactionDescriptor(
+                **{
+                    **transaction.to_dict(),
+                    "sha256": "b" * 64,
+                }
+            ),
+        ),
+    )
+    with pytest.raises(CheckpointError, match="transaction descriptor 不匹配"):
+        store.read_task_snapshot(tampered)
+
+
+def test_decision_finalization_roundtrip_and_decision_blocks_abort(
+    tmp_path: Path,
+) -> None:
+    store = LocalCheckpointStore(tmp_path)
+    source = write(store, 8, "words-0", attempt_id=2)
+    transaction = TransactionDescriptor(
+        job_id="job-1",
+        checkpoint_id=8,
+        attempt_id=2,
+        coordinator_epoch=0,
+        task_id="output-0",
+        operator_id="output",
+        transaction_id="tx-8",
+        pending_path="job-1/output/pending/attempt-00000002/tx-tx-8/part-00000.csv",
+        sha256="c" * 64,
+        size=12,
+    )
+    sink = store.write_task_snapshot(
+        job_id="job-1",
+        checkpoint_id=8,
+        attempt_id=2,
+        task_id="output-0",
+        operator_id="output",
+        state={"value": 1},
+        transactions=(transaction,),
+    )
+
+    decision = store.decide_checkpoint(
+        job_id="job-1",
+        checkpoint_id=8,
+        attempt_id=2,
+        coordinator_epoch=0,
+        expected_task_ids={"words-0", "output-0"},
+        expected_transaction_task_ids={"output-0"},
+        snapshots=(sink, source),
+    )
+    retried = store.decide_checkpoint(
+        job_id="job-1",
+        checkpoint_id=8,
+        attempt_id=2,
+        coordinator_epoch=0,
+        expected_task_ids={"words-0", "output-0"},
+        expected_transaction_task_ids={"output-0"},
+        snapshots=(source, sink),
+    )
+
+    assert retried == decision
+    assert store.unfinalized_decisions("job-1") == (decision,)
+    store.abort_checkpoint("job-1", 8, 2)
+    assert store.read_decision("job-1", 8) == decision
+
+    finalization = store.finalize_checkpoint(
+        decision,
+        output_manifests=("/data/output/job-1/output/manifests/checkpoint-8.json",),
+    )
+
+    assert store.read_finalization("job-1", 8) == finalization
+    assert store.unfinalized_decisions("job-1") == ()
+    latest = store.latest_manifest(
+        "job-1",
+        expected_task_ids={"words-0", "output-0"},
+    )
+    assert latest is not None
+    assert latest.checkpoint_id == 8
+    assert latest.snapshots == decision.snapshots
+
+
+def test_decision_rejects_missing_or_duplicate_sink_transaction(tmp_path: Path) -> None:
+    store = LocalCheckpointStore(tmp_path)
+    source = write(store, 9, "words-0", attempt_id=2)
+    sink_without_transaction = write(store, 9, "output-0", attempt_id=2)
+
+    with pytest.raises(CheckpointError, match="transaction 集合"):
+        store.decide_checkpoint(
+            job_id="job-1",
+            checkpoint_id=9,
+            attempt_id=2,
+            coordinator_epoch=0,
+            expected_task_ids={"words-0", "output-0"},
+            expected_transaction_task_ids={"output-0"},
+            snapshots=(source, sink_without_transaction),
         )
     with pytest.raises(CheckpointError, match="coordinator_epoch"):
         store.write_task_snapshot(

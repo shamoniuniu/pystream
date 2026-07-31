@@ -24,6 +24,7 @@ from pystream.checkpoint import (
     CheckpointError,
     LocalCheckpointStore,
     TaskSnapshotDescriptor,
+    TransactionDescriptor,
     decode_state,
     encode_state,
 )
@@ -77,6 +78,13 @@ class AsyncRecordSource(Protocol):
 
     async def restore_state(self, snapshot: bytes) -> None:
         """从版本化快照恢复外部输入位置和时间基线。"""
+
+    def prepare_restored_checkpoint(
+        self,
+        checkpoint_id: int,
+        snapshot: bytes,
+    ) -> None:
+        """从 durable decision 重建可提交的 frozen input position。"""
 
     async def close(self) -> None:
         """释放输入连接。"""
@@ -257,6 +265,7 @@ class TaskRuntime:
         self._checkpoint_descriptor: TaskSnapshotDescriptor | None = None
         self._checkpoint_ready = asyncio.Event()
         self._last_closed_checkpoint_id = -1
+        self._restored_checkpoint_pending: int | None = None
         self._source_idle = asyncio.Event()
         self._source_idle.set()
         if any(
@@ -501,9 +510,39 @@ class TaskRuntime:
         return descriptor
 
     async def complete_checkpoint(self, checkpoint_id: int) -> None:
-        """确认 manifest 已完成，并提交对应 Source frozen offset。"""
+        """完成已决定 checkpoint：先提交 Sink fragment，再提交 Source offset。"""
         self._require_checkpoint_runtime()
         async with self._checkpoint_lock:
+            if (
+                self._active_checkpoint_id is None
+                and checkpoint_id == self._restored_checkpoint_pending
+            ):
+                if self._aligned_checkpoints and self.operator is not None:
+                    commit_transaction = getattr(
+                        self.operator,
+                        "commit_transaction",
+                        None,
+                    )
+                    if callable(commit_transaction) and getattr(
+                        self.operator,
+                        "transactional",
+                        False,
+                    ):
+                        commit_transaction(checkpoint_id)
+                if self.source is not None:
+                    await self.source.commit_checkpoint(checkpoint_id)
+                self._restored_checkpoint_pending = None
+                self._last_closed_checkpoint_id = max(
+                    self._last_closed_checkpoint_id,
+                    checkpoint_id,
+                )
+                self._log(
+                    logging.INFO,
+                    "checkpoint_restored_finalized",
+                    "Task 已完成恢复中的 DECIDED Checkpoint",
+                    checkpoint_id=checkpoint_id,
+                )
+                return
             if (
                 self._active_checkpoint_id is None
                 and checkpoint_id == self._last_closed_checkpoint_id
@@ -512,6 +551,18 @@ class TaskRuntime:
             self._require_active_checkpoint(checkpoint_id)
             if self._checkpoint_descriptor is None:
                 raise RuntimeLifecycleError("Task snapshot 尚未完成")
+            if self._aligned_checkpoints and self.operator is not None:
+                commit_transaction = getattr(
+                    self.operator,
+                    "commit_transaction",
+                    None,
+                )
+                if callable(commit_transaction) and getattr(
+                    self.operator,
+                    "transactional",
+                    False,
+                ):
+                    commit_transaction(checkpoint_id)
             if self.source is not None:
                 if self._aligned_checkpoints:
                     await self.source.commit_checkpoint(checkpoint_id)
@@ -536,6 +587,18 @@ class TaskRuntime:
             ):
                 return
             self._require_active_checkpoint(checkpoint_id)
+            if self._aligned_checkpoints and self.operator is not None:
+                abort_transaction = getattr(
+                    self.operator,
+                    "abort_transaction",
+                    None,
+                )
+                if callable(abort_transaction) and getattr(
+                    self.operator,
+                    "transactional",
+                    False,
+                ):
+                    abort_transaction(checkpoint_id)
             if self.source is not None:
                 if self._aligned_checkpoints:
                     self.source.abort_checkpoint(checkpoint_id)
@@ -858,6 +921,18 @@ class TaskRuntime:
         target = self.source if self.source is not None else self.operator
         if target is None:  # pragma: no cover - 构造器保证
             raise RuntimeLifecycleError("Task 缺少可快照的 Source 或 Operator")
+        transactions: tuple[TransactionDescriptor, ...] = ()
+        if self._aligned_checkpoints and self.operator is not None:
+            pre_commit = getattr(self.operator, "pre_commit", None)
+            if callable(pre_commit) and getattr(
+                self.operator,
+                "transactional",
+                False,
+            ):
+                transaction = pre_commit(checkpoint_id)
+                if not isinstance(transaction, TransactionDescriptor):
+                    raise RuntimeTaskError("事务 Sink pre_commit 必须返回 TransactionDescriptor")
+                transactions = (transaction,)
         try:
             resolved_snapshot = snapshot if snapshot is not None else target.snapshot_state()
             snapshot_text = resolved_snapshot.decode("utf-8")
@@ -894,6 +969,7 @@ class TaskRuntime:
                 task_id=task.task_id,
                 operator_id=task.operator_id,
                 state=state,
+                transactions=transactions,
             )
         )
         try:
@@ -1014,6 +1090,16 @@ class TaskRuntime:
         checkpoint_id = task.restored_checkpoint_id
         if checkpoint_id is None:
             raise RuntimeLifecycleError("恢复 descriptor 存在但 Task 缺少 restored_checkpoint_id")
+        requires_finalization = False
+        if self._aligned_checkpoints and store.has_decision(task.job_id, checkpoint_id):
+            try:
+                await asyncio.to_thread(
+                    store.read_finalization,
+                    task.job_id,
+                    checkpoint_id,
+                )
+            except CheckpointError:
+                requires_finalization = True
         states = await asyncio.gather(
             *(asyncio.to_thread(store.read_task_snapshot, item) for item in descriptors)
         )
@@ -1032,6 +1118,15 @@ class TaskRuntime:
                 primary_task_id=task.task_id,
             )
             await self.source.restore_state(snapshot)
+            if requires_finalization:
+                prepare_restored = getattr(
+                    self.source,
+                    "prepare_restored_checkpoint",
+                    None,
+                )
+                if not callable(prepare_restored):
+                    raise RuntimeLifecycleError("Exactly-once Source 不支持恢复 DECIDED checkpoint")
+                prepare_restored(checkpoint_id, snapshot)
         else:
             if len(descriptors) != 1 or descriptors[0].task_id != task.task_id:
                 raise RuntimeLifecycleError("非 Source Task 必须只恢复自身 descriptor")
@@ -1042,8 +1137,25 @@ class TaskRuntime:
             if self.operator is None:  # pragma: no cover - 构造器保证
                 raise RuntimeLifecycleError("恢复 Task 缺少 Operator")
             self.operator.restore_state(snapshot.encode("utf-8"))
+            if requires_finalization and getattr(
+                self.operator,
+                "transactional",
+                False,
+            ):
+                restore_transaction = getattr(
+                    self.operator,
+                    "restore_transaction",
+                    None,
+                )
+                if not callable(restore_transaction):
+                    raise RuntimeLifecycleError("Exactly-once Sink 不支持恢复 DECIDED transaction")
+                for descriptor in descriptors:
+                    for transaction in descriptor.transactions:
+                        restore_transaction(transaction)
             self._restore_runtime_watermarks(state)
 
+        if requires_finalization:
+            self._restored_checkpoint_pending = checkpoint_id
         self._log(
             logging.INFO,
             "task_state_restored",

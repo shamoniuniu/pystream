@@ -13,6 +13,7 @@ from pystream.checkpoint.models import (
     TaskSnapshotDescriptor,
     TransactionDescriptor,
 )
+from pystream.checkpoint.output import LocalFileOutputCommitter
 from pystream.checkpoint.store import LocalCheckpointStore
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "CheckpointPhase",
     "CheckpointStateMachine",
     "LocalCheckpointStore",
+    "LocalFileOutputCommitter",
     "TaskSnapshotDescriptor",
     "TransactionDescriptor",
     "decode_state",

@@ -33,29 +33,29 @@
 - [x] frozen offset 不受 post-barrier 消费推进
 - [x] complete 只提交对应 frozen offset
 - [x] abort 不提交 offset
-- [ ] restore 从同一 decision checkpoint seek
+- [x] restore 从同一 decision checkpoint seek
 - [x] Watermark/window/retract 状态与 offset 同 checkpoint
 
 ## 事务 Sink
 
-- [ ] open 创建 ACTIVE transaction
-- [ ] Barrier pre-commit 执行 flush/fsync/hash
-- [ ] snapshot 包含 transaction descriptor
-- [ ] decision 前可 abort
-- [ ] decision 后拒绝 abort
-- [ ] finalize 幂等
-- [ ] output manifest 前 fragment 不可见
-- [ ] output manifest 覆盖全部 sink subtasks
-- [ ] orphan pending 在恢复时清理
+- [x] open 创建 ACTIVE transaction
+- [x] Barrier pre-commit 执行 flush/fsync/hash
+- [x] snapshot 包含 transaction descriptor
+- [x] decision 前可 abort
+- [x] decision 后拒绝 abort
+- [x] finalize 幂等
+- [x] output manifest 前 fragment 不可见
+- [x] output manifest 覆盖全部 sink subtasks
+- [x] orphan pending 在恢复时清理
 
 ## Checkpoint 决定
 
 - [x] 状态机转换完整且非法转换拒绝
-- [ ] decision 只在任务全集和摘要合法后写入
+- [x] decision 只在任务全集和摘要合法后写入
 - [x] DECIDED 不可逆
-- [ ] FINALIZED 可重试
+- [x] FINALIZED 可重试
 - [ ] 接管 leader 完成 DECIDED 未 FINALIZED
-- [ ] pre-decision failure 触发整作业恢复
+- [x] pre-decision failure 触发整作业恢复
 
 ## 对象存储
 
@@ -121,11 +121,11 @@
 
 ## 质量门
 
-- [ ] Python 3.11 全量测试无 skip
-- [ ] branch coverage >= 80%
-- [ ] Ruff check
-- [ ] Ruff format check
-- [ ] git diff --check
+- [x] Python 3.11 全量测试无 skip
+- [x] branch coverage >= 80%
+- [x] Ruff check
+- [x] Ruff format check
+- [x] git diff --check
 - [ ] Secret scan 0 命中
 - [ ] staged review 无未解决 blocker
 
