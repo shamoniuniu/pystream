@@ -1,0 +1,1 @@
+review=ready; scope=advanced-m4-object-storage-metadata; staged_tree=df4ec37a36d4bc1dd48259c4b1301d26a01cb89e; blockers=none; tests=447 full Python3.11; minio=core-pass,ha-pass,one-node-down-pass; coverage=83.60; ruff=pass; format=94; diff_check=pass; secret_scan=0; resources=containers0-networks0-volumes0; rollback=git revert <commit-sha>
