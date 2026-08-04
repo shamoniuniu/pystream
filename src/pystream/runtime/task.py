@@ -22,7 +22,7 @@ from pystream.api import Partitioning
 from pystream.artifact import UDFLoader
 from pystream.checkpoint import (
     CheckpointError,
-    LocalCheckpointStore,
+    CheckpointStore,
     TaskSnapshotDescriptor,
     TransactionDescriptor,
     decode_state,
@@ -189,7 +189,7 @@ class TaskRuntime:
         monotonic_clock: Callable[[], float] = time.monotonic,
         checkpoint_enabled: bool = False,
         aligned_checkpoints: bool = False,
-        checkpoint_store: LocalCheckpointStore | None = None,
+        checkpoint_store: CheckpointStore | None = None,
     ) -> None:
         if (source is None) == (operator is None):
             raise ValueError("TaskRuntime 必须且只能配置 source 或 operator")

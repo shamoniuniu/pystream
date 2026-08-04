@@ -4,7 +4,7 @@
 第一阶段遇到 Worker 或任务故障时停止整条作业并释放资源，不执行自动恢复。
 """
 
-from pystream.control.artifacts import LocalArtifactRepository
+from pystream.control.artifacts import LocalArtifactRepository, S3ArtifactRepository
 from pystream.control.checkpoint import (
     CheckpointCoordinationError,
     CheckpointCoordinator,
@@ -20,6 +20,15 @@ from pystream.control.errors import (
 from pystream.control.execution import ExecutionGraph, build_execution_graph
 from pystream.control.http import JobManagerHttpService
 from pystream.control.manager import JobManager, JobRun
+from pystream.control.metadata import (
+    JOB_METADATA_SCHEMA_VERSION,
+    JobMetadataConflict,
+    JobMetadataError,
+    JobMetadataRepository,
+    JobMetadataRevision,
+    S3JobMetadataRepository,
+    StoredJobMetadata,
+)
 from pystream.control.models import (
     ArtifactDescriptor,
     CoordinatorRole,
@@ -37,6 +46,7 @@ from pystream.control.ports import ArtifactRepository, TaskDeployment, WorkerGat
 from pystream.control.scheduler import SlotScheduler, WorkerRegistry
 
 __all__ = [
+    "JOB_METADATA_SCHEMA_VERSION",
     "ArtifactDescriptor",
     "ArtifactError",
     "ArtifactRepository",
@@ -51,12 +61,19 @@ __all__ = [
     "Job",
     "JobManager",
     "JobManagerHttpService",
+    "JobMetadataConflict",
+    "JobMetadataError",
+    "JobMetadataRepository",
+    "JobMetadataRevision",
     "JobRun",
     "JobStatus",
     "LocalArtifactRepository",
     "PhysicalChannel",
     "ResourceView",
+    "S3ArtifactRepository",
+    "S3JobMetadataRepository",
     "SlotScheduler",
+    "StoredJobMetadata",
     "TaskDeployment",
     "TaskEndpoint",
     "TaskInstance",

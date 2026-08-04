@@ -8,15 +8,23 @@ HTTP 服务。模块只负责依赖注入与进程生命周期，不复制领域
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
 from aiohttp import web
 
-from pystream.checkpoint import LocalCheckpointStore
-from pystream.control import JobManager, JobManagerHttpService, LocalArtifactRepository
+from pystream.checkpoint import LocalCheckpointStore, S3CheckpointStore
+from pystream.control import (
+    JobManager,
+    JobManagerHttpService,
+    LocalArtifactRepository,
+    S3ArtifactRepository,
+    S3JobMetadataRepository,
+)
 from pystream.observability import configure_logging
 from pystream.runtime import DataPlaneServer
+from pystream.storage import S3ObjectStore
 from pystream.worker import (
     HttpArtifactFetcher,
     HttpJobManagerClient,
@@ -40,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     jobmanager.add_argument("--port", type=int, default=8080)
     jobmanager.add_argument("--artifact-root", type=Path, default=Path("/data/artifacts"))
     jobmanager.add_argument("--checkpoint-root", type=Path, default=Path("/data/checkpoints"))
+    _add_object_store_arguments(jobmanager)
     jobmanager.add_argument("--heartbeat-timeout", type=float, default=15.0)
     jobmanager.add_argument("--reconcile-interval", type=float, default=5.0)
     jobmanager.set_defaults(app_factory=_create_jobmanager_app)
@@ -57,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--jobmanager-url", default="http://jobmanager:8080")
     worker.add_argument("--work-root", type=Path, default=Path("/data/work"))
     worker.add_argument("--checkpoint-root", type=Path, default=Path("/data/checkpoints"))
+    _add_object_store_arguments(worker)
     worker.set_defaults(app_factory=_create_worker_app)
     return parser
 
@@ -67,11 +77,25 @@ def _create_jobmanager_app(args: argparse.Namespace) -> web.Application:
     if args.heartbeat_timeout <= 0:
         raise ValueError("--heartbeat-timeout 必须大于 0")
     gateway = HttpWorkerGateway()
+    object_store = _object_store(args)
+    artifact_repository = (
+        S3ArtifactRepository(object_store)
+        if object_store is not None
+        else LocalArtifactRepository(args.artifact_root)
+    )
+    checkpoint_store = (
+        S3CheckpointStore(object_store)
+        if object_store is not None
+        else LocalCheckpointStore(args.checkpoint_root)
+    )
     manager = JobManager(
-        LocalArtifactRepository(args.artifact_root),
+        artifact_repository,
         gateway,
         heartbeat_timeout=timedelta(seconds=args.heartbeat_timeout),
-        checkpoint_store=LocalCheckpointStore(args.checkpoint_root),
+        checkpoint_store=checkpoint_store,
+        metadata_repository=(
+            S3JobMetadataRepository(object_store) if object_store is not None else None
+        ),
     )
     service = JobManagerHttpService(
         manager,
@@ -90,13 +114,15 @@ def _create_worker_app(args: argparse.Namespace) -> web.Application:
     artifact_fetcher = HttpArtifactFetcher(args.jobmanager_url)
     jobmanager_client = HttpJobManagerClient(args.jobmanager_url)
     data_server = DataPlaneServer(args.data_listen_host, args.data_port)
+    object_store = _object_store(args)
     manager = WorkerTaskManager(
         args.worker_id,
         args.work_root,
         data_server,
         artifact_fetcher,
         status_reporter=jobmanager_client,
-        checkpoint_root=args.checkpoint_root,
+        checkpoint_root=(args.checkpoint_root if object_store is None else None),
+        checkpoint_store=(S3CheckpointStore(object_store) if object_store is not None else None),
     )
     service = WorkerHttpService(
         WorkerServiceConfig(
@@ -118,6 +144,82 @@ def _create_worker_app(args: argparse.Namespace) -> web.Application:
 
     app.on_cleanup.append(close_clients)
     return app
+
+
+def _add_object_store_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--object-store-endpoint",
+        default=os.environ.get("PYSTREAM_OBJECT_STORE_ENDPOINT"),
+    )
+    parser.add_argument(
+        "--object-store-bucket",
+        default=os.environ.get("PYSTREAM_OBJECT_STORE_BUCKET", "pystream"),
+    )
+    parser.add_argument(
+        "--object-store-region",
+        default=os.environ.get("PYSTREAM_OBJECT_STORE_REGION", "us-east-1"),
+    )
+    parser.add_argument(
+        "--object-store-access-key-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_OBJECT_STORE_ACCESS_KEY_FILE"),
+    )
+    parser.add_argument(
+        "--object-store-secret-key-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_OBJECT_STORE_SECRET_KEY_FILE"),
+    )
+    parser.add_argument(
+        "--object-store-ca-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_OBJECT_STORE_CA_FILE"),
+    )
+
+
+def _object_store(args: argparse.Namespace) -> S3ObjectStore | None:
+    endpoint = args.object_store_endpoint
+    if endpoint is None:
+        return None
+    if args.object_store_access_key_file is None or args.object_store_secret_key_file is None:
+        raise ValueError(
+            "对象存储模式要求 --object-store-access-key-file 和 --object-store-secret-key-file"
+        )
+    access_key = _read_secret_file(
+        args.object_store_access_key_file,
+        "object store access key",
+    )
+    secret_key = _read_secret_file(
+        args.object_store_secret_key_file,
+        "object store secret key",
+    )
+    verify: bool | str = (
+        str(args.object_store_ca_file) if args.object_store_ca_file is not None else True
+    )
+    store = S3ObjectStore(
+        args.object_store_bucket,
+        endpoint_url=endpoint,
+        region_name=args.object_store_region,
+        access_key_id=access_key,
+        secret_access_key=secret_key,
+        verify=verify,
+    )
+    store.probe_conditional_writes()
+    return store
+
+
+def _read_secret_file(path: Path, name: str) -> str:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ValueError(f"无法读取 {name} 文件 {path}: {exc}") from exc
+    if not value:
+        raise ValueError(f"{name} 文件不能为空")
+    return value
+
+
+def _environment_path(name: str) -> Path | None:
+    value = os.environ.get(name)
+    return Path(value) if value else None
 
 
 def main(argv: Sequence[str] | None = None) -> int:

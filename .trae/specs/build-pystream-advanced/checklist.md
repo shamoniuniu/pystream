@@ -59,12 +59,12 @@
 
 ## 对象存储
 
-- [ ] artifact/checkpoint/metadata 使用 S3 ports
-- [ ] immutable key 使用 If-None-Match
-- [ ] mutable pointer 使用 ETag If-Match
-- [ ] 409/412 不被吞掉
-- [ ] schema/SHA/size/identity 严格验证
-- [ ] 单 MinIO 节点退出后保持读写
+- [x] artifact/checkpoint/metadata 使用 S3 ports
+- [x] immutable key 使用 If-None-Match
+- [x] mutable pointer 使用 ETag If-Match
+- [x] 409/412 不被吞掉
+- [x] schema/SHA/size/identity 严格验证
+- [x] 单 MinIO 节点退出后保持读写
 
 ## JobManager HA
 
@@ -126,8 +126,8 @@
 - [x] Ruff check
 - [x] Ruff format check
 - [x] git diff --check
-- [ ] Secret scan 0 命中
-- [ ] staged review 无未解决 blocker
+- [x] Secret scan 0 命中
+- [x] staged review 无未解决 blocker
 
 ## 声明边界
 

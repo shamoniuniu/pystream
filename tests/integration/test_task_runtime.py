@@ -575,6 +575,7 @@ async def test_aligned_barrier_source注入后立即恢复并完成全链路快�
         assert source_runtime.snapshot.source_pause_duration_ms >= 0
         assert target_runtime.snapshot.barrier_blocked_inputs == 1
         assert target_server.metrics["barrier_gate_waits"] == 1
+        await wait_until(lambda: target_server.metrics["barrier_gated_connections"] == 0)
         assert target_server.metrics["barrier_gated_connections"] == 0
 
         store.complete_checkpoint(

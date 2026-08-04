@@ -44,14 +44,15 @@
   - [x] pending transaction 恢复清理
   - [x] 三个提交窗口状态机与恢复测试
 
-- [ ] Task 4: S3 对象存储与持久元数据
-  - [ ] Local/S3 repository ports
-  - [ ] immutable put 与 ETag CAS
-  - [ ] S3 ArtifactRepository
-  - [ ] S3 CheckpointStore
-  - [ ] Job metadata revisions/current pointer
-  - [ ] 单节点 core 与 4 节点 HA 存储拓扑
-  - [ ] fake S3、条件冲突和 MinIO integration tests
+- [x] Task 4: S3 对象存储与持久元数据
+  - [x] Local/S3 repository ports
+  - [x] immutable put 与 ETag CAS
+  - [x] S3 ArtifactRepository
+  - [x] S3 CheckpointStore
+  - [x] Job metadata revisions/current pointer
+  - [x] 单节点 core 与 4 节点 HA 存储拓扑
+  - [x] fake S3 与条件冲突 tests
+  - [x] MinIO integration 与单节点故障 tests
 
 - [ ] Task 5: 双 JobManager 主备
   - [ ] 10s lease / 3s renew / 1s poll

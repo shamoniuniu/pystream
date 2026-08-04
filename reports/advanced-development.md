@@ -145,3 +145,45 @@
 - 上一回退点：`cdfbcd7`
 - 结果提交：本里程碑提交 SHA 通过 Git note 关联
 - 回退：`git revert <Task 3 SHA>`
+
+## 2026-08-04T10:35:06Z - Task 4 对象存储与持久元数据
+
+- 状态：实现、真实 MinIO 验收、Python 3.11 质量门和 staged review 完成
+- 对象存储：
+  - 新增供应商无关 `ObjectStore` 与 `CheckpointStore` ports
+  - S3 adapter 使用 SigV4、path-style、`If-None-Match` 和 ETag `If-Match`
+  - 404、409、412 同时按服务错误码和 HTTP 状态严格映射
+  - 启动 capability probe 验证创建、CAS、stale CAS、读取和列表语义
+  - boto3 最低版本固定为已验证包含两种条件参数的 `1.35.70`
+- 持久仓库：
+  - artifact 使用 SHA-256 内容寻址不可变对象
+  - checkpoint 使用不可变 task snapshot、manifest、decision 和 finalized 对象
+  - Job metadata 使用不可变 revision 与 `current.json` ETag CAS
+  - immutable/CAS 写响应丢失时重读对象并按内容、identity 和 SHA 对账
+  - 每个 JobRun 串行发布 metadata，避免并发状态转换复用 revision
+- 部署：
+  - `core` profile：单 MinIO、单 JobManager、3 Workers
+  - `ha` profile：4 MinIO 节点，每节点 2 个独立 drive，经 HAProxy 暴露 S3
+  - MinIO、MinIO Client、HAProxy 和 Kafka 均固定 tag + manifest digest
+  - 对象存储凭据只通过 Docker Secret 文件路径注入
+- 动态验收：
+  - core 与 ha Compose 配置解析通过
+  - 单节点 MinIO capability/artifact/checkpoint/metadata integration 通过
+  - 四节点正常态经 HAProxy 的相同 integration 通过
+  - 停止 `minio-1` 及其两个 drive 后，完整读写和 CAS integration 继续通过
+  - `minio-1` 重新启动并恢复 healthy
+  - 项目容器、网络、卷和临时 Secret 最终均为 0
+  - 修复只读 init 容器缺少 `MC_CONFIG_DIR`、HAProxy 无 Host 健康检查、
+    412 后连接复用和裸 ETag 被代理拒绝四个真实部署问题
+- Python 3.11 Linux 质量门：
+  - pytest：447 passed，无 skip
+  - branch coverage：83.60%
+  - Ruff check：通过
+  - Ruff format：94 files already formatted
+  - `git diff --check`：通过
+- staged review：
+  - 31 个文件均属于 Task 4 范围，无未暂存代码
+  - 未解决 blocker：0
+  - Secret scan：0 命中
+- 上一回退点：`fb5d5fb`
+- 提交与远端备份：本日志随 Task 4 commit 推送

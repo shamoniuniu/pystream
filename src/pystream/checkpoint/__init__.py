@@ -14,6 +14,8 @@ from pystream.checkpoint.models import (
     TransactionDescriptor,
 )
 from pystream.checkpoint.output import LocalFileOutputCommitter
+from pystream.checkpoint.ports import CheckpointStore
+from pystream.checkpoint.s3_store import S3CheckpointStore
 from pystream.checkpoint.store import LocalCheckpointStore
 
 __all__ = [
@@ -25,8 +27,10 @@ __all__ = [
     "CheckpointManifest",
     "CheckpointPhase",
     "CheckpointStateMachine",
+    "CheckpointStore",
     "LocalCheckpointStore",
     "LocalFileOutputCommitter",
+    "S3CheckpointStore",
     "TaskSnapshotDescriptor",
     "TransactionDescriptor",
     "decode_state",

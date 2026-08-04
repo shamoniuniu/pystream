@@ -1,0 +1,475 @@
+name: pystream-advanced
+
+x-minio-image: &minio-image minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+x-minio-client-image: &minio-client-image minio/mc:RELEASE.2025-04-16T18-13-26Z@sha256:aead63c77f9db9107f1696fb08ecb0faeda23729cde94b0f663edf4fe09728e3
+x-haproxy-image: &haproxy-image haproxy:3.2.5-alpine@sha256:8007effce89a08af0236b9529a0daab5b8b36fa939f4162f28201f1bf8731dbf
+x-kafka-image: &kafka-image apache/kafka:3.9.1@sha256:4ceccc577f03f51f6af8dbfda55194d0d892f4fa7913ffbded567ce3895622ed
+
+x-minio-environment: &minio-environment
+  MINIO_ROOT_USER_FILE: /run/secrets/object-store-access-key
+  MINIO_ROOT_PASSWORD_FILE: /run/secrets/object-store-secret-key
+  MC_CONFIG_DIR: /tmp/.mc
+
+x-minio-node: &minio-node
+  image: *minio-image
+  profiles:
+    - ha
+  restart: unless-stopped
+  stop_grace_period: 30s
+  environment: *minio-environment
+  secrets:
+    - object-store-access-key
+    - object-store-secret-key
+  expose:
+    - "9000"
+  command:
+    - server
+    - --console-address
+    - :9001
+    - http://minio-{1...4}/data{1...2}
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  networks:
+    - pystream
+  healthcheck:
+    test:
+      - CMD-SHELL
+      - >-
+        mc alias set health http://127.0.0.1:9000
+        "$$(cat /run/secrets/object-store-access-key)"
+        "$$(cat /run/secrets/object-store-secret-key)" >/dev/null 2>&1
+        && mc ready health
+    interval: 5s
+    timeout: 5s
+    retries: 30
+    start_period: 20s
+  deploy:
+    resources:
+      reservations:
+        cpus: "0.20"
+        memory: 256M
+      limits:
+        cpus: "0.75"
+        memory: 768M
+
+x-pystream-service: &pystream-service
+  build:
+    context: ..
+    dockerfile: Dockerfile
+    args:
+      PYTHON_VERSION: 3.11.9
+      PYTHON_BASE_DIGEST: sha256:8fb099199b9f2d70342674bd9dbccd3ed03a258f26bbd1d556822c6dfc60c317
+  image: pystream:0.3.0
+  profiles:
+    - core
+  user: "10001:10001"
+  init: true
+  read_only: true
+  restart: unless-stopped
+  stop_grace_period: 20s
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  environment:
+    PYSTREAM_OBJECT_STORE_ENDPOINT: http://minio-core:9000
+    PYSTREAM_OBJECT_STORE_BUCKET: pystream
+    PYSTREAM_OBJECT_STORE_REGION: us-east-1
+    PYSTREAM_OBJECT_STORE_ACCESS_KEY_FILE: /run/secrets/object-store-access-key
+    PYSTREAM_OBJECT_STORE_SECRET_KEY_FILE: /run/secrets/object-store-secret-key
+  secrets:
+    - object-store-access-key
+    - object-store-secret-key
+  networks:
+    - pystream
+
+x-worker: &worker
+  <<: *pystream-service
+  depends_on:
+    jobmanager:
+      condition: service_healthy
+    kafka:
+      condition: service_healthy
+    kafka-init:
+      condition: service_completed_successfully
+    object-store-init-core:
+      condition: service_completed_successfully
+  expose:
+    - "8081"
+    - "9000"
+  volumes:
+    - pystream-output:/data/output
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8081/health', timeout=2)); assert d['status']=='ok'"
+    interval: 5s
+    timeout: 3s
+    retries: 12
+    start_period: 10s
+  deploy:
+    resources:
+      reservations:
+        cpus: "0.10"
+        memory: 128M
+      limits:
+        cpus: "0.50"
+        memory: 512M
+
+services:
+  kafka:
+    image: *kafka-image
+    profiles:
+      - core
+      - ha
+    hostname: kafka
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    expose:
+      - "9092"
+    volumes:
+      - pystream-kafka:/var/lib/kafka/data
+    networks:
+      - pystream
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  kafka-init:
+    image: *kafka-image
+    profiles:
+      - core
+      - ha
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - pystream
+    command:
+      - /bin/bash
+      - -ec
+      - |
+        for topic in words intermediate-words; do
+          /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server kafka:9092 \
+            --create \
+            --if-not-exists \
+            --topic "$${topic}" \
+            --partitions 2 \
+            --replication-factor 1
+        done
+
+  minio-core:
+    image: *minio-image
+    profiles:
+      - core
+    hostname: minio-core
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment: *minio-environment
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+    ports:
+      - "9000:9000"
+    expose:
+      - "9001"
+    command:
+      - server
+      - --console-address
+      - :9001
+      - /data
+    volumes:
+      - pystream-minio-core:/data
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    networks:
+      - pystream
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mc alias set health http://127.0.0.1:9000
+          "$$(cat /run/secrets/object-store-access-key)"
+          "$$(cat /run/secrets/object-store-secret-key)" >/dev/null 2>&1
+          && mc ready health
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  object-store-init-core:
+    image: *minio-client-image
+    profiles:
+      - core
+    depends_on:
+      minio-core:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    environment:
+      MC_CONFIG_DIR: /tmp/.mc
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+    networks:
+      - pystream
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        mc alias set local http://minio-core:9000 \
+          "$$(cat /run/secrets/object-store-access-key)" \
+          "$$(cat /run/secrets/object-store-secret-key)"
+        mc mb --ignore-existing local/pystream
+
+  minio-1:
+    <<: *minio-node
+    hostname: minio-1
+    volumes:
+      - pystream-minio-1-data-1:/data1
+      - pystream-minio-1-data-2:/data2
+
+  minio-2:
+    <<: *minio-node
+    hostname: minio-2
+    volumes:
+      - pystream-minio-2-data-1:/data1
+      - pystream-minio-2-data-2:/data2
+
+  minio-3:
+    <<: *minio-node
+    hostname: minio-3
+    volumes:
+      - pystream-minio-3-data-1:/data1
+      - pystream-minio-3-data-2:/data2
+
+  minio-4:
+    <<: *minio-node
+    hostname: minio-4
+    volumes:
+      - pystream-minio-4-data-1:/data1
+      - pystream-minio-4-data-2:/data2
+
+  object-store:
+    image: *haproxy-image
+    profiles:
+      - ha
+    hostname: object-store
+    depends_on:
+      minio-1:
+        condition: service_started
+      minio-2:
+        condition: service_started
+      minio-3:
+        condition: service_started
+      minio-4:
+        condition: service_started
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./haproxy/storage.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    tmpfs:
+      - /run:size=16m,mode=0755
+      - /tmp:size=16m,mode=1777
+    networks:
+      - pystream
+    healthcheck:
+      test:
+        - CMD
+        - haproxy
+        - -c
+        - -f
+        - /usr/local/etc/haproxy/haproxy.cfg
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  object-store-init-ha:
+    image: *minio-client-image
+    profiles:
+      - ha
+    depends_on:
+      object-store:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    environment:
+      MC_CONFIG_DIR: /tmp/.mc
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+    networks:
+      - pystream
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        until mc alias set local http://object-store:9000 \
+          "$$(cat /run/secrets/object-store-access-key)" \
+          "$$(cat /run/secrets/object-store-secret-key)"; do
+          sleep 2
+        done
+        mc mb --ignore-existing local/pystream
+
+  jobmanager:
+    <<: *pystream-service
+    hostname: jobmanager
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      object-store-init-core:
+        condition: service_completed_successfully
+    command:
+      - python
+      - -m
+      - pystream.service
+      - jobmanager
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - pystream-output:/data/output
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8080/health', timeout=2)); assert d['status']=='ok'"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  worker-1:
+    <<: *worker
+    hostname: worker-1
+    command:
+      - python
+      - -m
+      - pystream.service
+      - worker
+      - --worker-id
+      - worker-1
+      - --control-address
+      - http://worker-1:8081
+      - --data-host
+      - worker-1
+      - --slots
+      - "4"
+      - --jobmanager-url
+      - http://jobmanager:8080
+    volumes:
+      - pystream-output:/data/output
+      - pystream-worker-1:/data/work
+
+  worker-2:
+    <<: *worker
+    hostname: worker-2
+    command:
+      - python
+      - -m
+      - pystream.service
+      - worker
+      - --worker-id
+      - worker-2
+      - --control-address
+      - http://worker-2:8081
+      - --data-host
+      - worker-2
+      - --slots
+      - "4"
+      - --jobmanager-url
+      - http://jobmanager:8080
+    volumes:
+      - pystream-output:/data/output
+      - pystream-worker-2:/data/work
+
+  worker-3:
+    <<: *worker
+    hostname: worker-3
+    command:
+      - python
+      - -m
+      - pystream.service
+      - worker
+      - --worker-id
+      - worker-3
+      - --control-address
+      - http://worker-3:8081
+      - --data-host
+      - worker-3
+      - --slots
+      - "4"
+      - --jobmanager-url
+      - http://jobmanager:8080
+    volumes:
+      - pystream-output:/data/output
+      - pystream-worker-3:/data/work
+
+networks:
+  pystream:
+    driver: bridge
+
+volumes:
+  pystream-kafka:
+  pystream-minio-core:
+  pystream-minio-1-data-1:
+  pystream-minio-1-data-2:
+  pystream-minio-2-data-1:
+  pystream-minio-2-data-2:
+  pystream-minio-3-data-1:
+  pystream-minio-3-data-2:
+  pystream-minio-4-data-1:
+  pystream-minio-4-data-2:
+  pystream-output:
+  pystream-worker-1:
+  pystream-worker-2:
+  pystream-worker-3:
+
+secrets:
+  object-store-access-key:
+    file: ${PYSTREAM_OBJECT_STORE_ACCESS_KEY_FILE:-./secrets/object-store-access-key}
+  object-store-secret-key:
+    file: ${PYSTREAM_OBJECT_STORE_SECRET_KEY_FILE:-./secrets/object-store-secret-key}

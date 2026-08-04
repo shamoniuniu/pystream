@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -16,7 +18,12 @@ from pystream.api import (
     RestartConfig,
     StreamGraph,
 )
-from pystream.checkpoint import LocalCheckpointStore, TaskSnapshotDescriptor
+from pystream.checkpoint import (
+    CheckpointStore,
+    LocalCheckpointStore,
+    S3CheckpointStore,
+    TaskSnapshotDescriptor,
+)
 from pystream.control import (
     ArtifactError,
     CheckpointCoordinationError,
@@ -24,12 +31,15 @@ from pystream.control import (
     DeploymentError,
     InsufficientSlots,
     JobManager,
+    JobMetadataRevision,
     JobStatus,
     LocalArtifactRepository,
+    StoredJobMetadata,
     TaskDeployment,
     TaskStatus,
     WorkerNode,
 )
+from pystream.storage import ObjectConflict, ObjectNotFound, ObjectValue
 
 
 class RecordingGateway:
@@ -47,7 +57,7 @@ class RecordingGateway:
         self.fail_stop_task = fail_stop_task
         self.fail_checkpoint = fail_checkpoint
         self.fail_deploy_attempts = set(fail_deploy_attempts or ())
-        self.checkpoint_store: LocalCheckpointStore | None = None
+        self.checkpoint_store: CheckpointStore | None = None
         self.deploy_calls: list[tuple[str, str]] = []
         self.deployments: list[TaskDeployment] = []
         self.deployment_attempts: list[tuple[str, int, tuple[TaskSnapshotDescriptor, ...]]] = []
@@ -178,6 +188,88 @@ class SourceBarrierGateway(RecordingGateway):
         await super().deploy_task(worker, deployment)
 
 
+class RecordingMetadataRepository:
+    def __init__(self) -> None:
+        self.revisions: list[JobMetadataRevision] = []
+        self.etag: str | None = None
+
+    def publish(
+        self,
+        revision: JobMetadataRevision,
+        *,
+        expected_current_etag: str | None,
+    ) -> StoredJobMetadata:
+        assert expected_current_etag == self.etag
+        self.revisions.append(revision)
+        self.etag = f"etag-{revision.revision}"
+        return StoredJobMetadata(revision, self.etag)
+
+    def read_current(self, job_id: str) -> StoredJobMetadata:
+        revision = self.revisions[-1]
+        assert revision.job_id == job_id
+        assert self.etag is not None
+        return StoredJobMetadata(revision, self.etag)
+
+    def list_jobs(self) -> tuple[str, ...]:
+        return tuple(sorted({item.job_id for item in self.revisions}))
+
+
+class ConcurrencyDetectingMetadataRepository(RecordingMetadataRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self._state_lock = threading.Lock()
+        self._publish_active = False
+
+    def publish(
+        self,
+        revision: JobMetadataRevision,
+        *,
+        expected_current_etag: str | None,
+    ) -> StoredJobMetadata:
+        with self._state_lock:
+            if self._publish_active:
+                raise AssertionError("metadata publish 不允许并发")
+            self._publish_active = True
+        try:
+            time.sleep(0.02)
+            return super().publish(
+                revision,
+                expected_current_etag=expected_current_etag,
+            )
+        finally:
+            with self._state_lock:
+                self._publish_active = False
+
+
+class MemoryObjectStore:
+    def __init__(self) -> None:
+        self.objects: dict[str, ObjectValue] = {}
+
+    def get(self, key: str) -> ObjectValue:
+        try:
+            return self.objects[key]
+        except KeyError as exc:
+            raise ObjectNotFound(key) from exc
+
+    def put_if_absent(self, key: str, content: bytes) -> str:
+        if key in self.objects:
+            raise ObjectConflict(key)
+        etag = hashlib.sha256(content).hexdigest()
+        self.objects[key] = ObjectValue(content, etag)
+        return etag
+
+    def put_if_match(self, key: str, content: bytes, etag: str) -> str:
+        current = self.objects.get(key)
+        if current is None or current.etag != etag:
+            raise ObjectConflict(key)
+        new_etag = hashlib.sha256(content).hexdigest()
+        self.objects[key] = ObjectValue(content, new_etag)
+        return new_etag
+
+    def list_keys(self, prefix: str) -> tuple[str, ...]:
+        return tuple(sorted(key for key in self.objects if key.startswith(prefix)))
+
+
 def manager_with_workers(
     tmp_path,
     gateway: RecordingGateway,
@@ -186,15 +278,18 @@ def manager_with_workers(
     slots: int = 4,
     heartbeat_at: datetime | None = None,
     coordinator_epoch: int = 0,
+    metadata_repository: RecordingMetadataRepository | None = None,
+    checkpoint_store: CheckpointStore | None = None,
 ) -> JobManager:
     """创建带本地制品仓库和固定 Worker 的 JobManager。"""
-    checkpoint_store = LocalCheckpointStore(tmp_path / "checkpoints")
-    gateway.checkpoint_store = checkpoint_store
+    resolved_checkpoint_store = checkpoint_store or LocalCheckpointStore(tmp_path / "checkpoints")
+    gateway.checkpoint_store = resolved_checkpoint_store
     manager = JobManager(
         LocalArtifactRepository(tmp_path / "artifacts"),
         gateway,
         heartbeat_timeout=timedelta(seconds=10),
-        checkpoint_store=checkpoint_store,
+        checkpoint_store=resolved_checkpoint_store,
+        metadata_repository=metadata_repository,
         coordinator_epoch=coordinator_epoch,
     )
     for index in range(worker_count):
@@ -297,6 +392,71 @@ async def test_submit_job_同一source的subtasks并发加入消费组(
         "job-source-barrier:words:0",
         "job-source-barrier:words:1",
     }
+
+
+@pytest.mark.asyncio
+async def test_jobmanager关键状态发布不可变metadata_revision(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway()
+    metadata = RecordingMetadataRepository()
+    manager = manager_with_workers(
+        tmp_path,
+        gateway,
+        worker_count=2,
+        slots=2,
+        metadata_repository=metadata,
+        checkpoint_store=S3CheckpointStore(MemoryObjectStore()),
+    )
+    graph = checkpoint_graph(two_task_graph)
+    await manager.submit_job(graph, b"bundle", job_id="job-metadata")
+
+    assert [item.status for item in metadata.revisions[:2]] == [
+        JobStatus.DEPLOYING,
+        JobStatus.RUNNING,
+    ]
+    assert [item.revision for item in metadata.revisions[:2]] == [0, 1]
+    assert metadata.revisions[-1].definition["api_version"] == "pystream/v1"
+
+    await manager.trigger_checkpoint("job-metadata")
+    checkpoint_revision = metadata.revisions[-1]
+    assert checkpoint_revision.last_decided_checkpoint_id == 1
+    assert checkpoint_revision.last_finalized_checkpoint_id == 1
+    assert checkpoint_revision.next_checkpoint_id == 2
+
+    await manager.cancel_job("job-metadata")
+    assert metadata.revisions[-1].status is JobStatus.CANCELLED
+    assert manager.status_view("job-metadata")["metadata_revision"] == 4
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_jobmanager并发状态发布按revision串行化(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway()
+    metadata = ConcurrencyDetectingMetadataRepository()
+    manager = manager_with_workers(
+        tmp_path,
+        gateway,
+        worker_count=2,
+        slots=2,
+        metadata_repository=metadata,
+    )
+    await manager.submit_job(two_task_graph, b"bundle", job_id="job-metadata-lock")
+    run = manager._runs["job-metadata-lock"]
+
+    await asyncio.gather(
+        manager._persist_run_metadata(run),
+        manager._persist_run_metadata(run),
+    )
+
+    assert [item.revision for item in metadata.revisions] == [0, 1, 2, 3]
+    assert run.metadata_revision == 3
+    await manager.cancel_job("job-metadata-lock")
+    await manager.close()
 
 
 @pytest.mark.asyncio

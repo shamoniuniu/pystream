@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from pystream.api import DeliveryGuarantee, OperatorType, StreamGraph
-from pystream.checkpoint import CheckpointManifest, LocalCheckpointStore
+from pystream.checkpoint import CheckpointManifest, CheckpointStore
 from pystream.control.checkpoint import (
     CheckpointCoordinationError,
     CheckpointCoordinator,
@@ -26,6 +26,10 @@ from pystream.control.errors import (
     WorkerNotFound,
 )
 from pystream.control.execution import ExecutionGraph, build_execution_graph
+from pystream.control.metadata import (
+    JobMetadataRepository,
+    JobMetadataRevision,
+)
 from pystream.control.models import (
     ArtifactDescriptor,
     Job,
@@ -46,12 +50,15 @@ class JobRun:
 
     job: Job
     execution_graph: ExecutionGraph
+    definition: dict[str, object]
     artifact: ArtifactDescriptor | None = None
     deployed_task_ids: list[str] | None = None
     attempt_id: int = 0
     coordinator_epoch: int = 0
     next_checkpoint_id: int = 1
     last_completed_checkpoint_id: int | None = None
+    last_decided_checkpoint_id: int | None = None
+    last_finalized_checkpoint_id: int | None = None
     consecutive_checkpoint_failures: int = 0
     checkpoint_interval: float | None = None
     checkpoint_timeout: float = 30.0
@@ -66,6 +73,9 @@ class JobRun:
     restore_manifest: CheckpointManifest | None = None
     recovery_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     recovery_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    metadata_revision: int = -1
+    metadata_etag: str | None = None
+    metadata_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     def __post_init__(self) -> None:
         if self.deployed_task_ids is None:
@@ -83,7 +93,8 @@ class JobManager:
         heartbeat_timeout: timedelta = timedelta(seconds=15),
         registry: WorkerRegistry | None = None,
         scheduler: SlotScheduler | None = None,
-        checkpoint_store: LocalCheckpointStore | None = None,
+        checkpoint_store: CheckpointStore | None = None,
+        metadata_repository: JobMetadataRepository | None = None,
         coordinator_epoch: int = 0,
     ) -> None:
         if (
@@ -97,6 +108,7 @@ class JobManager:
         self.registry = registry or WorkerRegistry(heartbeat_timeout)
         self.scheduler = scheduler or SlotScheduler()
         self.checkpoint_store = checkpoint_store
+        self.metadata_repository = metadata_repository
         self.coordinator_epoch = coordinator_epoch
         self.checkpoint_coordinator = (
             CheckpointCoordinator(
@@ -221,6 +233,7 @@ class JobManager:
             "name": run.job.name,
             "status": run.job.status.value,
             "coordinator_epoch": run.coordinator_epoch,
+            "metadata_revision": (run.metadata_revision if run.metadata_revision >= 0 else None),
             "error": run.job.error,
             "attempt": run.attempt_id,
             "recovery": {
@@ -277,6 +290,7 @@ class JobManager:
         run = JobRun(
             job=job,
             execution_graph=execution_graph,
+            definition=graph.definition.model_dump(mode="json", by_alias=True),
             coordinator_epoch=self.coordinator_epoch,
             checkpoint_interval=(
                 execution.checkpoint.interval_seconds if execution is not None else None
@@ -304,9 +318,19 @@ class JobManager:
             self.scheduler.schedule(execution_graph, self.registry)
         except Exception as exc:
             job.transition(JobStatus.REJECTED, str(exc))
+            if run.artifact is not None:
+                await self._persist_run_metadata(run)
             raise
 
         job.transition(JobStatus.DEPLOYING)
+        try:
+            await self._persist_run_metadata(run)
+        except Exception as exc:
+            self._cancel_scheduled_tasks(run)
+            self.scheduler.release(run.execution_graph, self.registry)
+            job.transition(JobStatus.FAILING, str(exc))
+            job.transition(JobStatus.FAILED, str(exc))
+            raise ControlPlaneError(f"作业 {resolved_job_id} metadata 持久化失败: {exc}") from exc
         try:
             await self._deploy_run_tasks(run)
         except Exception as exc:
@@ -325,6 +349,11 @@ class JobManager:
             raise DeploymentError(f"作业 {resolved_job_id} 部署失败并已回滚: {exc}") from exc
 
         job.transition(JobStatus.RUNNING)
+        try:
+            await self._persist_run_metadata(run)
+        except Exception as exc:
+            await self._fail_run(run, f"运行状态 metadata 持久化失败: {exc}")
+            raise ControlPlaneError(f"作业 {resolved_job_id} 运行状态未能持久化: {exc}") from exc
         if run.checkpoint_interval is not None:
             run.checkpoint_task = asyncio.create_task(
                 self._checkpoint_loop(run),
@@ -346,6 +375,7 @@ class JobManager:
             await self._resume_finalize_backlog(run)
             checkpoint_id = run.next_checkpoint_id
             run.next_checkpoint_id += 1
+            await self._persist_run_metadata(run)
             self._log_checkpoint(
                 logging.INFO,
                 "checkpoint_started",
@@ -376,6 +406,9 @@ class JobManager:
                     self.checkpoint_store is not None
                     and self.checkpoint_store.has_decision(job_id, checkpoint_id)
                 )
+                if decision_exists:
+                    run.last_decided_checkpoint_id = checkpoint_id
+                await self._persist_run_metadata(run)
                 if (
                     run.execution_graph.delivery_guarantee is DeliveryGuarantee.EXACTLY_ONCE
                     and not decision_exists
@@ -390,7 +423,10 @@ class JobManager:
                     )
                 raise
             run.last_completed_checkpoint_id = checkpoint_id
+            run.last_decided_checkpoint_id = checkpoint_id
+            run.last_finalized_checkpoint_id = checkpoint_id
             run.consecutive_checkpoint_failures = 0
+            await self._persist_run_metadata(run)
             self._log_checkpoint(
                 logging.INFO,
                 "checkpoint_completed",
@@ -437,11 +473,14 @@ class JobManager:
                     )
                 raise
             run.last_completed_checkpoint_id = manifest.checkpoint_id
+            run.last_decided_checkpoint_id = manifest.checkpoint_id
+            run.last_finalized_checkpoint_id = manifest.checkpoint_id
             run.next_checkpoint_id = max(
                 run.next_checkpoint_id,
                 manifest.checkpoint_id + 1,
             )
             run.consecutive_checkpoint_failures = 0
+            await self._persist_run_metadata(run)
             self._log_checkpoint(
                 logging.INFO,
                 "checkpoint_finalize_retried",
@@ -456,6 +495,56 @@ class JobManager:
         for run in self._runs.values():
             await self._cancel_checkpoint_loop(run)
             await self._cancel_recovery_loop(run)
+
+    async def _persist_run_metadata(self, run: JobRun) -> None:
+        """发布下一不可变 revision，并以当前 ETag CAS 推进 pointer。"""
+        repository = self.metadata_repository
+        artifact = run.artifact
+        if repository is None or artifact is None:
+            return
+        async with run.metadata_lock:
+            backlog = (
+                tuple(
+                    decision.checkpoint_id
+                    for decision in self.checkpoint_store.unfinalized_decisions(run.job.job_id)
+                )
+                if self.checkpoint_store is not None
+                else ()
+            )
+            if backlog:
+                latest_decided = max(backlog)
+                run.last_decided_checkpoint_id = max(
+                    run.last_decided_checkpoint_id or latest_decided,
+                    latest_decided,
+                )
+            next_revision = run.metadata_revision + 1
+            revision = JobMetadataRevision(
+                job_id=run.job.job_id,
+                revision=next_revision,
+                definition=run.definition,
+                artifact_sha256=artifact.sha256,
+                artifact_size=artifact.size,
+                delivery_guarantee=(
+                    run.execution_graph.delivery_guarantee or DeliveryGuarantee.AT_LEAST_ONCE
+                ),
+                status=run.job.status,
+                attempt_id=run.attempt_id,
+                next_checkpoint_id=run.next_checkpoint_id,
+                last_decided_checkpoint_id=run.last_decided_checkpoint_id,
+                last_finalized_checkpoint_id=run.last_finalized_checkpoint_id,
+                recovery_attempts=run.recovery_attempts,
+                last_failure=run.last_failure,
+                coordinator_epoch=run.coordinator_epoch,
+                finalize_backlog=backlog,
+                updated_at=run.job.updated_at,
+            )
+            stored = await asyncio.to_thread(
+                repository.publish,
+                revision,
+                expected_current_etag=run.metadata_etag,
+            )
+            run.metadata_revision = stored.revision.revision
+            run.metadata_etag = stored.current_etag
 
     async def _checkpoint_loop(self, run: JobRun) -> None:
         interval = run.checkpoint_interval
@@ -497,6 +586,7 @@ class JobManager:
             elif run.job.status is not JobStatus.RECOVERING:
                 raise InvalidStateTransition(f"作业状态 {run.job.status.value} 不能开始恢复")
             run.recovery_attempts = 0
+            await self._persist_run_metadata(run)
             run.recovery_task = asyncio.create_task(
                 self._recover_run(run),
                 name=f"pystream-recovery-{run.job.job_id}",
@@ -564,6 +654,7 @@ class JobManager:
             restored_checkpoint_id = manifest.checkpoint_id if manifest is not None else None
             if restored_checkpoint_id is not None:
                 run.last_completed_checkpoint_id = restored_checkpoint_id
+                run.last_decided_checkpoint_id = restored_checkpoint_id
                 run.next_checkpoint_id = max(
                     run.next_checkpoint_id,
                     restored_checkpoint_id + 1,
@@ -581,6 +672,7 @@ class JobManager:
                     run.attempt_id,
                     restored_checkpoint_id,
                 )
+                await self._persist_run_metadata(run)
                 self._log_recovery(
                     logging.INFO,
                     "recovery_attempt_started",
@@ -591,6 +683,7 @@ class JobManager:
                 try:
                     self.scheduler.schedule(run.execution_graph, self.registry)
                     run.job.transition(JobStatus.DEPLOYING, run.last_failure)
+                    await self._persist_run_metadata(run)
                     await self._deploy_run_tasks(run)
                     await self._resume_finalize_backlog(run)
                 except asyncio.CancelledError:
@@ -609,6 +702,7 @@ class JobManager:
                         run.last_failure += "; 清理错误: " + "; ".join(cleanup_errors)
                     if run.job.status is JobStatus.DEPLOYING:
                         run.job.transition(JobStatus.RECOVERING, run.last_failure)
+                    await self._persist_run_metadata(run)
                     self._log_recovery(
                         logging.ERROR,
                         "recovery_attempt_failed",
@@ -622,6 +716,12 @@ class JobManager:
                 run.job.transition(JobStatus.RUNNING)
                 run.last_recovery_completed_at = datetime.now(UTC)
                 run.consecutive_checkpoint_failures = 0
+                if not (
+                    self.checkpoint_store
+                    and self.checkpoint_store.unfinalized_decisions(run.job.job_id)
+                ):
+                    run.last_finalized_checkpoint_id = run.last_decided_checkpoint_id
+                await self._persist_run_metadata(run)
                 if run.checkpoint_interval is not None:
                     run.checkpoint_task = asyncio.create_task(
                         self._checkpoint_loop(run),
@@ -736,8 +836,10 @@ class JobManager:
             if errors:
                 run.job.transition(JobStatus.FAILING, "; ".join(errors))
                 run.job.transition(JobStatus.FAILED, "; ".join(errors))
+                await self._persist_run_metadata(run)
                 raise DeploymentError(f"取消作业 {job_id} 时发生错误: {'; '.join(errors)}")
             run.job.transition(JobStatus.CANCELLED)
+            await self._persist_run_metadata(run)
             return run.job
 
     async def report_task_status(
@@ -882,6 +984,7 @@ class JobManager:
         run.deployed_task_ids.clear()
         final_reason = reason if not errors else f"{reason}; 回滚错误: {'; '.join(errors)}"
         run.job.transition(JobStatus.FAILED, final_reason)
+        await self._persist_run_metadata(run)
 
     async def _cancel_checkpoint_loop(self, run: JobRun) -> None:
         task = run.checkpoint_task

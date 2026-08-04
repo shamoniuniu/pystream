@@ -101,7 +101,19 @@ def test_intermediate_样例契约和_retract_udf(tmp_path: Path) -> None:
 
 def test_service_入口参数覆盖jobmanager和worker() -> None:
     parser = build_parser()
-    manager = parser.parse_args(["jobmanager", "--artifact-root", "/tmp/artifacts"])
+    manager = parser.parse_args(
+        [
+            "jobmanager",
+            "--artifact-root",
+            "/tmp/artifacts",
+            "--object-store-endpoint",
+            "http://object-store:9000",
+            "--object-store-access-key-file",
+            "/run/secrets/access-key",
+            "--object-store-secret-key-file",
+            "/run/secrets/secret-key",
+        ]
+    )
     worker = parser.parse_args(
         [
             "worker",
@@ -115,6 +127,8 @@ def test_service_入口参数覆盖jobmanager和worker() -> None:
     )
 
     assert manager.port == 8080
+    assert manager.object_store_bucket == "pystream"
+    assert manager.object_store_access_key_file.as_posix() == "/run/secrets/access-key"
     assert worker.port == 8081
     assert worker.data_port == 9000
     assert worker.slots == 4
@@ -194,6 +208,76 @@ def test_compose_包含固定kafka_jobmanager_三worker和工具容器() -> None
     assert services["jobmanager"]["ports"] == ["8080:8080"]
     assert "pystream-checkpoints:/data/checkpoints" in services["jobmanager"]["volumes"]
     assert services["tools"]["profiles"] == ["tools"]
+
+
+def test_advanced_compose_包含单节点core和四节点双盘ha对象存储() -> None:
+    compose_path = ROOT / "deploy" / "compose.advanced.yaml"
+    content = compose_path.read_text(encoding="utf-8")
+    compose = yaml.safe_load(content)
+    services = compose["services"]
+    pinned_images = {
+        services["minio-core"]["image"],
+        services["object-store-init-core"]["image"],
+        services["object-store"]["image"],
+        services["kafka"]["image"],
+    }
+
+    assert compose["name"] == "pystream-advanced"
+    assert all("@sha256:" in image and ":latest" not in image for image in pinned_images)
+    assert services["minio-core"]["profiles"] == ["core"]
+    assert services["minio-core"]["command"][-1] == "/data"
+    assert services["object-store-init-core"]["profiles"] == ["core"]
+    assert services["object-store"]["profiles"] == ["ha"]
+    assert services["object-store-init-ha"]["profiles"] == ["ha"]
+    assert services["object-store-init-core"]["environment"]["MC_CONFIG_DIR"] == "/tmp/.mc"
+    assert services["object-store-init-ha"]["environment"]["MC_CONFIG_DIR"] == "/tmp/.mc"
+
+    for index in range(1, 5):
+        node = services[f"minio-{index}"]
+        assert node["profiles"] == ["ha"]
+        assert node["command"][-1] == "http://minio-{1...4}/data{1...2}"
+        assert node["volumes"] == [
+            f"pystream-minio-{index}-data-1:/data1",
+            f"pystream-minio-{index}-data-2:/data2",
+        ]
+        assert node["image"] == services["minio-core"]["image"]
+
+    storage_config = (ROOT / "deploy" / "haproxy" / "storage.cfg").read_text(encoding="utf-8")
+    assert (
+        "http-check send meth GET uri /minio/health/ready ver HTTP/1.1 hdr Host minio"
+    ) in storage_config
+    assert "option httpclose" in storage_config
+    assert all(
+        f"server minio-{index} minio-{index}:9000 check" in storage_config for index in range(1, 5)
+    )
+
+
+def test_advanced_compose_对象存储凭据只通过secret文件注入() -> None:
+    compose = yaml.safe_load(
+        (ROOT / "deploy" / "compose.advanced.yaml").read_text(encoding="utf-8")
+    )
+    services = compose["services"]
+    secret_names = {"object-store-access-key", "object-store-secret-key"}
+
+    assert set(compose["secrets"]) == secret_names
+    assert all(
+        definition["file"].startswith("${PYSTREAM_OBJECT_STORE_")
+        for definition in compose["secrets"].values()
+    )
+    for name in ("minio-core", "minio-1", "minio-2", "minio-3", "minio-4"):
+        service = services[name]
+        assert set(service["secrets"]) == secret_names
+        assert set(service["environment"]) == {
+            "MINIO_ROOT_USER_FILE",
+            "MINIO_ROOT_PASSWORD_FILE",
+            "MC_CONFIG_DIR",
+        }
+    for name in ("jobmanager", "worker-1", "worker-2", "worker-3"):
+        service = services[name]
+        assert set(service["secrets"]) == secret_names
+        environment = service["environment"]
+        assert environment["PYSTREAM_OBJECT_STORE_ACCESS_KEY_FILE"].startswith("/run/secrets/")
+        assert environment["PYSTREAM_OBJECT_STORE_SECRET_KEY_FILE"].startswith("/run/secrets/")
 
 
 def test_演示脚本齐全并被复制进运行镜像() -> None:

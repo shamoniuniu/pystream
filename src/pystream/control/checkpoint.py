@@ -10,7 +10,7 @@ from pystream.api import DeliveryGuarantee, OperatorType
 from pystream.checkpoint import (
     CheckpointDecision,
     CheckpointManifest,
-    LocalCheckpointStore,
+    CheckpointStore,
     LocalFileOutputCommitter,
 )
 from pystream.control.errors import ControlPlaneError
@@ -28,7 +28,7 @@ class CheckpointCoordinator:
 
     def __init__(
         self,
-        store: LocalCheckpointStore,
+        store: CheckpointStore,
         worker_gateway: WorkerGateway,
         worker_lookup: Callable[[str], WorkerNode],
         *,

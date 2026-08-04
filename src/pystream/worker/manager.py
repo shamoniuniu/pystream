@@ -23,7 +23,11 @@ from pystream.api import (
     load_stream_graph,
 )
 from pystream.artifact import UDFKind, UDFLoader, extract_job_bundle, verify_job_bundle
-from pystream.checkpoint import LocalCheckpointStore, TaskSnapshotDescriptor
+from pystream.checkpoint import (
+    CheckpointStore,
+    LocalCheckpointStore,
+    TaskSnapshotDescriptor,
+)
 from pystream.control import ArtifactDescriptor, TaskDeployment
 from pystream.operators import (
     FileSinkOperator,
@@ -79,9 +83,12 @@ class WorkerTaskManager:
         clock_factory: Callable[[], Any] = SystemClock,
         runtime_options: dict[str, Any] | None = None,
         checkpoint_root: str | Path | None = None,
+        checkpoint_store: CheckpointStore | None = None,
     ) -> None:
         if not worker_id:
             raise ValueError("worker_id 不能为空")
+        if checkpoint_root is not None and checkpoint_store is not None:
+            raise ValueError("checkpoint_root 与 checkpoint_store 不能同时配置")
         self.worker_id = worker_id
         self.work_root = Path(work_root).resolve()
         self.work_root.mkdir(parents=True, exist_ok=True)
@@ -91,8 +98,8 @@ class WorkerTaskManager:
         self.consumer_factory = consumer_factory
         self.clock_factory = clock_factory
         self.runtime_options = dict(runtime_options or {})
-        self.checkpoint_store = LocalCheckpointStore(
-            checkpoint_root or self.work_root / "checkpoints"
+        self.checkpoint_store = checkpoint_store or LocalCheckpointStore(
+            checkpoint_root or self.work_root / "checkpoints",
         )
         self._runtimes: dict[str, TaskRuntime] = {}
         self._highest_attempts: dict[str, int] = {}

@@ -420,7 +420,7 @@ async def test_decided后complete未知结果不abort且可重放finalize(
             graph,
             checkpoint_id=7,
             attempt_id=0,
-            timeout=0.15,
+            timeout=1.0,
         )
 
     assert store.has_decision("job-1", 7)
