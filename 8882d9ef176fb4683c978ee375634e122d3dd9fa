@@ -1,0 +1,1 @@
+commit=8882d9ef176fb4683c978ee375634e122d3dd9fa; receipt_object=df4ec37a36d4bc1dd48259c4b1301d26a01cb89e; scope=advanced-m4-object-storage-metadata; verification=447-passed,minio-core-ha-node-fault; rollback=git revert 8882d9ef176fb4683c978ee375634e122d3dd9fa
