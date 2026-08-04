@@ -1,0 +1,1 @@
+commit=c39edd8fae6174abd3f1399558afb4f4931b1bf3; receipt_object=d9f784de68182663c07ef41a9ee95a4a6acdc98c; scope=advanced-m5-fenced-jobmanager-failover; verification=465-passed-no-skip,ha-active-count-one,job-failover-under-30s,worker-recovery-under-60s,lease-loss-protective,stale-epoch-409; rollback=git revert c39edd8fae6174abd3f1399558afb4f4931b1bf3
