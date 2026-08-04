@@ -187,3 +187,61 @@
   - Secret scan：0 命中
 - 上一回退点：`fb5d5fb`
 - 提交与远端备份：本日志随 Task 4 commit 推送
+
+## 2026-08-04T12:48:32Z - Task 5 双 JobManager 主备与接管
+
+- 状态：实现、Docker HA 故障验收、Python 3.11 质量门完成
+- Leader lease 与 fencing：
+  - 对象键 `pystream/control/leader.json`，默认 TTL/renew/poll 为 `10s/3s/1s`
+  - acquire、renew、release 和过期 takeover 均使用 ETag CAS，epoch 严格递增
+  - ACTIVE、STANDBY、PROTECTIVE 三角色；续租失败或超时立即关闭写入和 leader health
+  - renew 和 metadata 激活均受剩余 lease 时间约束，禁止过期 lease 继续开放 ACTIVE
+- 接管与恢复：
+  - 新 leader 清空进程内 Worker 视图，从 current revision 重建 JobRun/ExecutionGraph
+  - 活动作业统一进入 RECOVERING，等待足够 Worker 重注册后 attempt +1
+  - 兼容读取 Task 4 展开默认字段的旧 metadata，并用规范定义重新发布
+  - DECIDED backlog 直接作为恢复 manifest；store 保留原 decision epoch，
+    Worker complete 使用新 leader epoch，最终幂等写 finalized
+- HTTP 与 Worker：
+  - `/health/active` 供 Worker，`/health/leader` 供外部管理流量
+  - standby/protective 写请求返回 `503` 和 `Retry-After: 1`
+  - Worker 首次注册失败不退出，404/503 或更高 epoch 后自动重新注册
+  - Worker 保存最高 epoch，stale stop/deploy/checkpoint 请求被拒绝
+- HA 部署：
+  - ha profile 新增 2 JobManager、3 HA Worker 和双 frontend HAProxy
+  - 外部 `:8080` 仅路由 ready leader，内部 `:8082` 路由 active leader
+  - HAProxy 使用 Docker DNS 动态解析；单个 JobManager 缺失时仍可启动和恢复 healthy
+- Docker 动态证据：
+  - 初始角色：ACTIVE=1、STANDBY=1、Worker epoch=1
+  - 无作业 active SIGKILL：`11.148s` 接管到 epoch 2
+  - 真实运行作业 active SIGKILL：`12.452s`，epoch 3、attempt 1、10 tasks RUNNING
+  - 最终镜像双 JobManager 重建：`16.813s`，epoch 4、12 tasks RUNNING
+  - checkpoint-enabled Worker 重建：`8.284s`，12 tasks RUNNING，满足 `<=60s`
+  - stale epoch 2 控制请求返回 `409`，epoch 3 任务保持 RUNNING
+  - 对象存储入口中断：旧 active 进入 PROTECTIVE，leader health=false
+  - 存储恢复：`9.762s` 重新选主至 epoch 6，attempt 4、12 tasks RUNNING
+  - 最终项目资源：containers=0、networks=0、volumes=0
+- 故障/修复记录：
+  - 修复持久 Job 读取误生成 async generator
+  - 修复旧 metadata 中非 reduce `emit_mode` 默认字段无法往返
+  - 修复 DECIDED 接管使用旧 checkpoint/旧命令 epoch 导致 Worker fencing 拒绝
+  - 修复 HAProxy 单后端 DNS 消失后无法重启及 healthcheck 误报
+  - 基础 WordCount 无 `execution` 的 Worker 故障按兼容契约进入 FAILED；
+    Worker 恢复 SLO 使用启用 checkpoint/restart 的高级作业验收
+- Python 3.11 Linux 质量门：
+  - pytest：465 passed，无 skip
+  - branch coverage：83.58%
+  - Ruff check：通过
+  - Ruff format：127 files already formatted
+  - `git diff --check`：通过
+- staged review：
+  - 22 个文件均属于 Task 5 范围，未暂存差异为 0
+  - receipt JSON 校验通过
+  - 未解决 blocker：0
+  - Secret scan：0 命中
+- 未在本里程碑宣称：
+  - mTLS、Bearer Token、Prometheus
+  - DECIDED/FINALIZED Docker 精确窗口与 committed output diff
+  - Kafka broker、Docker 主机或 File output volume HA
+- 上一回退点：`8882d9e`
+- 提交与远端备份：本日志随 Task 5 commit 推送

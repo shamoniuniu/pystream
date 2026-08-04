@@ -10,6 +10,7 @@ from pystream.worker.http import (
     HttpWorkerGateway,
     RegistrationClient,
     WorkerHttpService,
+    WorkerRegistrationRequired,
     WorkerServiceConfig,
 )
 from pystream.worker.manager import (
@@ -32,6 +33,7 @@ __all__ = [
     "RegistrationClient",
     "StatusReporter",
     "WorkerHttpService",
+    "WorkerRegistrationRequired",
     "WorkerRequestError",
     "WorkerServiceConfig",
     "WorkerTaskError",

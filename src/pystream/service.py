@@ -10,17 +10,21 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Sequence
+from datetime import timedelta
 from pathlib import Path
 
 from aiohttp import web
 
 from pystream.checkpoint import LocalCheckpointStore, S3CheckpointStore
 from pystream.control import (
+    CoordinatorRole,
     JobManager,
     JobManagerHttpService,
+    LeaderCoordinator,
     LocalArtifactRepository,
     S3ArtifactRepository,
     S3JobMetadataRepository,
+    S3LeaderLeaseRepository,
 )
 from pystream.observability import configure_logging
 from pystream.runtime import DataPlaneServer
@@ -51,6 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_object_store_arguments(jobmanager)
     jobmanager.add_argument("--heartbeat-timeout", type=float, default=15.0)
     jobmanager.add_argument("--reconcile-interval", type=float, default=5.0)
+    jobmanager.add_argument("--jobmanager-id")
+    jobmanager.add_argument("--leader-lease-ttl", type=float, default=10.0)
+    jobmanager.add_argument("--leader-renew-interval", type=float, default=3.0)
+    jobmanager.add_argument("--leader-poll-interval", type=float, default=1.0)
     jobmanager.set_defaults(app_factory=_create_jobmanager_app)
 
     worker = subparsers.add_parser("worker", help="启动 Worker 控制面与数据面")
@@ -72,12 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _create_jobmanager_app(args: argparse.Namespace) -> web.Application:
-    from datetime import timedelta
-
     if args.heartbeat_timeout <= 0:
         raise ValueError("--heartbeat-timeout 必须大于 0")
     gateway = HttpWorkerGateway()
     object_store = _object_store(args)
+    if args.jobmanager_id is not None and object_store is None:
+        raise ValueError("--jobmanager-id 要求配置对象存储")
     artifact_repository = (
         S3ArtifactRepository(object_store)
         if object_store is not None
@@ -96,10 +104,28 @@ def _create_jobmanager_app(args: argparse.Namespace) -> web.Application:
         metadata_repository=(
             S3JobMetadataRepository(object_store) if object_store is not None else None
         ),
+        role=(
+            CoordinatorRole.STANDBY if args.jobmanager_id is not None else CoordinatorRole.ACTIVE
+        ),
     )
+    leadership = None
+    if args.jobmanager_id is not None:
+        if object_store is None:  # pragma: no cover - 已由上方显式拒绝
+            raise AssertionError("HA JobManager 缺少对象存储")
+        leadership = LeaderCoordinator(
+            args.jobmanager_id,
+            S3LeaderLeaseRepository(object_store),
+            on_acquired=manager.activate,
+            on_lost=manager.step_down,
+            on_standby=manager.become_standby,
+            ttl=timedelta(seconds=args.leader_lease_ttl),
+            renew_interval=timedelta(seconds=args.leader_renew_interval),
+            poll_interval=timedelta(seconds=args.leader_poll_interval),
+        )
     service = JobManagerHttpService(
         manager,
         reconcile_interval=args.reconcile_interval,
+        leadership=leadership,
     )
     app = service.create_app()
 

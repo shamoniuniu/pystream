@@ -78,6 +78,10 @@ class WorkerRegistry:
         """按 worker_id 返回所有 Worker。"""
         return tuple(self._workers[key] for key in sorted(self._workers))
 
+    def clear(self) -> None:
+        """丢弃进程内 Worker 视图；leader 接管后要求全部重新注册。"""
+        self._workers.clear()
+
     def healthy(self, now: datetime | None = None) -> tuple[WorkerNode, ...]:
         """按 worker_id 返回未超时 Worker。"""
         observed_at = now or datetime.now(UTC)

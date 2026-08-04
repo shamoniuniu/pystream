@@ -54,15 +54,15 @@
   - [x] fake S3 与条件冲突 tests
   - [x] MinIO integration 与单节点故障 tests
 
-- [ ] Task 5: 双 JobManager 主备
-  - [ ] 10s lease / 3s renew / 1s poll
-  - [ ] active/standby role 与 protective step-down
-  - [ ] coordinator epoch fencing
-  - [ ] JobRun metadata 持久化
-  - [ ] DECIDED 未 FINALIZED 接管恢复
-  - [ ] Worker leader 变化后重注册
-  - [ ] HAProxy leader-only routing
-  - [ ] 双 contender、lease loss、stale epoch tests
+- [x] Task 5: 双 JobManager 主备
+  - [x] 10s lease / 3s renew / 1s poll
+  - [x] active/standby role 与 protective step-down
+  - [x] coordinator epoch fencing
+  - [x] JobRun metadata 持久化
+  - [x] DECIDED 未 FINALIZED 接管恢复
+  - [x] Worker leader 变化后重注册
+  - [x] HAProxy leader-only routing
+  - [x] 双 contender、lease loss、stale epoch tests
 
 - [ ] Task 6: mTLS、Token、Secret 与 Prometheus
   - [ ] 外部 HTTPS/Bearer Token

@@ -112,6 +112,8 @@ def test_service_入口参数覆盖jobmanager和worker() -> None:
             "/run/secrets/access-key",
             "--object-store-secret-key-file",
             "/run/secrets/secret-key",
+            "--jobmanager-id",
+            "jobmanager-1",
         ]
     )
     worker = parser.parse_args(
@@ -129,6 +131,10 @@ def test_service_入口参数覆盖jobmanager和worker() -> None:
     assert manager.port == 8080
     assert manager.object_store_bucket == "pystream"
     assert manager.object_store_access_key_file.as_posix() == "/run/secrets/access-key"
+    assert manager.jobmanager_id == "jobmanager-1"
+    assert manager.leader_lease_ttl == 10.0
+    assert manager.leader_renew_interval == 3.0
+    assert manager.leader_poll_interval == 1.0
     assert worker.port == 8081
     assert worker.data_port == 9000
     assert worker.slots == 4
@@ -252,6 +258,51 @@ def test_advanced_compose_包含单节点core和四节点双盘ha对象存储() 
     )
 
 
+def test_advanced_compose_包含双jobmanager和leader_only路由() -> None:
+    compose = yaml.safe_load(
+        (ROOT / "deploy" / "compose.advanced.yaml").read_text(encoding="utf-8")
+    )
+    services = compose["services"]
+
+    for index in range(1, 3):
+        manager = services[f"jobmanager-{index}"]
+        command = manager["command"]
+        assert manager["profiles"] == ["ha"]
+        assert command[command.index("--jobmanager-id") + 1] == f"jobmanager-{index}"
+        assert (
+            manager["environment"]["PYSTREAM_OBJECT_STORE_ENDPOINT"] == "http://object-store:9000"
+        )
+        assert manager["depends_on"]["object-store-init-ha"]["condition"] == (
+            "service_completed_successfully"
+        )
+
+    router = services["jobmanager-router"]
+    assert router["profiles"] == ["ha"]
+    assert router["ports"] == ["8080:8080"]
+    assert router["expose"] == ["8082"]
+    assert "./haproxy/advanced.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" in router["volumes"]
+    assert "/health/active" in router["healthcheck"]["test"][-1]
+
+    for index in range(1, 4):
+        worker = services[f"worker-ha-{index}"]
+        command = worker["command"]
+        assert worker["profiles"] == ["ha"]
+        assert command[command.index("--jobmanager-url") + 1] == ("http://jobmanager-router:8082")
+        assert worker["depends_on"]["jobmanager-router"]["condition"] == "service_healthy"
+
+    router_config = (ROOT / "deploy" / "haproxy" / "advanced.cfg").read_text(encoding="utf-8")
+    assert "bind :8080" in router_config
+    assert "bind :8082" in router_config
+    assert "uri /health/leader" in router_config
+    assert "uri /health/active" in router_config
+    assert "nameserver docker_dns 127.0.0.11:53" in router_config
+    assert router_config.count("resolvers docker resolve-prefer ipv4 init-addr libc,none") == 4
+    assert all(
+        router_config.count(f"server jobmanager-{index} jobmanager-{index}:8080 check") == 2
+        for index in range(1, 3)
+    )
+
+
 def test_advanced_compose_对象存储凭据只通过secret文件注入() -> None:
     compose = yaml.safe_load(
         (ROOT / "deploy" / "compose.advanced.yaml").read_text(encoding="utf-8")
@@ -272,7 +323,17 @@ def test_advanced_compose_对象存储凭据只通过secret文件注入() -> Non
             "MINIO_ROOT_PASSWORD_FILE",
             "MC_CONFIG_DIR",
         }
-    for name in ("jobmanager", "worker-1", "worker-2", "worker-3"):
+    for name in (
+        "jobmanager",
+        "jobmanager-1",
+        "jobmanager-2",
+        "worker-1",
+        "worker-2",
+        "worker-3",
+        "worker-ha-1",
+        "worker-ha-2",
+        "worker-ha-3",
+    ):
         service = services[name]
         assert set(service["secrets"]) == secret_names
         environment = service["environment"]

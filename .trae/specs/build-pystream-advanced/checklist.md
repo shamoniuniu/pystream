@@ -54,7 +54,7 @@
 - [x] decision 只在任务全集和摘要合法后写入
 - [x] DECIDED 不可逆
 - [x] FINALIZED 可重试
-- [ ] 接管 leader 完成 DECIDED 未 FINALIZED
+- [x] 接管 leader 完成 DECIDED 未 FINALIZED
 - [x] pre-decision failure 触发整作业恢复
 
 ## 对象存储
@@ -68,14 +68,14 @@
 
 ## JobManager HA
 
-- [ ] 任意时刻 active count=1
-- [ ] lease TTL/renew/poll 符合规格
-- [ ] lease 丢失使旧 active step down
-- [ ] takeover epoch 严格增加
+- [x] 任意时刻 active count=1
+- [x] lease TTL/renew/poll 符合规格
+- [x] lease 丢失使旧 active step down
+- [x] takeover epoch 严格增加
 - [x] Worker 拒绝旧 epoch
-- [ ] metadata revision 可恢复活动作业
-- [ ] Worker 自动重新注册
-- [ ] active 退出后 30 秒内恢复服务
+- [x] metadata revision 可恢复活动作业
+- [x] Worker 自动重新注册
+- [x] active 退出后 30 秒内恢复服务
 
 ## 安全
 

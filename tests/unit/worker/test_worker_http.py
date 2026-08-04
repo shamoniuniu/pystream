@@ -6,14 +6,17 @@ import asyncio
 from dataclasses import replace
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from pystream.checkpoint import TaskSnapshotDescriptor
 from pystream.control import TaskDeployment, WorkerNode
 from pystream.runtime import DataPlaneServer, RuntimeSnapshot, TaskRuntimeState
 from pystream.worker import (
+    HttpJobManagerClient,
     HttpWorkerGateway,
     WorkerHttpService,
+    WorkerRegistrationRequired,
     WorkerServiceConfig,
 )
 from tests.unit.worker.test_worker_models import sample_deployment
@@ -24,12 +27,15 @@ class StubRegistration:
         self.registrations: list[dict[str, object]] = []
         self.heartbeats: list[str] = []
         self.failures: list[tuple[str, str, int, str]] = []
+        self.coordinator_epoch = 0
 
-    async def register(self, **values) -> None:
+    async def register(self, **values) -> int:
         self.registrations.append(values)
+        return self.coordinator_epoch
 
-    async def heartbeat(self, worker_id: str) -> None:
+    async def heartbeat(self, worker_id: str) -> int:
         self.heartbeats.append(worker_id)
+        return self.coordinator_epoch
 
     async def report_task_failed(
         self,
@@ -82,11 +88,15 @@ class StubManager:
         attempt_id: int | None = None,
         coordinator_epoch: int = 0,
     ) -> RuntimeSnapshot | None:
-        del attempt_id, coordinator_epoch
+        del attempt_id
         self.stopped.append(task_id)
         snapshot = self._snapshots.get(task_id)
         if snapshot is None:
             return None
+        if coordinator_epoch < snapshot.coordinator_epoch:
+            from pystream.worker import WorkerTaskError
+
+            raise WorkerTaskError("拒绝旧 coordinator epoch")
         stopped = replace(snapshot, state=TaskRuntimeState.STOPPED)
         self._snapshots[task_id] = stopped
         return stopped
@@ -176,6 +186,23 @@ class StubManager:
         self.closed = True
 
 
+class LeaderChangingRegistration(StubRegistration):
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_attempts = 0
+
+    async def register(self, **values) -> int:
+        self.registrations.append(values)
+        self.register_attempts += 1
+        if self.register_attempts == 1:
+            raise ConnectionError("leader unavailable")
+        return 1 if self.register_attempts == 2 else 2
+
+    async def heartbeat(self, worker_id: str) -> int:
+        self.heartbeats.append(worker_id)
+        return 2
+
+
 @pytest.mark.asyncio
 async def test_worker_http_注册心跳_部署查询停止() -> None:
     manager = StubManager()
@@ -203,6 +230,8 @@ async def test_worker_http_注册心跳_部署查询停止() -> None:
         assert health["status"] == "ok"
         assert health["worker_id"] == "worker-1"
         assert health["incarnation_id"] == "worker-1-process-1"
+        assert health["registered"] is True
+        assert health["coordinator_epoch"] == 0
         assert health["data_plane"]["registered_channels"] == 0
         assert health["data_plane"]["active_connections"] == 0
         assert health["runtime"] == {
@@ -250,6 +279,10 @@ async def test_worker_http_注册心跳_部署查询停止() -> None:
             await client.post(f"/tasks/{task_id}/checkpoints/not-int/arm?{coordinates}")
         ).status == 400
 
+        stale_stop = await client.delete(f"/tasks/{task_id}?attempt_id=0&coordinator_epoch=3")
+        assert stale_stop.status == 409
+        assert "旧 coordinator epoch" in await stale_stop.text()
+
         stopped = await client.delete(f"/tasks/{task_id}?{coordinates}")
         assert (await stopped.json())["state"] == "STOPPED"
         assert (await client.delete(f"/tasks/missing?{coordinates}")).status == 204
@@ -257,6 +290,57 @@ async def test_worker_http_注册心跳_部署查询停止() -> None:
         await client.close()
     assert manager.closed
     assert not data_server.running
+
+
+@pytest.mark.asyncio
+async def test_worker_http_启动注册失败后自动注册并跟随更高epoch() -> None:
+    manager = StubManager()
+    registration = LeaderChangingRegistration()
+    data_server = DataPlaneServer("127.0.0.1", 0)
+    service = WorkerHttpService(
+        WorkerServiceConfig(
+            worker_id="worker-1",
+            control_address="http://worker-1:8081",
+            data_host="worker-1",
+            heartbeat_interval=0.01,
+        ),
+        manager,  # type: ignore[arg-type]
+        data_server,
+        registration,
+    )
+    client = TestClient(TestServer(service.create_app()))
+    await client.start_server()
+    try:
+        initial_health = await (await client.get("/health")).json()
+        if not initial_health["registered"]:
+            assert initial_health["status"] == "degraded"
+
+        for _ in range(100):
+            health = await (await client.get("/health")).json()
+            if health["registered"] and health["coordinator_epoch"] == 2:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("Worker 未在超时内向新 leader 重注册")
+
+        assert registration.register_attempts >= 3
+        assert registration.heartbeats
+        assert health["status"] == "ok"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_jobmanager_client_404心跳要求重注册() -> None:
+    server = TestServer(web.Application())
+    await server.start_server()
+    client = HttpJobManagerClient(str(server.make_url("")).rstrip("/"))
+    try:
+        with pytest.raises(WorkerRegistrationRequired, match="HTTP 404"):
+            await client.heartbeat("missing")
+    finally:
+        await client.close()
+        await server.close()
 
 
 @pytest.mark.asyncio

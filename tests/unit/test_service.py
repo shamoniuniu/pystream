@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from aiohttp import web
 
 import pystream.service as service
 
@@ -138,3 +139,66 @@ def test_object_store_configuration_rejects_missing_or_empty_secret(
     )
     with pytest.raises(ValueError, match="不能为空"):
         service._object_store(configured)
+
+
+def test_ha_jobmanager_requires_object_store() -> None:
+    args = service.build_parser().parse_args(
+        [
+            "jobmanager",
+            "--jobmanager-id",
+            "jobmanager-1",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="要求配置对象存储"):
+        service._create_jobmanager_app(args)
+
+
+def test_ha_jobmanager_injects_standby_leadership(monkeypatch) -> None:
+    object_store = object()
+    captured: dict[str, object] = {}
+
+    class RecordingHttpService:
+        def __init__(
+            self,
+            manager,
+            *,
+            reconcile_interval: float,
+            leadership,
+        ) -> None:
+            captured["manager"] = manager
+            captured["reconcile_interval"] = reconcile_interval
+            captured["leadership"] = leadership
+
+        def create_app(self) -> web.Application:
+            return web.Application()
+
+    monkeypatch.setattr(service, "_object_store", lambda args: object_store)
+    monkeypatch.setattr(service, "JobManagerHttpService", RecordingHttpService)
+    args = service.build_parser().parse_args(
+        [
+            "jobmanager",
+            "--jobmanager-id",
+            "jobmanager-1",
+            "--object-store-endpoint",
+            "http://object-store:9000",
+            "--leader-lease-ttl",
+            "12",
+            "--leader-renew-interval",
+            "4",
+            "--leader-poll-interval",
+            "2",
+        ]
+    )
+
+    app = service._create_jobmanager_app(args)
+
+    manager = captured["manager"]
+    leadership = captured["leadership"]
+    assert isinstance(app, web.Application)
+    assert manager.role.value == "STANDBY"
+    assert manager.leader_ready is False
+    assert leadership.holder_id == "jobmanager-1"
+    assert leadership.ttl.total_seconds() == 12
+    assert leadership.renew_interval.total_seconds() == 4
+    assert leadership.poll_interval.total_seconds() == 2

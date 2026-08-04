@@ -194,10 +194,17 @@ class CheckpointCoordinator:
         *,
         checkpoint_id: int,
         timeout: float,
+        command_coordinator_epoch: int | None = None,
     ) -> CheckpointManifest:
         """不重新 arm/对齐，幂等重放一个 DECIDED 未 FINALIZED checkpoint。"""
         if timeout <= 0:
             raise ValueError("Checkpoint timeout 必须大于 0")
+        if command_coordinator_epoch is not None and (
+            isinstance(command_coordinator_epoch, bool)
+            or not isinstance(command_coordinator_epoch, int)
+            or command_coordinator_epoch < 0
+        ):
+            raise ValueError("command_coordinator_epoch 必须是非负整数")
         tasks = graph.deployment_order()
         decision = self.store.read_decision(
             graph.job_id,
@@ -209,7 +216,12 @@ class CheckpointCoordinator:
         )
         try:
             return await asyncio.wait_for(
-                self._finalize_decision(graph, tasks, decision),
+                self._finalize_decision(
+                    graph,
+                    tasks,
+                    decision,
+                    command_coordinator_epoch=command_coordinator_epoch,
+                ),
                 timeout=timeout,
             )
         except asyncio.CancelledError:
@@ -224,8 +236,15 @@ class CheckpointCoordinator:
         graph: ExecutionGraph,
         tasks: tuple[TaskInstance, ...],
         decision: CheckpointDecision,
+        *,
+        command_coordinator_epoch: int | None = None,
     ) -> CheckpointManifest:
         """重复未知结果操作，直到 Worker、manifest 和 finalized 全部完成。"""
+        command_epoch = (
+            decision.coordinator_epoch
+            if command_coordinator_epoch is None
+            else command_coordinator_epoch
+        )
         while True:
             try:
                 await _uncancellable_to_thread(
@@ -241,7 +260,7 @@ class CheckpointCoordinator:
                         task.task_id,
                         task.attempt_id,
                         decision.checkpoint_id,
-                        decision.coordinator_epoch,
+                        command_epoch,
                     )
                 output_manifests = await _uncancellable_to_thread(
                     partial(

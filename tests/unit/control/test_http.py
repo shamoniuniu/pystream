@@ -11,6 +11,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from pystream.artifact import build_job_bundle
 from pystream.checkpoint import CheckpointManifest
 from pystream.control import (
+    CoordinatorRole,
     JobManager,
     JobManagerHttpService,
     LocalArtifactRepository,
@@ -38,6 +39,66 @@ class RecordingGateway:
     ) -> None:
         del attempt_id, coordinator_epoch
         self.stops.append((worker.worker_id, task_id))
+
+
+class RecordingLeadership:
+    def __init__(self) -> None:
+        self.started = False
+        self.closed = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_http_区分active与ready并将standby写入映射为503(tmp_path: Path) -> None:
+    manager = JobManager(
+        LocalArtifactRepository(tmp_path / "store"),
+        RecordingGateway(),
+        role=CoordinatorRole.STANDBY,
+    )
+    leadership = RecordingLeadership()
+    client = TestClient(
+        TestServer(
+            JobManagerHttpService(
+                manager,
+                leadership=leadership,
+            ).create_app()
+        )
+    )
+    await client.start_server()
+    try:
+        assert leadership.started
+        assert (await client.get("/health")).status == 200
+        active = await client.get("/health/active")
+        leader = await client.get("/health/leader")
+        assert active.status == 503
+        assert active.headers["Retry-After"] == "1"
+        assert leader.status == 503
+
+        rejected = await client.post(
+            "/workers/register",
+            json={
+                "worker_id": "worker-1",
+                "incarnation_id": "process-1",
+                "control_address": "http://worker-1:8081",
+                "data_host": "worker-1",
+                "data_port": 9000,
+                "total_slots": 1,
+            },
+        )
+        assert rejected.status == 503
+        assert rejected.headers["Retry-After"] == "1"
+
+        await manager.activate(1)
+        assert (await client.get("/health/active")).status == 200
+        assert (await client.get("/health/leader")).status == 200
+    finally:
+        await client.close()
+    assert leadership.closed
 
 
 @pytest.mark.asyncio
@@ -96,6 +157,11 @@ async def test_http_注册三worker_提交查询下载和取消(tmp_path: Path) 
             assert response.status == 201
             registration = await response.json()
             assert registration["restarted"] is False
+            assert registration["coordinator_epoch"] == 4
+
+        heartbeat = await client.post("/workers/worker-1/heartbeat", json={})
+        assert heartbeat.status == 200
+        assert (await heartbeat.json())["coordinator_epoch"] == 4
 
         health = await (await client.get("/health")).json()
         workers = await (await client.get("/v1/workers")).json()

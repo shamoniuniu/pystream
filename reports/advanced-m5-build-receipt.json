@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "scope": "advanced-v0.3-milestone-5",
+  "branch": "feature/advanced-v0.3",
+  "parent_commit": "8882d9ef176fb4683c978ee375634e122d3dd9fa",
+  "working_tree": "dirty-content-addressed",
+  "image_tag": "pystream:0.3.0",
+  "image_id": "sha256:5cc238c64d1b12568846884ef85f65b5f2c0eff764516450d1ed49b29fd16e71",
+  "image_created_at": "2026-08-04T12:51:21.133931686Z",
+  "python_base": "python:3.11.9-slim-bookworm@sha256:8fb099199b9f2d70342674bd9dbccd3ed03a258f26bbd1d556822c6dfc60c317",
+  "checks": {
+    "ruff": "passed",
+    "format": "127 files",
+    "python311_full_suite": "465 passed, no skips, 83.58% branch coverage",
+    "compose_core_and_ha_config": "passed",
+    "haproxy_config": "passed with dynamic Docker DNS",
+    "active_count": "exactly 1",
+    "empty_cluster_failover": "11.148 seconds",
+    "running_job_failover": "12.452 seconds",
+    "final_image_jobmanager_recreate": "16.813 seconds",
+    "checkpoint_worker_recovery": "8.284 seconds",
+    "stale_epoch": "HTTP 409; task remained RUNNING",
+    "lease_loss": "old active entered PROTECTIVE; leader health false",
+    "lease_loss_recovery": "9.762 seconds; epoch advanced to 6",
+    "resource_cleanup": "containers=0, networks=0, volumes=0"
+  },
+  "decision": "accepted as Milestone 5 local candidate; no image publication or v0.3.0 tag",
+  "rollback": "git revert the Milestone 5 commit; parent 8882d9e remains the durable-state rollback point",
+  "dependency_resolution": "online ranged Python dependencies; image is not byte-reproducible",
+  "created_at": "2026-08-04T12:55:11.8388056Z"
+}

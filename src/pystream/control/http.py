@@ -26,8 +26,10 @@ from pystream.control.errors import (
     DeploymentError,
     InsufficientSlots,
     InvalidStateTransition,
+    NotLeaderError,
     WorkerNotFound,
 )
+from pystream.control.leader import LeaderCoordinator
 from pystream.control.manager import JobManager
 from pystream.control.models import TaskStatus
 from pystream.observability import log_event
@@ -45,6 +47,7 @@ class JobManagerHttpService:
         *,
         max_artifact_size: int = DEFAULT_MAX_ARTIFACT_SIZE,
         reconcile_interval: float = 5.0,
+        leadership: LeaderCoordinator | None = None,
     ) -> None:
         if max_artifact_size <= 0:
             raise ValueError("max_artifact_size 必须大于 0")
@@ -53,6 +56,7 @@ class JobManagerHttpService:
         self.manager = manager
         self.max_artifact_size = max_artifact_size
         self.reconcile_interval = reconcile_interval
+        self.leadership = leadership
         self._reconcile_task: asyncio.Task[None] | None = None
 
     def create_app(self) -> web.Application:
@@ -62,6 +66,8 @@ class JobManagerHttpService:
             middlewares=[self._error_middleware],
         )
         app.router.add_get("/health", self._health)
+        app.router.add_get("/health/active", self._active_health)
+        app.router.add_get("/health/leader", self._leader_health)
         app.router.add_get("/v1/workers", self._workers)
         app.router.add_post("/v1/jobs", self._submit)
         app.router.add_get("/v1/jobs/{job_id}", self._status)
@@ -95,6 +101,12 @@ class JobManagerHttpService:
             return _error_response(404, f"资源不存在: {exc}")
         except (JobConfigError, BundleArtifactError, ArtifactError, ValueError) as exc:
             return _error_response(400, str(exc))
+        except NotLeaderError as exc:
+            return _error_response(
+                503,
+                str(exc),
+                headers={"Retry-After": "1"},
+            )
         except (InsufficientSlots, InvalidStateTransition) as exc:
             return _error_response(409, str(exc))
         except WorkerNotFound as exc:
@@ -116,12 +128,16 @@ class JobManagerHttpService:
             raise
 
     async def _startup(self, _: web.Application) -> None:
+        if self.leadership is not None:
+            await self.leadership.start()
         self._reconcile_task = asyncio.create_task(
             self._reconcile_loop(),
             name="pystream-worker-reconcile",
         )
 
     async def _cleanup(self, _: web.Application) -> None:
+        if self.leadership is not None:
+            await self.leadership.close()
         task = self._reconcile_task
         self._reconcile_task = None
         if task is not None:
@@ -138,6 +154,18 @@ class JobManagerHttpService:
 
     async def _health(self, _: web.Request) -> web.Response:
         return web.json_response(self.manager.health())
+
+    async def _active_health(self, _: web.Request) -> web.Response:
+        return _role_health_response(
+            self.manager.health(),
+            available=self.manager.is_active,
+        )
+
+    async def _leader_health(self, _: web.Request) -> web.Response:
+        return _role_health_response(
+            self.manager.health(),
+            available=self.manager.leader_ready,
+        )
 
     async def _workers(self, _: web.Request) -> web.Response:
         workers = [
@@ -259,6 +287,7 @@ class JobManagerHttpService:
                 "restarted": restarted,
                 "affected_jobs": affected_jobs,
                 "total_slots": worker.total_slots,
+                "coordinator_epoch": self.manager.coordinator_epoch,
                 "status": "REGISTERED",
             },
             status=201,
@@ -271,6 +300,7 @@ class JobManagerHttpService:
                 "worker_id": worker.worker_id,
                 "status": "HEALTHY",
                 "last_heartbeat": worker.last_heartbeat.isoformat(),
+                "coordinator_epoch": self.manager.coordinator_epoch,
             }
         )
 
@@ -371,8 +401,26 @@ def _required_integer(
     return value
 
 
-def _error_response(status: int, message: str) -> web.Response:
-    return web.json_response({"error": message}, status=status)
+def _error_response(
+    status: int,
+    message: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> web.Response:
+    return web.json_response({"error": message}, status=status, headers=headers)
+
+
+def _role_health_response(
+    health: dict[str, object],
+    *,
+    available: bool,
+) -> web.Response:
+    headers = None if available else {"Retry-After": "1"}
+    return web.json_response(
+        health,
+        status=200 if available else 503,
+        headers=headers,
+    )
 
 
 __all__ = [

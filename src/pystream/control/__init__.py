@@ -15,10 +15,24 @@ from pystream.control.errors import (
     DeploymentError,
     InsufficientSlots,
     InvalidStateTransition,
+    NotLeaderError,
     WorkerNotFound,
 )
 from pystream.control.execution import ExecutionGraph, build_execution_graph
 from pystream.control.http import JobManagerHttpService
+from pystream.control.leader import (
+    DEFAULT_LEASE_TTL,
+    DEFAULT_RENEW_INTERVAL,
+    DEFAULT_STANDBY_POLL_INTERVAL,
+    LEADER_LEASE_SCHEMA_VERSION,
+    LeaderCoordinator,
+    LeaderElectionError,
+    LeaderLease,
+    LeaderLeaseLost,
+    LeaderLeaseRepository,
+    S3LeaderLeaseRepository,
+    StoredLeaderLease,
+)
 from pystream.control.manager import JobManager, JobRun
 from pystream.control.metadata import (
     JOB_METADATA_SCHEMA_VERSION,
@@ -46,7 +60,11 @@ from pystream.control.ports import ArtifactRepository, TaskDeployment, WorkerGat
 from pystream.control.scheduler import SlotScheduler, WorkerRegistry
 
 __all__ = [
+    "DEFAULT_LEASE_TTL",
+    "DEFAULT_RENEW_INTERVAL",
+    "DEFAULT_STANDBY_POLL_INTERVAL",
     "JOB_METADATA_SCHEMA_VERSION",
+    "LEADER_LEASE_SCHEMA_VERSION",
     "ArtifactDescriptor",
     "ArtifactError",
     "ArtifactRepository",
@@ -67,13 +85,21 @@ __all__ = [
     "JobMetadataRevision",
     "JobRun",
     "JobStatus",
+    "LeaderCoordinator",
+    "LeaderElectionError",
+    "LeaderLease",
+    "LeaderLeaseLost",
+    "LeaderLeaseRepository",
     "LocalArtifactRepository",
+    "NotLeaderError",
     "PhysicalChannel",
     "ResourceView",
     "S3ArtifactRepository",
     "S3JobMetadataRepository",
+    "S3LeaderLeaseRepository",
     "SlotScheduler",
     "StoredJobMetadata",
+    "StoredLeaderLease",
     "TaskDeployment",
     "TaskEndpoint",
     "TaskInstance",

@@ -34,11 +34,16 @@ class ArtifactError(ControlPlaneError):
     """作业制品不存在、摘要不匹配或不可读。"""
 
 
+class NotLeaderError(ControlPlaneError):
+    """当前 JobManager 没有可证明的写 lease 或尚未完成接管。"""
+
+
 __all__ = [
     "ArtifactError",
     "ControlPlaneError",
     "DeploymentError",
     "InsufficientSlots",
     "InvalidStateTransition",
+    "NotLeaderError",
     "WorkerNotFound",
 ]

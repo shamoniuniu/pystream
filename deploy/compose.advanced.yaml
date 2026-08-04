@@ -85,6 +85,17 @@ x-pystream-service: &pystream-service
   networks:
     - pystream
 
+x-pystream-ha-service: &pystream-ha-service
+  <<: *pystream-service
+  profiles:
+    - ha
+  environment:
+    PYSTREAM_OBJECT_STORE_ENDPOINT: http://object-store:9000
+    PYSTREAM_OBJECT_STORE_BUCKET: pystream
+    PYSTREAM_OBJECT_STORE_REGION: us-east-1
+    PYSTREAM_OBJECT_STORE_ACCESS_KEY_FILE: /run/secrets/object-store-access-key
+    PYSTREAM_OBJECT_STORE_SECRET_KEY_FILE: /run/secrets/object-store-secret-key
+
 x-worker: &worker
   <<: *pystream-service
   depends_on:
@@ -95,6 +106,41 @@ x-worker: &worker
     kafka-init:
       condition: service_completed_successfully
     object-store-init-core:
+      condition: service_completed_successfully
+  expose:
+    - "8081"
+    - "9000"
+  volumes:
+    - pystream-output:/data/output
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8081/health', timeout=2)); assert d['status']=='ok'"
+    interval: 5s
+    timeout: 3s
+    retries: 12
+    start_period: 10s
+  deploy:
+    resources:
+      reservations:
+        cpus: "0.10"
+        memory: 128M
+      limits:
+        cpus: "0.50"
+        memory: 512M
+
+x-ha-worker: &ha-worker
+  <<: *pystream-ha-service
+  depends_on:
+    jobmanager-router:
+      condition: service_healthy
+    kafka:
+      condition: service_healthy
+    kafka-init:
+      condition: service_completed_successfully
+    object-store-init-ha:
       condition: service_completed_successfully
   expose:
     - "8081"
@@ -382,6 +428,113 @@ services:
       retries: 12
       start_period: 5s
 
+  jobmanager-1:
+    <<: *pystream-ha-service
+    hostname: jobmanager-1
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      object-store-init-ha:
+        condition: service_completed_successfully
+    command:
+      - python
+      - -m
+      - pystream.service
+      - jobmanager
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --jobmanager-id
+      - jobmanager-1
+    expose:
+      - "8080"
+    volumes:
+      - pystream-output:/data/output
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; json.load(urllib.request.urlopen('http://localhost:8080/health', timeout=2))"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  jobmanager-2:
+    <<: *pystream-ha-service
+    hostname: jobmanager-2
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      object-store-init-ha:
+        condition: service_completed_successfully
+    command:
+      - python
+      - -m
+      - pystream.service
+      - jobmanager
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --jobmanager-id
+      - jobmanager-2
+    expose:
+      - "8080"
+    volumes:
+      - pystream-output:/data/output
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; json.load(urllib.request.urlopen('http://localhost:8080/health', timeout=2))"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  jobmanager-router:
+    image: *haproxy-image
+    profiles:
+      - ha
+    hostname: jobmanager-router
+    depends_on:
+      jobmanager-1:
+        condition: service_healthy
+      jobmanager-2:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "8080:8080"
+    expose:
+      - "8082"
+    volumes:
+      - ./haproxy/advanced.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    tmpfs:
+      - /run:size=16m,mode=0755
+      - /tmp:size=16m,mode=1777
+    networks:
+      - pystream
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -T 2 -O /dev/null http://127.0.0.1:8082/health/active
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   worker-1:
     <<: *worker
     hostname: worker-1
@@ -448,6 +601,72 @@ services:
       - pystream-output:/data/output
       - pystream-worker-3:/data/work
 
+  worker-ha-1:
+    <<: *ha-worker
+    hostname: worker-ha-1
+    command:
+      - python
+      - -m
+      - pystream.service
+      - worker
+      - --worker-id
+      - worker-1
+      - --control-address
+      - http://worker-ha-1:8081
+      - --data-host
+      - worker-ha-1
+      - --slots
+      - "4"
+      - --jobmanager-url
+      - http://jobmanager-router:8082
+    volumes:
+      - pystream-output:/data/output
+      - pystream-worker-ha-1:/data/work
+
+  worker-ha-2:
+    <<: *ha-worker
+    hostname: worker-ha-2
+    command:
+      - python
+      - -m
+      - pystream.service
+      - worker
+      - --worker-id
+      - worker-2
+      - --control-address
+      - http://worker-ha-2:8081
+      - --data-host
+      - worker-ha-2
+      - --slots
+      - "4"
+      - --jobmanager-url
+      - http://jobmanager-router:8082
+    volumes:
+      - pystream-output:/data/output
+      - pystream-worker-ha-2:/data/work
+
+  worker-ha-3:
+    <<: *ha-worker
+    hostname: worker-ha-3
+    command:
+      - python
+      - -m
+      - pystream.service
+      - worker
+      - --worker-id
+      - worker-3
+      - --control-address
+      - http://worker-ha-3:8081
+      - --data-host
+      - worker-ha-3
+      - --slots
+      - "4"
+      - --jobmanager-url
+      - http://jobmanager-router:8082
+    volumes:
+      - pystream-output:/data/output
+      - pystream-worker-ha-3:/data/work
+
 networks:
   pystream:
     driver: bridge
@@ -467,6 +686,9 @@ volumes:
   pystream-worker-1:
   pystream-worker-2:
   pystream-worker-3:
+  pystream-worker-ha-1:
+  pystream-worker-ha-2:
+  pystream-worker-ha-3:
 
 secrets:
   object-store-access-key:

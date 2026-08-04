@@ -46,11 +46,15 @@ class RegistrationClient(StatusReporter, Protocol):
         data_port: int,
         total_slots: int,
         incarnation_id: str,
-    ) -> None:
-        """向 JobManager 注册 Worker。"""
+    ) -> int:
+        """向 JobManager 注册 Worker 并返回 coordinator epoch。"""
 
-    async def heartbeat(self, worker_id: str) -> None:
-        """刷新 Worker 存活时间。"""
+    async def heartbeat(self, worker_id: str) -> int:
+        """刷新 Worker 存活时间并返回 coordinator epoch。"""
+
+
+class WorkerRegistrationRequired(RuntimeError):
+    """当前 JobManager 已不承认 Worker 注册或 leader 已变化。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +98,8 @@ class WorkerHttpService:
         self.registration_client = registration_client
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._heartbeat_error: str | None = None
+        self._registered_epoch: int | None = None
+        self._highest_coordinator_epoch = -1
 
     def create_app(self) -> web.Application:
         """创建带生命周期钩子和控制路由的应用。"""
@@ -129,14 +135,12 @@ class WorkerHttpService:
 
     async def _startup(self, _: web.Application) -> None:
         await self.data_server.start()
-        await self.registration_client.register(
-            worker_id=self.config.worker_id,
-            control_address=self.config.control_address,
-            data_host=self.config.data_host,
-            data_port=self.data_server.bound_port,
-            total_slots=self.config.total_slots,
-            incarnation_id=self.config.incarnation_id,
-        )
+        try:
+            await self._register()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._record_heartbeat_error("Worker 首次注册失败", exc)
         self._heartbeat_task = asyncio.create_task(
             self._heartbeat_loop(),
             name=f"pystream-heartbeat-{self.config.worker_id}",
@@ -166,21 +170,64 @@ class WorkerHttpService:
         while True:
             await asyncio.sleep(self.config.heartbeat_interval)
             try:
-                await self.registration_client.heartbeat(self.config.worker_id)
+                await self._heartbeat_once()
                 self._heartbeat_error = None
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # JobManager 通过超时判定 Worker 失联; 本地保留错误用于健康诊断,
-                # 下个周期继续尝试, 避免瞬时控制面故障终止数据任务。
-                self._heartbeat_error = f"{type(exc).__name__}: {exc}"
-                self._log(
-                    logging.ERROR,
-                    "heartbeat_failed",
-                    "Worker 心跳失败",
-                    error=self._heartbeat_error,
-                    exc_info=exc,
-                )
+                self._record_heartbeat_error("Worker 心跳或重注册失败", exc)
+
+    async def _heartbeat_once(self) -> None:
+        if self._registered_epoch is None:
+            await self._register()
+            return
+        try:
+            observed_epoch = await self.registration_client.heartbeat(self.config.worker_id)
+        except WorkerRegistrationRequired:
+            self._registered_epoch = None
+            await self._register()
+            return
+        _validate_coordinator_epoch(observed_epoch)
+        if observed_epoch < self._highest_coordinator_epoch:
+            self._registered_epoch = None
+            raise WorkerRegistrationRequired(
+                f"拒绝旧 leader epoch={observed_epoch}, "
+                f"Worker 已观察到 epoch={self._highest_coordinator_epoch}"
+            )
+        if observed_epoch > self._registered_epoch:
+            self._highest_coordinator_epoch = observed_epoch
+            self._registered_epoch = None
+            await self._register()
+
+    async def _register(self) -> None:
+        observed_epoch = await self.registration_client.register(
+            worker_id=self.config.worker_id,
+            control_address=self.config.control_address,
+            data_host=self.config.data_host,
+            data_port=self.data_server.bound_port,
+            total_slots=self.config.total_slots,
+            incarnation_id=self.config.incarnation_id,
+        )
+        _validate_coordinator_epoch(observed_epoch)
+        if observed_epoch < self._highest_coordinator_epoch:
+            raise WorkerRegistrationRequired(
+                f"拒绝旧 leader 注册 epoch={observed_epoch}, "
+                f"Worker 已观察到 epoch={self._highest_coordinator_epoch}"
+            )
+        self._highest_coordinator_epoch = observed_epoch
+        self._registered_epoch = observed_epoch
+
+    def _record_heartbeat_error(self, message: str, exc: Exception) -> None:
+        # JobManager 通过超时判定 Worker 失联; 本地保留错误用于健康诊断,
+        # 下个周期继续尝试, 避免控制面切换终止数据任务。
+        self._heartbeat_error = f"{type(exc).__name__}: {exc}"
+        self._log(
+            logging.ERROR,
+            "heartbeat_failed",
+            message,
+            error=self._heartbeat_error,
+            exc_info=exc,
+        )
 
     async def _health(self, _: web.Request) -> web.Response:
         snapshots = self.manager.snapshots()
@@ -194,6 +241,12 @@ class WorkerHttpService:
                 "data_port": self.data_server.bound_port,
                 "total_slots": self.config.total_slots,
                 "heartbeat_error": self._heartbeat_error,
+                "registered": self._registered_epoch is not None,
+                "coordinator_epoch": (
+                    self._highest_coordinator_epoch
+                    if self._highest_coordinator_epoch >= 0
+                    else None
+                ),
                 "data_plane": self.data_server.metrics,
                 "runtime": {
                     "records_in": sum(item.records_in for item in snapshots),
@@ -245,11 +298,14 @@ class WorkerHttpService:
     async def _stop(self, request: web.Request) -> web.Response:
         attempt_id = _attempt_id(request)
         coordinator_epoch = _coordinator_epoch(request)
-        snapshot = await self.manager.stop(
-            request.match_info["task_id"],
-            attempt_id,
-            coordinator_epoch,
-        )
+        try:
+            snapshot = await self.manager.stop(
+                request.match_info["task_id"],
+                attempt_id,
+                coordinator_epoch,
+            )
+        except WorkerTaskError as exc:
+            raise web.HTTPConflict(text=str(exc)) from exc
         if snapshot is None:
             return web.Response(status=204)
         if snapshot.attempt_id != attempt_id:
@@ -427,8 +483,8 @@ class HttpJobManagerClient(_HttpClientBase, RegistrationClient):
         data_port: int,
         total_slots: int,
         incarnation_id: str,
-    ) -> None:
-        await self._post(
+    ) -> int:
+        document = await self._post(
             "/workers/register",
             {
                 "worker_id": worker_id,
@@ -439,9 +495,21 @@ class HttpJobManagerClient(_HttpClientBase, RegistrationClient):
                 "incarnation_id": incarnation_id,
             },
         )
+        return _response_coordinator_epoch(document)
 
-    async def heartbeat(self, worker_id: str) -> None:
-        await self._post(f"/workers/{quote(worker_id, safe='')}/heartbeat", {})
+    async def heartbeat(self, worker_id: str) -> int:
+        try:
+            document = await self._post(
+                f"/workers/{quote(worker_id, safe='')}/heartbeat",
+                {},
+            )
+        except ClientResponseError as exc:
+            if exc.status in {404, 503}:
+                raise WorkerRegistrationRequired(
+                    f"JobManager 要求 Worker 重新注册: HTTP {exc.status}"
+                ) from exc
+            raise
+        return _response_coordinator_epoch(document)
 
     async def report_task_failed(
         self,
@@ -462,10 +530,14 @@ class HttpJobManagerClient(_HttpClientBase, RegistrationClient):
             },
         )
 
-    async def _post(self, path: str, document: dict[str, Any]) -> None:
+    async def _post(self, path: str, document: dict[str, Any]) -> dict[str, Any]:
         session = await self._get_session()
         async with session.post(f"{self.base_url}{path}", json=document) as response:
             response.raise_for_status()
+            result = await response.json()
+        if not isinstance(result, dict) or not all(isinstance(key, str) for key in result):
+            raise WorkerRequestError("JobManager 响应必须是 JSON object")
+        return result
 
 
 class HttpWorkerGateway(_HttpClientBase):
@@ -666,11 +738,23 @@ def _coordinator_epoch(request: web.Request) -> int:
     return coordinator_epoch
 
 
+def _response_coordinator_epoch(document: dict[str, Any]) -> int:
+    value = document.get("coordinator_epoch")
+    _validate_coordinator_epoch(value)
+    return value
+
+
+def _validate_coordinator_epoch(value: object) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise WorkerRequestError("coordinator_epoch 必须是非负整数")
+
+
 __all__ = [
     "HttpArtifactFetcher",
     "HttpJobManagerClient",
     "HttpWorkerGateway",
     "RegistrationClient",
     "WorkerHttpService",
+    "WorkerRegistrationRequired",
     "WorkerServiceConfig",
 ]

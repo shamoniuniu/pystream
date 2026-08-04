@@ -13,8 +13,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from pystream.api import DeliveryGuarantee, OperatorType, StreamGraph
-from pystream.checkpoint import CheckpointManifest, CheckpointStore
+from pystream.api import DeliveryGuarantee, JobDefinition, OperatorType, StreamGraph
+from pystream.checkpoint import CheckpointDecision, CheckpointManifest, CheckpointStore
 from pystream.control.checkpoint import (
     CheckpointCoordinationError,
     CheckpointCoordinator,
@@ -23,15 +23,18 @@ from pystream.control.errors import (
     ControlPlaneError,
     DeploymentError,
     InvalidStateTransition,
+    NotLeaderError,
     WorkerNotFound,
 )
 from pystream.control.execution import ExecutionGraph, build_execution_graph
 from pystream.control.metadata import (
     JobMetadataRepository,
     JobMetadataRevision,
+    StoredJobMetadata,
 )
 from pystream.control.models import (
     ArtifactDescriptor,
+    CoordinatorRole,
     Job,
     JobStatus,
     ResourceView,
@@ -82,6 +85,46 @@ class JobRun:
             self.deployed_task_ids = []
 
 
+def _serialize_job_definition(definition: JobDefinition) -> dict[str, object]:
+    return definition.model_dump(
+        mode="json",
+        by_alias=True,
+        exclude_defaults=True,
+    )
+
+
+def _load_persisted_job_definition(value: dict[str, object]) -> JobDefinition:
+    """兼容 M4 将模型默认值展开到非 reduce 算子的元数据。"""
+    candidate = dict(value)
+    raw_operators = candidate.get("operators")
+    if isinstance(raw_operators, list):
+        migrated: list[object] = []
+        for raw_operator in raw_operators:
+            if not isinstance(raw_operator, dict):
+                migrated.append(raw_operator)
+                continue
+            operator = dict(raw_operator)
+            if (
+                operator.get("type") != OperatorType.REDUCE.value
+                and operator.get("emit_mode") == "final"
+            ):
+                operator.pop("emit_mode")
+            migrated.append(operator)
+        candidate["operators"] = migrated
+    return JobDefinition.model_validate(candidate)
+
+
+def _manifest_from_decision(decision: CheckpointDecision) -> CheckpointManifest:
+    return CheckpointManifest(
+        job_id=decision.job_id,
+        checkpoint_id=decision.checkpoint_id,
+        attempt_id=decision.attempt_id,
+        coordinator_epoch=decision.coordinator_epoch,
+        created_at=decision.decided_at,
+        snapshots=decision.snapshots,
+    )
+
+
 class JobManager:
     """协调 Worker、制品、调度和作业生命周期。"""
 
@@ -96,6 +139,7 @@ class JobManager:
         checkpoint_store: CheckpointStore | None = None,
         metadata_repository: JobMetadataRepository | None = None,
         coordinator_epoch: int = 0,
+        role: CoordinatorRole = CoordinatorRole.ACTIVE,
     ) -> None:
         if (
             isinstance(coordinator_epoch, bool)
@@ -103,6 +147,8 @@ class JobManager:
             or coordinator_epoch < 0
         ):
             raise ValueError("coordinator_epoch 必须是非负整数")
+        if not isinstance(role, CoordinatorRole):
+            raise TypeError("role 必须是 CoordinatorRole")
         self.artifact_repository = artifact_repository
         self.worker_gateway = worker_gateway
         self.registry = registry or WorkerRegistry(heartbeat_timeout)
@@ -110,6 +156,12 @@ class JobManager:
         self.checkpoint_store = checkpoint_store
         self.metadata_repository = metadata_repository
         self.coordinator_epoch = coordinator_epoch
+        self.role = role
+        self._leader_ready = role is CoordinatorRole.ACTIVE
+        self._activating = False
+        self._leadership_lock = asyncio.Lock()
+        self._takeover_lock = asyncio.Lock()
+        self._takeover_pending: set[str] = set()
         self.checkpoint_coordinator = (
             CheckpointCoordinator(
                 checkpoint_store,
@@ -120,6 +172,24 @@ class JobManager:
             else None
         )
         self._runs: dict[str, JobRun] = {}
+
+    @property
+    def is_active(self) -> bool:
+        return self.role is CoordinatorRole.ACTIVE
+
+    @property
+    def leader_ready(self) -> bool:
+        return self.is_active and self._leader_ready
+
+    @property
+    def takeover_pending(self) -> tuple[str, ...]:
+        return tuple(sorted(self._takeover_pending))
+
+    def _require_active(self, *, ready: bool) -> None:
+        if not self.is_active:
+            raise NotLeaderError(f"JobManager 当前角色为 {self.role.value}, 不允许协调写入")
+        if ready and not self._leader_ready:
+            raise NotLeaderError("JobManager 正在接管作业, 尚未开放写入")
 
     def register_worker(
         self,
@@ -133,6 +203,7 @@ class JobManager:
         incarnation_id: str = "legacy",
     ) -> WorkerNode:
         """注册 Worker 并返回当前资源对象。"""
+        self._require_active(ready=False)
         return self.registry.register(
             worker_id=worker_id,
             control_address=control_address,
@@ -153,6 +224,7 @@ class JobManager:
         total_slots: int,
     ) -> tuple[WorkerNode, bool, tuple[str, ...]]:
         """注册 Worker 进程，并在 incarnation 变化时处理旧进程承载的作业。"""
+        self._require_active(ready=False)
         try:
             previous = self.registry.get(worker_id)
         except WorkerNotFound:
@@ -196,26 +268,264 @@ class JobManager:
             await self._cancel_checkpoint_loop(run)
             async with run.checkpoint_lock:
                 await self._fail_run(run, reason, failed_task=failed_task)
+        await self._start_takeover_recoveries()
         return worker, restarted, tuple(run.job.job_id for run in affected_runs)
 
     def heartbeat(self, worker_id: str, at: datetime | None = None) -> WorkerNode:
         """接收 Worker 心跳。"""
+        self._require_active(ready=False)
         return self.registry.heartbeat(worker_id, at)
 
     def resources(self, now: datetime | None = None) -> tuple[ResourceView, ...]:
         """返回 Worker 资源快照。"""
         return self.registry.resource_view(now)
 
-    def health(self, now: datetime | None = None) -> dict[str, int | str]:
+    def health(self, now: datetime | None = None) -> dict[str, int | str | bool]:
         """返回 JobManager 健康和资源摘要。"""
         resource_view = self.resources(now)
         return {
             "status": "ok",
+            "role": self.role.value,
+            "coordinator_epoch": self.coordinator_epoch,
+            "leader_ready": self.leader_ready,
+            "takeover_pending": len(self._takeover_pending),
             "workers": len(resource_view),
             "healthy_workers": sum(view.healthy for view in resource_view),
             "jobs": len(self._runs),
             "running_jobs": sum(run.job.status is JobStatus.RUNNING for run in self._runs.values()),
         }
+
+    async def activate(self, coordinator_epoch: int) -> None:
+        """获得 lease 后以新 epoch 重建持久作业并进入接管状态。"""
+        if (
+            isinstance(coordinator_epoch, bool)
+            or not isinstance(coordinator_epoch, int)
+            or coordinator_epoch <= self.coordinator_epoch
+        ):
+            raise InvalidStateTransition("新 coordinator_epoch 必须严格递增")
+        async with self._leadership_lock:
+            await self._quiesce_background_tasks()
+            self.role = CoordinatorRole.STANDBY
+            self._leader_ready = False
+            self._activating = True
+            self.coordinator_epoch = coordinator_epoch
+            self.registry.clear()
+            self._takeover_pending.clear()
+            try:
+                stored_jobs = await self._read_persisted_jobs()
+                rebuilt: dict[str, JobRun] = {}
+                for stored in stored_jobs:
+                    run, recover = self._run_from_metadata(
+                        stored,
+                        coordinator_epoch,
+                    )
+                    rebuilt[run.job.job_id] = run
+                    if recover:
+                        self._takeover_pending.add(run.job.job_id)
+                self._runs = rebuilt
+                for job_id in sorted(rebuilt):
+                    run = self._runs[job_id]
+                    if job_id in self._takeover_pending:
+                        await self._prepare_takeover_transactions(run)
+                    await self._persist_run_metadata(run)
+            except Exception:
+                self.role = CoordinatorRole.PROTECTIVE
+                self._leader_ready = False
+                raise
+            finally:
+                self._activating = False
+            self.role = CoordinatorRole.ACTIVE
+            self._refresh_leader_ready()
+            await self._start_takeover_recoveries()
+
+    async def step_down(self, reason: str) -> None:
+        """失去可证明 lease 时立即停止后台协调并关闭 leader health。"""
+        self.role = CoordinatorRole.PROTECTIVE
+        self._leader_ready = False
+        async with self._leadership_lock:
+            for run in self._runs.values():
+                await self._cancel_checkpoint_loop(run)
+                await self._cancel_recovery_loop(run)
+            log_event(
+                logging.getLogger(__name__),
+                logging.WARNING,
+                "leader_step_down",
+                "JobManager 已进入保护模式",
+                component="job_manager",
+                coordinator_epoch=self.coordinator_epoch,
+                reason=reason,
+            )
+
+    async def become_standby(self) -> None:
+        """保护窗口结束后进入只读 standby。"""
+        if self.role is not CoordinatorRole.ACTIVE:
+            self.role = CoordinatorRole.STANDBY
+            self._leader_ready = False
+
+    async def _quiesce_background_tasks(self) -> None:
+        for run in self._runs.values():
+            await self._cancel_checkpoint_loop(run)
+            await self._cancel_recovery_loop(run)
+
+    async def _read_persisted_jobs(self) -> tuple[StoredJobMetadata, ...]:
+        repository = self.metadata_repository
+        if repository is None:
+            return ()
+        job_ids = await asyncio.to_thread(repository.list_jobs)
+        stored: list[StoredJobMetadata] = []
+        for job_id in job_ids:
+            stored.append(await asyncio.to_thread(repository.read_current, job_id))
+        return tuple(stored)
+
+    def _run_from_metadata(
+        self,
+        stored: StoredJobMetadata,
+        coordinator_epoch: int,
+    ) -> tuple[JobRun, bool]:
+        revision = stored.revision
+        if revision.coordinator_epoch >= coordinator_epoch:
+            raise InvalidStateTransition(
+                f"Job {revision.job_id} metadata epoch "
+                f"{revision.coordinator_epoch} 未低于新 lease epoch {coordinator_epoch}"
+            )
+        definition = _load_persisted_job_definition(revision.definition)
+        graph = StreamGraph(definition)
+        execution_graph = build_execution_graph(revision.job_id, graph)
+        normalized_guarantee = execution_graph.delivery_guarantee or DeliveryGuarantee.AT_LEAST_ONCE
+        if normalized_guarantee is not revision.delivery_guarantee:
+            raise InvalidStateTransition(
+                f"Job {revision.job_id} delivery guarantee 与 metadata 不一致"
+            )
+        recover = revision.status in {
+            JobStatus.DEPLOYING,
+            JobStatus.RUNNING,
+            JobStatus.RECOVERING,
+        }
+        status = JobStatus.RECOVERING if recover else revision.status
+        if status is JobStatus.FAILING:
+            status = JobStatus.FAILED
+        elif status is JobStatus.CANCELLING:
+            status = JobStatus.CANCELLED
+        job = Job(
+            job_id=revision.job_id,
+            name=definition.job.name,
+            status=status,
+            error=revision.last_failure,
+            created_at=revision.updated_at,
+            updated_at=revision.updated_at,
+        )
+        for task in execution_graph.tasks.values():
+            task.attempt_id = revision.attempt_id
+        execution = definition.execution
+        max_recovery_attempts = execution.restart.max_attempts if execution is not None else 0
+        run = JobRun(
+            job=job,
+            execution_graph=execution_graph,
+            definition=_serialize_job_definition(definition),
+            artifact=ArtifactDescriptor(
+                revision.job_id,
+                revision.artifact_sha256,
+                revision.artifact_size,
+            ),
+            attempt_id=revision.attempt_id,
+            coordinator_epoch=coordinator_epoch,
+            next_checkpoint_id=revision.next_checkpoint_id,
+            last_completed_checkpoint_id=revision.last_finalized_checkpoint_id,
+            last_decided_checkpoint_id=revision.last_decided_checkpoint_id,
+            last_finalized_checkpoint_id=revision.last_finalized_checkpoint_id,
+            checkpoint_interval=(
+                execution.checkpoint.interval_seconds if execution is not None else None
+            ),
+            checkpoint_timeout=(
+                execution.checkpoint.timeout_seconds if execution is not None else 30.0
+            ),
+            max_consecutive_checkpoint_failures=(
+                execution.checkpoint.max_consecutive_failures if execution is not None else 3
+            ),
+            max_recovery_attempts=(
+                max(1, max_recovery_attempts) if recover else max_recovery_attempts
+            ),
+            recovery_delay=(execution.restart.delay_seconds if execution is not None else 0.0),
+            recovery_attempts=revision.recovery_attempts,
+            last_failure=(
+                f"Leader takeover epoch={coordinator_epoch}; "
+                f"previous_status={revision.status.value}"
+                if recover
+                else revision.last_failure
+            ),
+            metadata_revision=revision.revision,
+            metadata_etag=stored.current_etag,
+        )
+        return run, recover
+
+    async def _prepare_takeover_transactions(self, run: JobRun) -> None:
+        store = self.checkpoint_store
+        coordinator = self.checkpoint_coordinator
+        if (
+            store is None
+            or coordinator is None
+            or run.execution_graph.delivery_guarantee is not DeliveryGuarantee.EXACTLY_ONCE
+        ):
+            return
+        decisions = store.unfinalized_decisions(run.job.job_id)
+        if len(decisions) > 1:
+            raise InvalidStateTransition(f"Job {run.job.job_id} 存在多个未完成 DECIDED checkpoint")
+        for decision in decisions:
+            await asyncio.to_thread(
+                coordinator.output_committer.finalize_transactions,
+                decision,
+                output_roots=run.execution_graph.sink_output_roots,
+            )
+            run.restore_manifest = _manifest_from_decision(decision)
+            run.last_decided_checkpoint_id = decision.checkpoint_id
+            run.next_checkpoint_id = max(
+                run.next_checkpoint_id,
+                decision.checkpoint_id + 1,
+            )
+        protected_pending_paths = {
+            transaction.pending_path
+            for decision in decisions
+            for snapshot in decision.snapshots
+            for transaction in snapshot.transactions
+        }
+        await asyncio.to_thread(
+            coordinator.output_committer.cleanup_orphans,
+            job_id=run.job.job_id,
+            output_roots=run.execution_graph.sink_output_roots,
+            protected_pending_paths=protected_pending_paths,
+        )
+
+    async def _start_takeover_recoveries(self) -> None:
+        if not self.is_active or not self._takeover_pending:
+            return
+        async with self._takeover_lock:
+            available = sum(worker.available_slots for worker in self.registry.healthy())
+            for job_id in sorted(self._takeover_pending):
+                run = self._runs[job_id]
+                existing = run.recovery_task
+                if existing is not None and not existing.done():
+                    continue
+                required = run.execution_graph.total_tasks
+                if available < required:
+                    continue
+                await self._request_recovery(
+                    run,
+                    f"Leader takeover epoch={self.coordinator_epoch}",
+                )
+                available -= required
+
+    def _finish_takeover(self, run: JobRun) -> None:
+        if run.job.status in {
+            JobStatus.RUNNING,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+            JobStatus.REJECTED,
+        }:
+            self._takeover_pending.discard(run.job.job_id)
+            self._refresh_leader_ready()
+
+    def _refresh_leader_ready(self) -> None:
+        self._leader_ready = self.is_active and not self._takeover_pending
 
     def get_job(self, job_id: str) -> Job:
         """查询作业；未知 ID 保留 KeyError 语义供 HTTP 层转换。"""
@@ -280,6 +590,7 @@ class JobManager:
         job_id: str | None = None,
     ) -> Job:
         """保存制品、调度并下游优先部署完整作业。"""
+        self._require_active(ready=True)
         resolved_job_id = job_id or uuid.uuid4().hex
         if resolved_job_id in self._runs:
             raise ControlPlaneError(f"作业 {resolved_job_id!r} 已存在")
@@ -290,7 +601,7 @@ class JobManager:
         run = JobRun(
             job=job,
             execution_graph=execution_graph,
-            definition=graph.definition.model_dump(mode="json", by_alias=True),
+            definition=_serialize_job_definition(graph.definition),
             coordinator_epoch=self.coordinator_epoch,
             checkpoint_interval=(
                 execution.checkpoint.interval_seconds if execution is not None else None
@@ -363,6 +674,7 @@ class JobManager:
 
     async def trigger_checkpoint(self, job_id: str) -> CheckpointManifest:
         """立即执行一次串行 Checkpoint，供周期任务和确定性测试复用。"""
+        self._require_active(ready=True)
         run = self._runs[job_id]
         coordinator = self.checkpoint_coordinator
         if run.checkpoint_interval is None or coordinator is None:
@@ -452,6 +764,7 @@ class JobManager:
                     run.execution_graph,
                     checkpoint_id=decision.checkpoint_id,
                     timeout=run.checkpoint_timeout,
+                    command_coordinator_epoch=run.coordinator_epoch,
                 )
             except Exception as exc:
                 run.consecutive_checkpoint_failures += 1
@@ -498,6 +811,13 @@ class JobManager:
 
     async def _persist_run_metadata(self, run: JobRun) -> None:
         """发布下一不可变 revision，并以当前 ETag CAS 推进 pointer。"""
+        if not self._activating:
+            self._require_active(ready=False)
+        if run.coordinator_epoch != self.coordinator_epoch:
+            raise NotLeaderError(
+                f"Job {run.job.job_id} epoch={run.coordinator_epoch} "
+                f"不等于当前 leader epoch={self.coordinator_epoch}"
+            )
         repository = self.metadata_repository
         artifact = run.artifact
         if repository is None or artifact is None:
@@ -567,6 +887,7 @@ class JobManager:
                 run.checkpoint_task = None
 
     async def _request_recovery(self, run: JobRun, reason: str) -> None:
+        self._require_active(ready=False)
         async with run.recovery_lock:
             if run.job.status in {
                 JobStatus.CANCELLING,
@@ -616,25 +937,7 @@ class JobManager:
                 and run.execution_graph.delivery_guarantee is DeliveryGuarantee.EXACTLY_ONCE
             ):
                 try:
-                    decisions = self.checkpoint_store.unfinalized_decisions(run.job.job_id)
-                    for decision in decisions:
-                        await asyncio.to_thread(
-                            self.checkpoint_coordinator.output_committer.finalize_transactions,
-                            decision,
-                            output_roots=run.execution_graph.sink_output_roots,
-                        )
-                    protected_pending_paths = {
-                        transaction.pending_path
-                        for decision in decisions
-                        for snapshot in decision.snapshots
-                        for transaction in snapshot.transactions
-                    }
-                    await asyncio.to_thread(
-                        self.checkpoint_coordinator.output_committer.cleanup_orphans,
-                        job_id=run.job.job_id,
-                        output_roots=run.execution_graph.sink_output_roots,
-                        protected_pending_paths=protected_pending_paths,
-                    )
+                    await self._prepare_takeover_transactions(run)
                 except Exception as exc:
                     await self._fail_run(
                         run,
@@ -642,14 +945,16 @@ class JobManager:
                     )
                     return
 
-            manifest = (
-                self.checkpoint_store.latest_manifest(
-                    run.job.job_id,
-                    expected_task_ids=set(run.execution_graph.tasks),
+            manifest = run.restore_manifest
+            if manifest is None:
+                manifest = (
+                    self.checkpoint_store.latest_manifest(
+                        run.job.job_id,
+                        expected_task_ids=set(run.execution_graph.tasks),
+                    )
+                    if self.checkpoint_store is not None
+                    else None
                 )
-                if self.checkpoint_store is not None
-                else None
-            )
             run.restore_manifest = manifest
             restored_checkpoint_id = manifest.checkpoint_id if manifest is not None else None
             if restored_checkpoint_id is not None:
@@ -734,15 +1039,18 @@ class JobManager:
                     run,
                     restored_checkpoint_id=restored_checkpoint_id,
                 )
+                self._finish_takeover(run)
                 return
 
             await self._fail_run(
                 run,
                 run.last_failure or f"恢复重试已耗尽: max_attempts={run.max_recovery_attempts}",
             )
+            self._finish_takeover(run)
         finally:
             if run.recovery_task is asyncio.current_task():
                 run.recovery_task = None
+            self._finish_takeover(run)
 
     async def _deploy_run_tasks(self, run: JobRun) -> None:
         """保持下游优先，同一 Source 的 subtasks 并发加入消费组。"""
@@ -775,6 +1083,7 @@ class JobManager:
                 raise first
 
     async def _deploy_task(self, run: JobRun, task: TaskInstance) -> None:
+        self._require_active(ready=False)
         task.transition(TaskStatus.DEPLOYING)
         worker = self.registry.get(task.worker_id or "")
         try:
@@ -823,6 +1132,7 @@ class JobManager:
 
     async def cancel_job(self, job_id: str) -> Job:
         """停止 RUNNING 作业并释放全部 slot。"""
+        self._require_active(ready=True)
         run = self._runs[job_id]
         await self._cancel_checkpoint_loop(run)
         await self._cancel_recovery_loop(run)
@@ -853,6 +1163,7 @@ class JobManager:
         coordinator_epoch: int = 0,
     ) -> Job:
         """汇总 Worker 任务状态；任一 FAILED 触发全作业失败清理。"""
+        self._require_active(ready=False)
         run = self._runs[job_id]
         task = run.execution_graph.tasks[task_id]
         if coordinator_epoch != run.coordinator_epoch:
@@ -908,6 +1219,8 @@ class JobManager:
 
     async def reconcile_worker_health(self, now: datetime | None = None) -> tuple[str, ...]:
         """将使用心跳超时 Worker 的运行作业标记失败并清理。"""
+        if not self.is_active:
+            return ()
         observed_at = now or datetime.now(UTC)
         healthy_ids = {worker.worker_id for worker in self.registry.healthy(observed_at)}
         failed_jobs: list[str] = []
@@ -944,6 +1257,7 @@ class JobManager:
 
     def download_artifact(self, job_id: str, sha256: str) -> bytes:
         """按 job_id 和摘要提供 Worker 下载内容，并在读取时复验摘要。"""
+        self._require_active(ready=False)
         run = self._runs[job_id]
         descriptor = run.artifact
         if descriptor is None or descriptor.sha256 != sha256:

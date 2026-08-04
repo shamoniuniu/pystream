@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import threading
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -23,17 +24,20 @@ from pystream.checkpoint import (
     LocalCheckpointStore,
     S3CheckpointStore,
     TaskSnapshotDescriptor,
+    TransactionDescriptor,
 )
 from pystream.control import (
     ArtifactError,
     CheckpointCoordinationError,
     ControlPlaneError,
+    CoordinatorRole,
     DeploymentError,
     InsufficientSlots,
     JobManager,
     JobMetadataRevision,
     JobStatus,
     LocalArtifactRepository,
+    NotLeaderError,
     StoredJobMetadata,
     TaskDeployment,
     TaskStatus,
@@ -63,6 +67,7 @@ class RecordingGateway:
         self.deployment_attempts: list[tuple[str, int, tuple[TaskSnapshotDescriptor, ...]]] = []
         self.stop_calls: list[tuple[str, str]] = []
         self.checkpoint_calls: list[tuple[str, str, int]] = []
+        self.complete_coordinates: list[tuple[str, int, int]] = []
 
     async def deploy_task(self, worker: WorkerNode, deployment: TaskDeployment) -> None:
         call_number = len(self.deploy_calls) + 1
@@ -137,8 +142,9 @@ class RecordingGateway:
         checkpoint_id: int,
         coordinator_epoch: int = 0,
     ) -> None:
-        del worker, attempt_id, coordinator_epoch
+        del worker
         self.checkpoint_calls.append(("complete", task_id, checkpoint_id))
+        self.complete_coordinates.append((task_id, attempt_id, coordinator_epoch))
 
     async def abort_checkpoint(
         self,
@@ -168,6 +174,31 @@ class RecordingGateway:
             operator_id=task_id.rsplit(":", 2)[1],
             state={"kind": "test", "snapshot": "{}"},
         )
+
+
+class RecordingOutputCommitter:
+    def __init__(self) -> None:
+        self.finalized: list[int] = []
+        self.published: list[int] = []
+
+    def finalize_transactions(self, decision, *, output_roots) -> None:
+        del output_roots
+        self.finalized.append(decision.checkpoint_id)
+
+    def publish(self, decision, *, output_roots) -> tuple[str, ...]:
+        del output_roots
+        self.published.append(decision.checkpoint_id)
+        return (f"/manifests/checkpoint-{decision.checkpoint_id}.json",)
+
+    def cleanup_orphans(
+        self,
+        *,
+        job_id: str,
+        output_roots,
+        protected_pending_paths,
+    ) -> tuple[str, ...]:
+        del job_id, output_roots, protected_pending_paths
+        return ()
 
 
 class SourceBarrierGateway(RecordingGateway):
@@ -457,6 +488,285 @@ async def test_jobmanager并发状态发布按revision串行化(
     assert run.metadata_revision == 3
     await manager.cancel_job("job-metadata-lock")
     await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_jobmanager接管持久作业并等待worker重注册(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    metadata = RecordingMetadataRepository()
+    artifact_repository = LocalArtifactRepository(tmp_path / "artifacts")
+    checkpoint_store = S3CheckpointStore(MemoryObjectStore())
+    first_gateway = RecordingGateway()
+    first_gateway.checkpoint_store = checkpoint_store
+    first = JobManager(
+        artifact_repository,
+        first_gateway,
+        checkpoint_store=checkpoint_store,
+        metadata_repository=metadata,
+    )
+    for index in range(2):
+        first.register_worker(
+            f"worker-{index}",
+            f"http://worker-{index}",
+            f"worker-{index}",
+            9000,
+            1,
+            incarnation_id=f"old-{index}",
+        )
+    graph = checkpoint_graph(two_task_graph)
+    await first.submit_job(graph, b"bundle", job_id="job-takeover")
+    persisted_operators = metadata.revisions[-1].definition["operators"]
+    assert isinstance(persisted_operators, list)
+    assert all(
+        isinstance(operator, dict) and "emit_mode" not in operator
+        for operator in persisted_operators
+    )
+    metadata.revisions[-1] = replace(
+        metadata.revisions[-1],
+        definition=graph.definition.model_dump(
+            mode="json",
+            by_alias=True,
+        ),
+    )
+    await first.step_down("simulated lease loss")
+
+    second_gateway = RecordingGateway()
+    second_gateway.checkpoint_store = checkpoint_store
+    second = JobManager(
+        artifact_repository,
+        second_gateway,
+        checkpoint_store=checkpoint_store,
+        metadata_repository=metadata,
+        role=CoordinatorRole.STANDBY,
+    )
+
+    await second.activate(1)
+
+    assert second.is_active
+    assert not second.leader_ready
+    assert second.takeover_pending == ("job-takeover",)
+    assert second.get_job("job-takeover").status is JobStatus.RECOVERING
+    assert metadata.revisions[-1].coordinator_epoch == 1
+
+    await second.register_worker_process(
+        "worker-0",
+        "new-0",
+        "http://worker-0",
+        "worker-0",
+        9000,
+        1,
+    )
+    assert second._runs["job-takeover"].recovery_task is None
+    await second.register_worker_process(
+        "worker-1",
+        "new-1",
+        "http://worker-1",
+        "worker-1",
+        9000,
+        1,
+    )
+    recovery = second._runs["job-takeover"].recovery_task
+    assert recovery is not None
+    await asyncio.wait_for(recovery, timeout=2)
+
+    run = second._runs["job-takeover"]
+    assert run.job.status is JobStatus.RUNNING
+    assert run.attempt_id == 1
+    assert run.coordinator_epoch == 1
+    assert second.leader_ready
+    assert second.takeover_pending == ()
+    assert {item.coordinator_epoch for item in second_gateway.deployments} == {1}
+    assert {item.task.attempt_id for item in second_gateway.deployments} == {1}
+    await first.close()
+    await second.close()
+
+
+@pytest.mark.asyncio
+async def test_jobmanager接管decided_backlog并以新epoch完成恢复(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    metadata = RecordingMetadataRepository()
+    artifact_repository = LocalArtifactRepository(tmp_path / "artifacts")
+    checkpoint_store = S3CheckpointStore(MemoryObjectStore())
+    first_gateway = RecordingGateway()
+    first_gateway.checkpoint_store = checkpoint_store
+    first = JobManager(
+        artifact_repository,
+        first_gateway,
+        checkpoint_store=checkpoint_store,
+        metadata_repository=metadata,
+    )
+    for index in range(2):
+        first.register_worker(
+            f"worker-{index}",
+            f"http://worker-{index}",
+            f"worker-{index}",
+            9000,
+            1,
+        )
+    graph = checkpoint_graph(
+        two_task_graph,
+        delivery_guarantee=DeliveryGuarantee.EXACTLY_ONCE,
+    )
+    await first.submit_job(graph, b"bundle", job_id="job-decided-takeover")
+    execution_graph = first.get_execution_graph("job-decided-takeover")
+    snapshots: list[TaskSnapshotDescriptor] = []
+    sink_task_ids: set[str] = set()
+    for task in execution_graph.tasks.values():
+        transactions = ()
+        if task.operator_type is OperatorType.SINK:
+            sink_task_ids.add(task.task_id)
+            transactions = (
+                TransactionDescriptor(
+                    job_id=task.job_id,
+                    checkpoint_id=1,
+                    attempt_id=0,
+                    coordinator_epoch=0,
+                    task_id=task.task_id,
+                    operator_id=task.operator_id,
+                    transaction_id="prepared-1",
+                    pending_path=f"{task.job_id}/{task.task_id}/pending-1.csv",
+                    sha256="0" * 64,
+                    size=0,
+                ),
+            )
+        snapshots.append(
+            checkpoint_store.write_task_snapshot(
+                job_id=task.job_id,
+                checkpoint_id=1,
+                attempt_id=0,
+                coordinator_epoch=0,
+                task_id=task.task_id,
+                operator_id=task.operator_id,
+                state={"kind": "test", "snapshot": "{}"},
+                transactions=transactions,
+            )
+        )
+    checkpoint_store.decide_checkpoint(
+        job_id="job-decided-takeover",
+        checkpoint_id=1,
+        attempt_id=0,
+        coordinator_epoch=0,
+        expected_task_ids=set(execution_graph.tasks),
+        expected_transaction_task_ids=sink_task_ids,
+        snapshots=tuple(snapshots),
+    )
+    first_run = first._runs["job-decided-takeover"]
+    first_run.last_decided_checkpoint_id = 1
+    first_run.next_checkpoint_id = 2
+    await first._persist_run_metadata(first_run)
+    assert metadata.revisions[-1].finalize_backlog == (1,)
+    await first.step_down("simulated post-decision leader loss")
+
+    second_gateway = RecordingGateway()
+    second_gateway.checkpoint_store = checkpoint_store
+    second = JobManager(
+        artifact_repository,
+        second_gateway,
+        checkpoint_store=checkpoint_store,
+        metadata_repository=metadata,
+        role=CoordinatorRole.STANDBY,
+    )
+    committer = RecordingOutputCommitter()
+    assert second.checkpoint_coordinator is not None
+    second.checkpoint_coordinator.output_committer = committer
+    await second.activate(1)
+
+    for index in range(2):
+        await second.register_worker_process(
+            f"worker-{index}",
+            f"new-{index}",
+            f"http://worker-{index}",
+            f"worker-{index}",
+            9000,
+            1,
+        )
+    recovery = second._runs["job-decided-takeover"].recovery_task
+    assert recovery is not None
+    await asyncio.wait_for(recovery, timeout=2)
+
+    run = second._runs["job-decided-takeover"]
+    assert checkpoint_store.unfinalized_decisions("job-decided-takeover") == ()
+    assert run.job.status is JobStatus.RUNNING
+    assert run.last_decided_checkpoint_id == 1
+    assert run.last_finalized_checkpoint_id == 1
+    assert run.next_checkpoint_id == 2
+    assert metadata.revisions[-1].finalize_backlog == ()
+    assert committer.published == [1]
+    assert all(
+        deployment.restore_descriptors
+        and {item.checkpoint_id for item in deployment.restore_descriptors} == {1}
+        for deployment in second_gateway.deployments
+    )
+    assert {
+        (attempt_id, coordinator_epoch)
+        for _, attempt_id, coordinator_epoch in second_gateway.complete_coordinates
+    } == {(1, 1)}
+    await first.close()
+    await second.close()
+
+
+@pytest.mark.asyncio
+async def test_jobmanager接管时为终态作业发布新epoch(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    metadata = RecordingMetadataRepository()
+    artifact_repository = LocalArtifactRepository(tmp_path / "artifacts")
+    first = JobManager(
+        artifact_repository,
+        RecordingGateway(),
+        metadata_repository=metadata,
+    )
+    for index in range(2):
+        first.register_worker(
+            f"worker-{index}",
+            f"http://worker-{index}",
+            f"worker-{index}",
+            9000,
+            1,
+        )
+    await first.submit_job(two_task_graph, b"bundle", job_id="job-terminal")
+    await first.cancel_job("job-terminal")
+    terminal_revision = metadata.revisions[-1].revision
+    await first.step_down("simulated lease loss")
+
+    second = JobManager(
+        artifact_repository,
+        RecordingGateway(),
+        metadata_repository=metadata,
+        role=CoordinatorRole.STANDBY,
+    )
+    await second.activate(1)
+
+    assert second.get_job("job-terminal").status is JobStatus.CANCELLED
+    assert second.takeover_pending == ()
+    assert second.leader_ready
+    assert metadata.revisions[-1].revision == terminal_revision + 1
+    assert metadata.revisions[-1].coordinator_epoch == 1
+    assert metadata.revisions[-1].status is JobStatus.CANCELLED
+    await first.close()
+    await second.close()
+
+
+@pytest.mark.asyncio
+async def test_jobmanager_standby拒绝协调写入(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    manager = JobManager(
+        LocalArtifactRepository(tmp_path / "artifacts"),
+        RecordingGateway(),
+        role=CoordinatorRole.STANDBY,
+    )
+
+    with pytest.raises(NotLeaderError, match="STANDBY"):
+        manager.register_worker("worker-1", "http://worker-1", "worker-1", 9000, 1)
+    with pytest.raises(NotLeaderError, match="STANDBY"):
+        await manager.submit_job(two_task_graph, b"bundle", job_id="job-standby")
 
 
 @pytest.mark.asyncio
