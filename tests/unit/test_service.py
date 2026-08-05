@@ -10,6 +10,18 @@ from aiohttp import web
 import pystream.service as service
 
 
+def test_jobmanager_test_hooks_default_off_and_environment_opt_in(monkeypatch) -> None:
+    parser = service.build_parser()
+    assert parser.parse_args(["jobmanager"]).enable_test_hooks is False
+
+    monkeypatch.setenv("PYSTREAM_ENABLE_TEST_HOOKS", "true")
+    assert service.build_parser().parse_args(["jobmanager"]).enable_test_hooks is True
+
+    monkeypatch.setenv("PYSTREAM_ENABLE_TEST_HOOKS", "invalid")
+    with pytest.raises(ValueError, match="boolean flag"):
+        service.build_parser()
+
+
 def test_object_store_configuration_reads_credentials_only_from_files(
     tmp_path: Path,
     monkeypatch,

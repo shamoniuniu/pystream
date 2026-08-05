@@ -1,0 +1,1516 @@
+{
+  "schema_version": 1,
+  "profile": "core",
+  "started_at": "2026-08-05T05:15:54.327861+00:00",
+  "scenarios": [
+    {
+      "name": "baseline",
+      "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+      "status_before": {
+        "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+        "name": "advanced-exactly-once",
+        "status": "RUNNING",
+        "coordinator_epoch": 0,
+        "metadata_revision": 1,
+        "error": null,
+        "attempt": 0,
+        "recovery": {
+          "attempts": 0,
+          "max_attempts": 6,
+          "last_failure": null,
+          "last_completed_at": null
+        },
+        "checkpoint": {
+          "next_id": 1,
+          "last_completed_id": null,
+          "last_decided_id": null,
+          "last_finalized_id": null,
+          "consecutive_failures": 0
+        },
+        "tasks": [
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:words:0",
+            "operator_id": "words",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:words:1",
+            "operator_id": "words",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:normalize:0",
+            "operator_id": "normalize",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:normalize:1",
+            "operator_id": "normalize",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:by_word:0",
+            "operator_id": "by_word",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:by_word:1",
+            "operator_id": "by_word",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:word_totals:0",
+            "operator_id": "word_totals",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:word_totals:1",
+            "operator_id": "word_totals",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:by_count:0",
+            "operator_id": "by_count",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:count_distribution:0",
+            "operator_id": "count_distribution",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:output:0",
+            "operator_id": "output",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 3,
+            "error": null
+          }
+        ]
+      },
+      "checkpoint": {
+        "schema_version": 2,
+        "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+        "checkpoint_id": 1,
+        "attempt_id": 0,
+        "coordinator_epoch": 0,
+        "created_at": "2026-08-05T05:18:33.971169+00:00",
+        "snapshots": [
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:by_count:0",
+            "operator_id": "by_count",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/55ecab541fd34464435e1f93dae4a7dd6e416863c120d6b5907da4b3aaea21e5.json",
+            "sha256": "d04957e4e796540d753f4a3aad1afadae6c502d7902809b2ba588da104fd1e32",
+            "size": 514,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:by_word:0",
+            "operator_id": "by_word",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/a1118c84ed380b5a3e46a4dbdc00449b5f42e3aa9a027d40235967d76dd70301.json",
+            "sha256": "41b3d09a6421f8e6302a3ca28097561f9622badbd074f0ada32b433d0c3a65ae",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:by_word:1",
+            "operator_id": "by_word",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/fa6e0e1a7310d2a7e97f2e4c7d4caa3f050a2c0145284de65fd04ea508c820c2.json",
+            "sha256": "289597838868e5dc674f3352103c88144882781203783b1e13334f33e7220cb5",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:count_distribution:0",
+            "operator_id": "count_distribution",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/cfa294c702ca154b4a511c106d33f269560082d5655b4f577b28d33a996f771e.json",
+            "sha256": "8ddb41c2a684328a3e0401f441960d44f732b75b5482bbac5ae62de3e8e9f444",
+            "size": 1301,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:normalize:0",
+            "operator_id": "normalize",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/7721790e63c31d66e7519b97e663d1478bbcd20685161df2b7976a44b2d1379d.json",
+            "sha256": "461170518515db3795c1c8290d97b481d391b7a93e8be67986b04bd189116338",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:normalize:1",
+            "operator_id": "normalize",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/d1c4bf55c0a7185d2404165690c875565220ad02a1238adad450269d94d38065.json",
+            "sha256": "cfe867447e28484a495c0d4d559101a9d06e7fbd98697b49f9318784171f9216",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:output:0",
+            "operator_id": "output",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/003d658549a23694caedb03f488ad09bdb72b6fbd442d5c234309e69d8d4b997.json",
+            "sha256": "caf7b4482299faebff9f53cb4e1e445ac3e11cb3b35d05c9c252156e7cef9962",
+            "size": 961,
+            "coordinator_epoch": 0,
+            "transactions": [
+              {
+                "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+                "checkpoint_id": 1,
+                "attempt_id": 0,
+                "coordinator_epoch": 0,
+                "task_id": "c3942d1bd04548c4b009cb6944ab485c:output:0",
+                "operator_id": "output",
+                "transaction_id": "bdb0b7e5cdf34c63955f2197e62c029d",
+                "pending_path": "c3942d1bd04548c4b009cb6944ab485c/output/pending/attempt-00000000/tx-bdb0b7e5cdf34c63955f2197e62c029d/part-00000.csv",
+                "sha256": "06382fc05c83ac343a0d66591bb4fdf8269cb3217f42e7d0301e89097d58f3f4",
+                "size": 48
+              }
+            ]
+          },
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/7a71c7a17cf42f03f9ee53c25a0f7379d9ac706692db142aea5a40ae4fdd85ff.json",
+            "sha256": "afa621bf186cbf67ac3cad12448f6af07405f46814f4b23d2d57b85edac24a5c",
+            "size": 634,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:word_totals:0",
+            "operator_id": "word_totals",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/e2541c28770bc8c9816b4710d86779e1cabd12493a1cb9a1a1a01c2128a16c3f.json",
+            "sha256": "7a4d29e2bdd08bcd3fe366b1b0fce173e5761083ae5ea5ebf01a9dac137b574b",
+            "size": 838,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:word_totals:1",
+            "operator_id": "word_totals",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/be85367388b75d3f1af4a8d30ca030a5afea3e1d2e3fffb9449d8052b3fc5796.json",
+            "sha256": "54430f98f936c5d6fb8492fbf62da0c0e56ba28d6881611e9e6965c8a35b3cbe",
+            "size": 1422,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:words:0",
+            "operator_id": "words",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/f49bfaad3838f2956a37f0a55d8eda6571c059c10316e9409d8a371547701cd4.json",
+            "sha256": "cf875e8e37eecd306dbe0f987f9d78d82276643e57976bfcdd8c52b487d955f3",
+            "size": 572,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+            "checkpoint_id": 1,
+            "attempt_id": 0,
+            "task_id": "c3942d1bd04548c4b009cb6944ab485c:words:1",
+            "operator_id": "words",
+            "relative_path": "pystream/checkpoints/c3942d1bd04548c4b009cb6944ab485c/00000000000000000001/attempts/00000000/tasks/3ccbf852ee84e0f36349a5f06647cff1eac6ed244f0a461fa1b9794c850aa3c7.json",
+            "sha256": "65a47f7ca6ce407a8f4698070e7e3e3131ff71a8c3b3605762415f6b2517f2ec",
+            "size": 572,
+            "coordinator_epoch": 0,
+            "transactions": []
+          }
+        ]
+      },
+      "verification": {
+        "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+        "status": "RUNNING",
+        "attempt": 0,
+        "coordinator_epoch": 0,
+        "checkpoint": {
+          "next_id": 2,
+          "last_completed_id": 1,
+          "last_decided_id": 1,
+          "last_finalized_id": 1,
+          "consecutive_failures": 0
+        },
+        "visible_rows": [
+          {
+            "window_end": "2026/07/29T00:00:05",
+            "count": 1,
+            "word_count": 1,
+            "occurrences": 1
+          },
+          {
+            "window_end": "2026/07/29T00:00:05",
+            "count": 2,
+            "word_count": 1,
+            "occurrences": 1
+          }
+        ],
+        "manifest_checkpoint_ids": [
+          1
+        ],
+        "kafka_offsets": [
+          {
+            "partition": 0,
+            "committed_offset": 3,
+            "end_offset": 3,
+            "lag": 0
+          },
+          {
+            "partition": 1,
+            "committed_offset": 2,
+            "end_offset": 2,
+            "lag": 0
+          }
+        ],
+        "pending_transactions": 1,
+        "committed_output_exact": true,
+        "semantics": "exactly-once"
+      }
+    },
+    {
+      "name": "before_barrier",
+      "job_id": "65ce9e5f42e346969a695260b82a27f9",
+      "status_before": {
+        "job_id": "65ce9e5f42e346969a695260b82a27f9",
+        "name": "advanced-exactly-once",
+        "status": "RUNNING",
+        "coordinator_epoch": 0,
+        "metadata_revision": 1,
+        "error": null,
+        "attempt": 0,
+        "recovery": {
+          "attempts": 0,
+          "max_attempts": 6,
+          "last_failure": null,
+          "last_completed_at": null
+        },
+        "checkpoint": {
+          "next_id": 1,
+          "last_completed_id": null,
+          "last_decided_id": null,
+          "last_finalized_id": null,
+          "consecutive_failures": 0
+        },
+        "tasks": [
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:words:0",
+            "operator_id": "words",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:words:1",
+            "operator_id": "words",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:normalize:0",
+            "operator_id": "normalize",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:normalize:1",
+            "operator_id": "normalize",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:by_word:0",
+            "operator_id": "by_word",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:by_word:1",
+            "operator_id": "by_word",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:word_totals:0",
+            "operator_id": "word_totals",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:word_totals:1",
+            "operator_id": "word_totals",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:by_count:0",
+            "operator_id": "by_count",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:count_distribution:0",
+            "operator_id": "count_distribution",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:output:0",
+            "operator_id": "output",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 3,
+            "error": null
+          }
+        ]
+      },
+      "hook_reached": {
+        "generation": 1,
+        "hook": "before_barrier",
+        "status": "REACHED",
+        "action": null,
+        "context": {
+          "checkpoint_id": 1,
+          "attempt_id": 0,
+          "coordinator_epoch": 0
+        }
+      },
+      "worker_failure": {
+        "failure": "worker",
+        "profile": "core",
+        "job_id": "65ce9e5f42e346969a695260b82a27f9",
+        "operator_id": "word_totals",
+        "worker_id": "worker-1",
+        "service": "worker-1",
+        "container_id": "9827b31b5fd462c5f23648030ee53b0fe95334b0c9c4cb50169055ae3fe8ca25",
+        "before": {
+          "restart_count": 0,
+          "started_at": "2026-08-05T05:16:49.355803138Z",
+          "running": true
+        },
+        "injected_at": "2026-08-05T05:18:56.314525+00:00"
+      },
+      "recovery_seconds": 13.870473199989647,
+      "status_after_recovery": {
+        "job_id": "65ce9e5f42e346969a695260b82a27f9",
+        "name": "advanced-exactly-once",
+        "status": "RUNNING",
+        "coordinator_epoch": 0,
+        "metadata_revision": 7,
+        "error": null,
+        "attempt": 1,
+        "recovery": {
+          "attempts": 1,
+          "max_attempts": 6,
+          "last_failure": "Checkpoint \u8fde\u7eed\u5931\u8d25\u8fbe\u5230\u4e0a\u9650: 1; last_error=CheckpointCoordinationError: Checkpoint 1 \u534f\u8c03\u5931\u8d25: CheckpointTestHookError: Checkpoint test hook 'before_barrier' requested deterministic failure; abort errors: 65ce9e5f42e346969a695260b82a27f9:word_totals:0: ClientConnectorDNSError: Cannot connect to host worker-1:8081 ssl:<ssl.SSLContext object at 0x7788de5fb9b0> [Name or service not known]; 65ce9e5f42e346969a695260b82a27f9:by_count:0: ClientConnectorDNSError: Cannot connect to host worker-1:8081 ssl:<ssl.SSLContext object at 0x7788de5fb9b0> [Name or service not known]; 65ce9e5f42e346969a695260b82a27f9:normalize:1: ClientConnectorDNSError: Cannot connect to host worker-1:8081 ssl:<ssl.SSLContext object at 0x7788de5fb9b0> [Name or service not known]; 65ce9e5f42e346969a695260b82a27f9:words:0: ClientConnectorDNSError: Cannot connect to host worker-1:8081 ssl:<ssl.SSLContext object at 0x7788de5fb9b0> [Name or service not known]",
+          "last_completed_at": "2026-08-05T05:19:09.186624+00:00"
+        },
+        "checkpoint": {
+          "next_id": 2,
+          "last_completed_id": null,
+          "last_decided_id": null,
+          "last_finalized_id": null,
+          "consecutive_failures": 0
+        },
+        "tasks": [
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:words:0",
+            "operator_id": "words",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:words:1",
+            "operator_id": "words",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:normalize:0",
+            "operator_id": "normalize",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:normalize:1",
+            "operator_id": "normalize",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:by_word:0",
+            "operator_id": "by_word",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:by_word:1",
+            "operator_id": "by_word",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:word_totals:0",
+            "operator_id": "word_totals",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:word_totals:1",
+            "operator_id": "word_totals",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:by_count:0",
+            "operator_id": "by_count",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:count_distribution:0",
+            "operator_id": "count_distribution",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:output:0",
+            "operator_id": "output",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 3,
+            "error": null
+          }
+        ]
+      },
+      "checkpoint_after_recovery": {
+        "schema_version": 2,
+        "job_id": "65ce9e5f42e346969a695260b82a27f9",
+        "checkpoint_id": 2,
+        "attempt_id": 1,
+        "coordinator_epoch": 0,
+        "created_at": "2026-08-05T05:19:09.818278+00:00",
+        "snapshots": [
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:by_count:0",
+            "operator_id": "by_count",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/ee7fa56e80586028968b53f3e3c685cad8530606957be3d5fceca2dfe85d8e81.json",
+            "sha256": "357d3cbd47162450510438385c922426a1758394eca90864b64abfcbf2b60168",
+            "size": 514,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:by_word:0",
+            "operator_id": "by_word",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/f1c98952db75c1f0430239581b390d8492c540822a46be6e52470a5f79c343b4.json",
+            "sha256": "222dea9f18f0c38f16ad6ed1a42f301ea3a482643c58964dd53a6c5dd233b700",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:by_word:1",
+            "operator_id": "by_word",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/dde8f0a13915cb9f9f7664bab14825b2bcd009ace662fdf244b3edc97ef9fd54.json",
+            "sha256": "114689a8130ab8f608973ef391fe505148a4b9aa1635dba7415805ee2cdb60a2",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:count_distribution:0",
+            "operator_id": "count_distribution",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/9696e0ec02a0a61897db4fb8bc062051368dc1fbe9d6f23b8f7c6403953ff5c4.json",
+            "sha256": "eb20be577c3d670c77bbbde6dbeca63f864dd98d2aa6cef5f849881d582bf028",
+            "size": 1301,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:normalize:0",
+            "operator_id": "normalize",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/4f98feee7a6a4972af07c4e07461254c5fa5499777468328d35ff050685070fb.json",
+            "sha256": "087ea69cc83f23692849f3c52b4482d9887651e912c7b241b4fc543473ab2cfe",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:normalize:1",
+            "operator_id": "normalize",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/94b51a91702352a9864191f1a3299e0d2068c60e9d7f0f230ca4f3b7a80ded9d.json",
+            "sha256": "6cb43acdb0f3253564cbd9cd3c5c0e1519f9f4c52f84c8471b3b1d8686d61573",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:output:0",
+            "operator_id": "output",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/d3a2a29f8948b5f1272d89c876794adb02c57e6c907873c93c1c8e7ee4956bf6.json",
+            "sha256": "b258230bb648fcf6527f15b2e23f55dbca9e8593dfcb59aeb807f27c2394b2ff",
+            "size": 961,
+            "coordinator_epoch": 0,
+            "transactions": [
+              {
+                "job_id": "65ce9e5f42e346969a695260b82a27f9",
+                "checkpoint_id": 2,
+                "attempt_id": 1,
+                "coordinator_epoch": 0,
+                "task_id": "65ce9e5f42e346969a695260b82a27f9:output:0",
+                "operator_id": "output",
+                "transaction_id": "b93b5040f38b4094a0ae41977c71d1c9",
+                "pending_path": "65ce9e5f42e346969a695260b82a27f9/output/pending/attempt-00000001/tx-b93b5040f38b4094a0ae41977c71d1c9/part-00000.csv",
+                "sha256": "06382fc05c83ac343a0d66591bb4fdf8269cb3217f42e7d0301e89097d58f3f4",
+                "size": 48
+              }
+            ]
+          },
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/bbecaea227ffbdc942d614da7fa51c5d40a7f6b48a17b55474438b07b44bafc3.json",
+            "sha256": "e65e4af14cdaa32f8c85e4f9cc57062971aa02716cc0e9a019c2e039582a3516",
+            "size": 634,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:word_totals:0",
+            "operator_id": "word_totals",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/af7d34e1a775fdb9c4b7dbfcb60f8b0bfa3217ab206bf0313f4eaf5595181c1d.json",
+            "sha256": "f4b0bfdc411e1675ea4493ac40a50737ef8217bc2d50d5394a2904a69b723053",
+            "size": 838,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:word_totals:1",
+            "operator_id": "word_totals",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/eee1182e23d464040c8da2d70028c2af1cdd5574527df585152a5ac1b699b777.json",
+            "sha256": "3e822fffe6d7f0c78c694819211000ecfbcd605e5b74b1c7a550079e6c9afb25",
+            "size": 1422,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:words:0",
+            "operator_id": "words",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/964ba4a6882252a4a2a927e72f734b808f8a5c724a69adace565352dd29083ab.json",
+            "sha256": "d810763039a15ee946f1505697fc0c0545fc8808f23266bc3e0443df77e76d6f",
+            "size": 572,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "65ce9e5f42e346969a695260b82a27f9",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "65ce9e5f42e346969a695260b82a27f9:words:1",
+            "operator_id": "words",
+            "relative_path": "pystream/checkpoints/65ce9e5f42e346969a695260b82a27f9/00000000000000000002/attempts/00000001/tasks/4000385c040c73b9624152e9c6058c61b2fcbdff3a1ce1e103e3680ddd038ada.json",
+            "sha256": "b7bf79e6d2eac0a8c92a199de919fdabab0c4123f2849c2d15b99e4d29675406",
+            "size": 572,
+            "coordinator_epoch": 0,
+            "transactions": []
+          }
+        ]
+      },
+      "verification": {
+        "job_id": "65ce9e5f42e346969a695260b82a27f9",
+        "status": "RUNNING",
+        "attempt": 1,
+        "coordinator_epoch": 0,
+        "checkpoint": {
+          "next_id": 3,
+          "last_completed_id": 2,
+          "last_decided_id": 2,
+          "last_finalized_id": 2,
+          "consecutive_failures": 0
+        },
+        "visible_rows": [
+          {
+            "window_end": "2026/07/29T00:00:05",
+            "count": 1,
+            "word_count": 1,
+            "occurrences": 1
+          },
+          {
+            "window_end": "2026/07/29T00:00:05",
+            "count": 2,
+            "word_count": 1,
+            "occurrences": 1
+          }
+        ],
+        "manifest_checkpoint_ids": [
+          2
+        ],
+        "kafka_offsets": [
+          {
+            "partition": 0,
+            "committed_offset": 3,
+            "end_offset": 3,
+            "lag": 0
+          },
+          {
+            "partition": 1,
+            "committed_offset": 2,
+            "end_offset": 2,
+            "lag": 0
+          }
+        ],
+        "pending_transactions": 1,
+        "committed_output_exact": true,
+        "semantics": "exactly-once"
+      },
+      "committed_output_diff_rows": 0
+    },
+    {
+      "name": "before_decision",
+      "job_id": "6945b54b621044beaf1cf814a4114669",
+      "status_before": {
+        "job_id": "6945b54b621044beaf1cf814a4114669",
+        "name": "advanced-exactly-once",
+        "status": "RUNNING",
+        "coordinator_epoch": 0,
+        "metadata_revision": 1,
+        "error": null,
+        "attempt": 0,
+        "recovery": {
+          "attempts": 0,
+          "max_attempts": 6,
+          "last_failure": null,
+          "last_completed_at": null
+        },
+        "checkpoint": {
+          "next_id": 1,
+          "last_completed_id": null,
+          "last_decided_id": null,
+          "last_finalized_id": null,
+          "consecutive_failures": 0
+        },
+        "tasks": [
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:words:0",
+            "operator_id": "words",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:words:1",
+            "operator_id": "words",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:normalize:0",
+            "operator_id": "normalize",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:normalize:1",
+            "operator_id": "normalize",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:by_word:0",
+            "operator_id": "by_word",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:by_word:1",
+            "operator_id": "by_word",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:word_totals:0",
+            "operator_id": "word_totals",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:word_totals:1",
+            "operator_id": "word_totals",
+            "subtask": 1,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:by_count:0",
+            "operator_id": "by_count",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:count_distribution:0",
+            "operator_id": "count_distribution",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:output:0",
+            "operator_id": "output",
+            "subtask": 0,
+            "attempt_id": 0,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 3,
+            "error": null
+          }
+        ]
+      },
+      "hook_reached": {
+        "generation": 2,
+        "hook": "before_decision",
+        "status": "REACHED",
+        "action": null,
+        "context": {
+          "checkpoint_id": 1,
+          "attempt_id": 0,
+          "coordinator_epoch": 0
+        }
+      },
+      "worker_failure": {
+        "failure": "worker",
+        "profile": "core",
+        "job_id": "6945b54b621044beaf1cf814a4114669",
+        "operator_id": "word_totals",
+        "worker_id": "worker-1",
+        "service": "worker-1",
+        "container_id": "9827b31b5fd462c5f23648030ee53b0fe95334b0c9c4cb50169055ae3fe8ca25",
+        "before": {
+          "restart_count": 1,
+          "started_at": "2026-08-05T05:19:03.008988524Z",
+          "running": true
+        },
+        "injected_at": "2026-08-05T05:19:41.659459+00:00"
+      },
+      "recovery_seconds": 15.598088200000348,
+      "status_after_recovery": {
+        "job_id": "6945b54b621044beaf1cf814a4114669",
+        "name": "advanced-exactly-once",
+        "status": "RUNNING",
+        "coordinator_epoch": 0,
+        "metadata_revision": 7,
+        "error": null,
+        "attempt": 1,
+        "recovery": {
+          "attempts": 1,
+          "max_attempts": 6,
+          "last_failure": "Checkpoint \u8fde\u7eed\u5931\u8d25\u8fbe\u5230\u4e0a\u9650: 1; last_error=CheckpointCoordinationError: Checkpoint 1 \u534f\u8c03\u5931\u8d25: CheckpointTestHookError: Checkpoint test hook 'before_decision' requested deterministic failure; abort errors: 6945b54b621044beaf1cf814a4114669:words:1: WorkerTaskError: Worker Checkpoint \u8bf7\u6c42\u5931\u8d25 500: 500 Internal Server Error\n\nServer got itself in trouble; 6945b54b621044beaf1cf814a4114669:word_totals:0: ClientConnectorError: Cannot connect to host worker-1:8081 ssl:<ssl.SSLContext object at 0x7788de5fb9b0> [Connect call failed ('172.18.0.7', 8081)]; 6945b54b621044beaf1cf814a4114669:by_count:0: ClientConnectorError: Cannot connect to host worker-1:8081 ssl:<ssl.SSLContext object at 0x7788de5fb9b0> [Connect call failed ('172.18.0.7', 8081)]; 6945b54b621044beaf1cf814a4114669:normalize:1: ClientConnectorError: Cannot connect to host worker-1:8081 ssl:<ssl.SSLContext object at 0x7788de5fb9b0> [Connect call failed ('172.18.0.7', 8081)]; 6945b54b621044beaf1cf814a4114669:words:0: ClientConnectorError: Cannot connect to host worker-1:8081 ssl:<ssl.SSLContext object at 0x7788de5fb9b0> [Connect call failed ('172.18.0.7', 8081)]",
+          "last_completed_at": "2026-08-05T05:19:55.948472+00:00"
+        },
+        "checkpoint": {
+          "next_id": 2,
+          "last_completed_id": null,
+          "last_decided_id": null,
+          "last_finalized_id": null,
+          "consecutive_failures": 0
+        },
+        "tasks": [
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:words:0",
+            "operator_id": "words",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:words:1",
+            "operator_id": "words",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:normalize:0",
+            "operator_id": "normalize",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:normalize:1",
+            "operator_id": "normalize",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:by_word:0",
+            "operator_id": "by_word",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:by_word:1",
+            "operator_id": "by_word",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:word_totals:0",
+            "operator_id": "word_totals",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:word_totals:1",
+            "operator_id": "word_totals",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:by_count:0",
+            "operator_id": "by_count",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:count_distribution:0",
+            "operator_id": "count_distribution",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "6945b54b621044beaf1cf814a4114669:output:0",
+            "operator_id": "output",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": null,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 3,
+            "error": null
+          }
+        ]
+      },
+      "checkpoint_after_recovery": {
+        "schema_version": 2,
+        "job_id": "6945b54b621044beaf1cf814a4114669",
+        "checkpoint_id": 2,
+        "attempt_id": 1,
+        "coordinator_epoch": 0,
+        "created_at": "2026-08-05T05:19:57.062370+00:00",
+        "snapshots": [
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:by_count:0",
+            "operator_id": "by_count",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/86cb599178de43d557e2169fcc9b10e64d1d4f8c698bfd95804165fc36a3fb6c.json",
+            "sha256": "9b70f58e014ddd6931bdc26ede1356c6f7b21ab1e30e639a119044b4f8f993af",
+            "size": 514,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:by_word:0",
+            "operator_id": "by_word",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/fe952274add90928ca8730b9705f73ca30784087d3ad18e8ec6af0ad5f78da16.json",
+            "sha256": "d39c2cef93513777ea260ab71abc8e5072507168fa69f282eafa3d0efa228017",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:by_word:1",
+            "operator_id": "by_word",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/ed75447a311f5a365647b7d6efa53a966067bd96af85a694fdab01d6ff90a6f9.json",
+            "sha256": "556487d4567a904e058303fb5fbb440456c8a263b0275f3f820cb08f9711ba56",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:count_distribution:0",
+            "operator_id": "count_distribution",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/b1f5cc3e0d7a79dbb82d2ac86081bfbbabbbebfb5ec48ea89192296ce49076e1.json",
+            "sha256": "0d4ab301a044f6c7e0a204df5dd4e4e532b2baf7f83be3d2d3c81751f7a5a8d2",
+            "size": 1301,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:normalize:0",
+            "operator_id": "normalize",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/1ee20d9692934a765a35111992071f883319e1ab89e0047b04369a0526afd707.json",
+            "sha256": "16164e10b6f230b2090d7968a91d041b70031d980bc4a5cd8648e30d9ef1b2c1",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:normalize:1",
+            "operator_id": "normalize",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/c7aa8864282df29a59e31251386f1491e3a6a37c848a2ea3fc8536a920aaec81.json",
+            "sha256": "be0e291be8119cea6fa0c90623d853346557da8137b4ca3659c76f21524313b4",
+            "size": 506,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:output:0",
+            "operator_id": "output",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/f7e7e7fed8aff88ffa616936d6cd9873d8069aa2777296f0cd1b02c18b285fd0.json",
+            "sha256": "1d79f55bffa395c565c54481ac5309f04eb2715ed26db3f846f265a8f6336fe7",
+            "size": 961,
+            "coordinator_epoch": 0,
+            "transactions": [
+              {
+                "job_id": "6945b54b621044beaf1cf814a4114669",
+                "checkpoint_id": 2,
+                "attempt_id": 1,
+                "coordinator_epoch": 0,
+                "task_id": "6945b54b621044beaf1cf814a4114669:output:0",
+                "operator_id": "output",
+                "transaction_id": "0a9379ff05a44b1cb932b4e33ee426d6",
+                "pending_path": "6945b54b621044beaf1cf814a4114669/output/pending/attempt-00000001/tx-0a9379ff05a44b1cb932b4e33ee426d6/part-00000.csv",
+                "sha256": "06382fc05c83ac343a0d66591bb4fdf8269cb3217f42e7d0301e89097d58f3f4",
+                "size": 48
+              }
+            ]
+          },
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/626f8de8e5a412b58dec03da2cdd58183c8a3625b6618a5e83605389aa85b60d.json",
+            "sha256": "7ae38fd69096fb9d16a7c99791854e2ff64ed3a0122029fb6e8bc3b1be2d45c0",
+            "size": 634,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:word_totals:0",
+            "operator_id": "word_totals",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/43cd1a57f7ca94520cd80036221a0b60a8a48f8ac4dde22b1b45e9228a65cbd5.json",
+            "sha256": "38b9ed6fce55d32668458eb600cba8e1b79fcdf041e61d3c4b568d554cedd6b5",
+            "size": 838,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:word_totals:1",
+            "operator_id": "word_totals",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/18225a91b3456c8bcc52a4f92352746dc7f12c6c17930d1242f644e2f53a287b.json",
+            "sha256": "9703a68da76bc85c15c03cff30d73bdf1f49c83074aaa99e756bf22678f809e0",
+            "size": 1422,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:words:0",
+            "operator_id": "words",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/e24b95e76f7937b173f481e4e7b43a8ab329d7b46b1f7afc444eb74049e2adcf.json",
+            "sha256": "046f8167621f7dccce3264d6581ea83caae58a04bd5cdaefe48395e63dac31cc",
+            "size": 572,
+            "coordinator_epoch": 0,
+            "transactions": []
+          },
+          {
+            "job_id": "6945b54b621044beaf1cf814a4114669",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "6945b54b621044beaf1cf814a4114669:words:1",
+            "operator_id": "words",
+            "relative_path": "pystream/checkpoints/6945b54b621044beaf1cf814a4114669/00000000000000000002/attempts/00000001/tasks/9f662955480ee927715cd3c6905b0e53206c180f515c86105d10ebf235fdb0ba.json",
+            "sha256": "7be98b7c46a927f19d7849fd117252cd7af8cf86491bf23a6f54e4a015eec03c",
+            "size": 572,
+            "coordinator_epoch": 0,
+            "transactions": []
+          }
+        ]
+      },
+      "verification": {
+        "job_id": "6945b54b621044beaf1cf814a4114669",
+        "status": "RUNNING",
+        "attempt": 1,
+        "coordinator_epoch": 0,
+        "checkpoint": {
+          "next_id": 3,
+          "last_completed_id": 2,
+          "last_decided_id": 2,
+          "last_finalized_id": 2,
+          "consecutive_failures": 0
+        },
+        "visible_rows": [
+          {
+            "window_end": "2026/07/29T00:00:05",
+            "count": 1,
+            "word_count": 1,
+            "occurrences": 1
+          },
+          {
+            "window_end": "2026/07/29T00:00:05",
+            "count": 2,
+            "word_count": 1,
+            "occurrences": 1
+          }
+        ],
+        "manifest_checkpoint_ids": [
+          2
+        ],
+        "kafka_offsets": [
+          {
+            "partition": 0,
+            "committed_offset": 3,
+            "end_offset": 3,
+            "lag": 0
+          },
+          {
+            "partition": 1,
+            "committed_offset": 2,
+            "end_offset": 2,
+            "lag": 0
+          }
+        ],
+        "pending_transactions": 1,
+        "committed_output_exact": true,
+        "semantics": "exactly-once"
+      },
+      "committed_output_diff_rows": 0
+    }
+  ],
+  "basic_wordcount_regression": "passed",
+  "explicit_at_least_once_regression": "passed",
+  "core": {
+    "baseline_job_id": "c3942d1bd04548c4b009cb6944ab485c",
+    "fault_scenarios": [
+      "before_barrier",
+      "before_decision"
+    ],
+    "committed_output_diff_rows": 0,
+    "kafka_lag": 0
+  },
+  "result": "passed",
+  "resource_cleanup": {
+    "containers": 0,
+    "networks": 0,
+    "volumes": 0
+  },
+  "secret_directory_removed": true,
+  "finished_at": "2026-08-05T05:20:34.316651+00:00"
+}

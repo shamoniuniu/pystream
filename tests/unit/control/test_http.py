@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from pystream.control import (
     TaskDeployment,
     WorkerNode,
 )
+from pystream.control.testing import CheckpointTestHooks
 
 
 class RecordingGateway:
@@ -128,6 +130,50 @@ async def test_http_手动触发checkpoint返回manifest(tmp_path: Path, monkeyp
         assert document["attempt_id"] == 1
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_checkpoint_test_hooks_only_exist_when_enabled(tmp_path: Path) -> None:
+    manager = JobManager(LocalArtifactRepository(tmp_path / "store"), RecordingGateway())
+    disabled = TestClient(TestServer(JobManagerHttpService(manager).create_app()))
+    await disabled.start_server()
+    try:
+        assert (await disabled.get("/test/checkpoint-hooks")).status == 404
+    finally:
+        await disabled.close()
+
+    hooks = CheckpointTestHooks()
+    enabled = TestClient(TestServer(JobManagerHttpService(manager, test_hooks=hooks).create_app()))
+    await enabled.start_server()
+    try:
+        armed = await enabled.post("/test/checkpoint-hooks/before_decision/arm")
+        assert armed.status == 200
+        assert (await armed.json())["status"] == "ARMED"
+        reached = asyncio.create_task(
+            hooks.reach(
+                "before_decision",
+                context={
+                    "checkpoint_id": 2,
+                    "attempt_id": 1,
+                    "coordinator_epoch": 3,
+                },
+            )
+        )
+        for _ in range(100):
+            status = await (await enabled.get("/test/checkpoint-hooks")).json()
+            if status["status"] == "REACHED":
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("Checkpoint test hook did not reach")
+        released = await enabled.post(
+            "/test/checkpoint-hooks/before_decision/release",
+            json={"action": "continue"},
+        )
+        assert released.status == 200
+        await reached
+    finally:
+        await enabled.close()
 
 
 @pytest.mark.asyncio

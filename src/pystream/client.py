@@ -145,6 +145,41 @@ class JobManagerClient:
             expected_statuses={200},
         )
 
+    def arm_checkpoint_test_hook(self, hook: str) -> dict[str, object]:
+        """Arm a deterministic acceptance-only checkpoint gate."""
+        return self._json_request(
+            "POST",
+            f"/test/checkpoint-hooks/{quote(hook, safe='')}/arm",
+            body=b"",
+            expected_statuses={200},
+        )
+
+    def checkpoint_test_hook(self) -> dict[str, object]:
+        """Read the current acceptance-only checkpoint gate state."""
+        return self._json_request(
+            "GET",
+            "/test/checkpoint-hooks",
+            expected_statuses={200},
+        )
+
+    def release_checkpoint_test_hook(
+        self,
+        hook: str,
+        *,
+        action: str,
+    ) -> dict[str, object]:
+        """Release an acceptance gate with continue or deterministic failure."""
+        return self._json_request(
+            "POST",
+            f"/test/checkpoint-hooks/{quote(hook, safe='')}/release",
+            body=json.dumps(
+                {"action": action},
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            expected_statuses={200},
+        )
+
     def cancel(self, job_id: str) -> dict[str, object]:
         """请求取消作业并返回当前状态。"""
         return self._json_request(

@@ -1,0 +1,16 @@
+{
+  "failure": "minio",
+  "profile": "ha",
+  "service": "minio-1",
+  "container_id": "84c28463e9ada5e37a4c6f0397b8bf843f0a735a92888c5ea51fad8e9152f465",
+  "before": {
+    "restart_count": 0,
+    "started_at": "2026-08-05T05:11:19.355121512Z",
+    "running": true
+  },
+  "failure_mode": "container_stopped_with_non_listening_ip_holder",
+  "network": "pystream-advanced_pystream",
+  "reserved_address": "172.18.0.3",
+  "holder_container_id": "b02e897707492eea14d6307b0f8615db70cf4f101b5341722a1b52ef368a92ae",
+  "injected_at": "2026-08-05T05:13:44.991500+00:00"
+}

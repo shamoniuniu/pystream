@@ -397,6 +397,20 @@ def test_advanced_compose_启用tls_kafka和prometheus安全契约() -> None:
     assert "bind :9000 ssl crt /run/secrets/object-store-pem" in storage_config
     assert storage_config.count("ssl verify required ca-file /run/secrets/pystream-ca") == 4
 
+    for name in ("jobmanager", "jobmanager-1", "jobmanager-2"):
+        assert services[name]["environment"]["PYSTREAM_ENABLE_TEST_HOOKS"] == (
+            "${PYSTREAM_ENABLE_TEST_HOOKS:-false}"
+        )
+    tools = services["tools"]
+    assert tools["profiles"] == ["core", "ha"]
+    assert {
+        "pystream-ca",
+        "external-token",
+        "tools-cert",
+        "tools-key",
+    } == {item if isinstance(item, str) else item["source"] for item in tools["secrets"]}
+    assert "advanced-words" in services["kafka-init"]["command"][-1]
+
 
 def test_演示脚本齐全并被复制进运行镜像() -> None:
     names = {
@@ -412,6 +426,12 @@ def test_演示脚本齐全并被复制进运行镜像() -> None:
         "inject_worker_failure.py",
         "verify_intermediate.py",
         "cleanup_intermediate.py",
+        "produce_advanced.py",
+        "submit_advanced.py",
+        "verify_advanced.py",
+        "inject_advanced_failure.py",
+        "cleanup_advanced.py",
+        "run_advanced_acceptance.py",
     }
     scripts = ROOT / "scripts"
 
@@ -423,6 +443,21 @@ def test_演示脚本齐全并被复制进运行镜像() -> None:
     assert '"docker", "exec"' in normalized_failure_injection
     assert '"kill -9 $(cat /proc/1/task/1/children)"' in normalized_failure_injection
     assert '"docker", "kill"' not in normalized_failure_injection
+    advanced_failure = (scripts / "inject_advanced_failure.py").read_text(encoding="utf-8")
+    assert "active-jobmanager" in advanced_failure
+    assert "kill -9 $(cat /proc/1/task/1/children)" in advanced_failure
+    for name in ("run_advanced_core_acceptance.ps1", "run_advanced_ha_acceptance.ps1"):
+        assert (scripts / name).is_file()
+
+    advanced_job = yaml.safe_load(
+        (ROOT / "examples" / "advanced" / "job.yaml").read_text(encoding="utf-8")
+    )
+    assert advanced_job["execution"]["delivery_guarantee"] == "exactly_once"
+    assert advanced_job["execution"]["checkpoint"]["interval"] == "1h"
+    assert any(
+        operator["type"] == "sink" and operator["config"]["connector"] == "file"
+        for operator in advanced_job["operators"]
+    )
 
 
 def test_中级验收使用可超时的create_start_inspect编排并验证清理() -> None:

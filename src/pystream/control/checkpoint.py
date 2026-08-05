@@ -17,6 +17,7 @@ from pystream.control.errors import ControlPlaneError
 from pystream.control.execution import ExecutionGraph
 from pystream.control.models import TaskInstance, TaskStatus, WorkerNode
 from pystream.control.ports import WorkerGateway
+from pystream.control.testing import CheckpointTestHooks
 
 
 class CheckpointCoordinationError(ControlPlaneError):
@@ -33,11 +34,13 @@ class CheckpointCoordinator:
         worker_lookup: Callable[[str], WorkerNode],
         *,
         output_committer: LocalFileOutputCommitter | None = None,
+        test_hooks: CheckpointTestHooks | None = None,
     ) -> None:
         self.store = store
         self.worker_gateway = worker_gateway
         self.worker_lookup = worker_lookup
         self.output_committer = output_committer or LocalFileOutputCommitter()
+        self.test_hooks = test_hooks
 
     async def run(
         self,
@@ -77,6 +80,12 @@ class CheckpointCoordinator:
             )
             if not source_tasks:
                 raise CheckpointCoordinationError("Checkpoint 执行图缺少 Source Task")
+            await self._test_hook(
+                "before_barrier",
+                checkpoint_id=checkpoint_id,
+                attempt_id=attempt_id,
+                coordinator_epoch=coordinator_epoch,
+            )
             source_snapshots = await asyncio.gather(
                 *(
                     self.worker_gateway.trigger_checkpoint(
@@ -106,6 +115,12 @@ class CheckpointCoordinator:
             )
             snapshots = tuple(source_snapshots) + tuple(operator_snapshots)
             if graph.delivery_guarantee is DeliveryGuarantee.EXACTLY_ONCE:
+                await self._test_hook(
+                    "before_decision",
+                    checkpoint_id=checkpoint_id,
+                    attempt_id=attempt_id,
+                    coordinator_epoch=coordinator_epoch,
+                )
                 sink_task_ids = {
                     task.task_id for task in tasks if task.operator_type is OperatorType.SINK
                 }
@@ -120,6 +135,12 @@ class CheckpointCoordinator:
                         expected_transaction_task_ids=sink_task_ids,
                         snapshots=snapshots,
                     )
+                )
+                await self._test_hook(
+                    "after_decision",
+                    checkpoint_id=checkpoint_id,
+                    attempt_id=attempt_id,
+                    coordinator_epoch=coordinator_epoch,
                 )
                 return await self._finalize_decision(
                     graph,
@@ -329,6 +350,25 @@ class CheckpointCoordinator:
         if task.worker_id is None:
             raise CheckpointCoordinationError(f"Task {task.task_id} 未分配 Worker")
         return self.worker_lookup(task.worker_id)
+
+    async def _test_hook(
+        self,
+        hook: str,
+        *,
+        checkpoint_id: int,
+        attempt_id: int,
+        coordinator_epoch: int,
+    ) -> None:
+        if self.test_hooks is None:
+            return
+        await self.test_hooks.reach(
+            hook,
+            context={
+                "checkpoint_id": checkpoint_id,
+                "attempt_id": attempt_id,
+                "coordinator_epoch": coordinator_epoch,
+            },
+        )
 
 
 async def _uncancellable_to_thread(operation):

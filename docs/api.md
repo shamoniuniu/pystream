@@ -1,31 +1,30 @@
 # YAML、UDF 与运行协议参考
 
-公共契约的权威来源是 `src/pystream/api/models.py`、
-`artifact/udf.py`、`common/records.py` 和 `runtime/protocol.py`。
+公共契约的权威来源是 `src/pystream/api/models.py`、`artifact/udf.py`、
+`common/records.py` 和 `runtime/protocol.py`。
 
 ## 作业包
 
 ZIP 根目录必须包含 `job.yaml`。UDF 使用 `module:function` 引用，并与 YAML
-位于同一作业目录。Worker 只加载包内普通 `.py` 文件；UDF 是可信代码，不提供
-沙箱，也不能在 Worker 上在线安装依赖。
+位于同一作业目录。UDF 是可信代码，不提供沙箱或在线依赖安装。
 
 ```powershell
-pystream validate examples/intermediate/job.yaml
-pystream package examples/intermediate --output-dir .pystream/artifacts
+pystream validate examples/advanced/job.yaml
+pystream package examples/advanced --output-dir .pystream/artifacts
 pystream submit .pystream/artifacts/<bundle>.zip
 ```
 
 ## YAML v1
 
-`api_version` 仍为 `pystream/v1`。中级能力通过可选字段扩展，旧 WordCount 不配置
-`execution` 时继续使用处理时间和 fail-fast 行为。
+`api_version` 仍为 `pystream/v1`：
 
 ```yaml
 api_version: pystream/v1
 job:
-  name: event-time-retract
+  name: exactly-once-counts
 
 execution:
+  delivery_guarantee: exactly_once
   event_time:
     max_out_of_orderness: 2s
     idle_timeout: 30s
@@ -34,80 +33,48 @@ execution:
     timeout: 30s
     max_consecutive_failures: 3
   restart:
-    max_attempts: 3
+    max_attempts: 6
     delay: 2s
 ```
 
-持续时间接受正整数加 `ms`、`s`、`m` 或 `h`。`restart.delay` 额外允许 `0ms`。
-未知字段全部拒绝。
+兼容规则：
 
-### 算子
+- 缺少 `execution`：保持基础 fail-fast 和逐条 offset commit。
+- `execution` 存在但未配置 guarantee：默认 `exactly_once`。
+- `delivery_guarantee: at_least_once`：使用 DRAIN 和 append File Sink。
+- Exactly-once 作业的全部 Sink 必须声明事务能力，否则 Graph 校验失败。
 
-| type | 必需字段 | 中级约束 |
+持续时间接受正整数加 `ms`、`s`、`m` 或 `h`；未知字段拒绝。
+
+## 算子与连接器
+
+| type | 必需字段 | 关键约束 |
 |---|---|---|
-| `source` | `config` | Kafka JSON，可配置校验器和事件时间提取 |
+| `source` | `config` | Kafka JSON、可选 validator/event time |
 | `map` | `udf` | 保留 `change_kind` |
-| `key_by` | `udf` | key 必须是 JSON 值，出边使用稳定 HASH |
-| `reduce` | `udf`、`window` | keyed 输入；可配置 `emit_mode` 和 `retract_udf` |
-| `sink` | `config` | File CSV；必须能消费上游 changelog 能力 |
+| `key_by` | `udf` | key 必须是严格 JSON 值 |
+| `reduce` | `udf`、`window` | keyed 输入；可配 changelog/retract |
+| `sink` | `config` | CSV File；Exactly-once 时使用事务布局 |
 
-`parallelism` 范围为 1-1024。Source 多并发时按
-`partition % source_parallelism == subtask_index` 静态分配；parallelism 不能
-超过 topic 可用 partition。
+Kafka Source 按 `partition % source_parallelism == subtask_index` 分配；Source
+parallelism 不能超过 topic partitions。Exactly-once complete 只提交 Barrier
+时冻结的 next offsets，abort 不提交。
 
-### Kafka Source
+事务 File Sink 布局：
 
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `connector` | 必填 `kafka` | 连接器判别字段 |
-| `topic` | 必填 | Kafka topic |
-| `value_format` | `json` | 当前只支持 JSON |
-| `bootstrap_servers` | `kafka:9092` | broker 地址 |
-| `group_id` | `pystream-<job>-<operator>` | Checkpoint 后提交精确 next offset |
-| `bad_record_policy` | `fail` | `fail` 或 `skip` |
-| `validator` | null | 可选同步一参 UDF |
-| `event_time.pointer` | 无 | RFC 6901 JSON Pointer |
-| `event_time.format` | `rfc3339` | 当前只支持带时区 RFC3339 |
+```text
+<output>/<job_id>/<operator>/
+  pending/attempt-<attempt>/tx-<uuid>/part-<subtask>.csv
+  committed/checkpoint-<checkpoint>/part-<subtask>.csv
+  manifests/checkpoint-<checkpoint>.json
+```
 
-启用 Checkpoint 后，Source pause、保存每 partition next offset、事件时间基线和
-Watermark；manifest 完成后才提交 offset 并恢复消费。恢复时按 manifest 显式
-seek。未启用 Checkpoint 的旧作业维持原显式 commit/fail-fast 行为。
-
-### File Sink
-
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `connector` | 必填 `file` | 连接器判别字段 |
-| `format` | `csv` | 当前只支持 CSV |
-| `output_path` | `/data/output` | 输出根目录 |
-| `columns` | 旧 WordCount 三列 | JSON Pointer 列表 |
-
-文件位于 `<output_path>/<job_id>/<operator_id>/part-<subtask>.csv`。Sink 追加并
-立即 flush，不参与事务；故障恢复允许重复。
-
-### 窗口与 Changelog
-
-窗口固定为 tumbling、epoch 对齐、左闭右开。
-
-| 字段 | 取值 |
-|---|---|
-| `time_characteristic` | `processing` 或 `event` |
-| `size` | 正持续时间 |
-| `emit_mode` | `final` 或 `changelog` |
-
-事件时间窗口在合并 Watermark 到达 window end 时触发。记录满足
-`event_time <= current_watermark` 时视为迟到并丢弃。
-
-`emit_mode=changelog` 的 Reduce 严格输出：
-
-1. 首次状态：`INSERT`。
-2. 更新：`UPDATE_BEFORE` 后 `UPDATE_AFTER`。
-3. 下游 Reduce 使用 `retract_udf(accumulator, old_value)` 撤回旧贡献。
-4. retract 返回 null 时删除空状态。
+目录扫描不代表可见结果。消费者必须读取 manifest 并复验 fragment 的相对路径、
+identity、SHA-256 和 size。
 
 ## Python UDF
 
-UDF 必须同步且返回严格 JSON 值；NaN/Infinity 不允许。
+UDF 必须同步并返回严格 JSON 值；NaN/Infinity 不允许。
 
 ```python
 def add_bucket(left, right):
@@ -125,63 +92,74 @@ def remove_bucket(left, right):
 - Reduce retract：`fn(accumulator, payload) -> accumulator | None`
 - Source validator：`fn(payload) -> payload`
 
-## RecordEnvelope
+## 数据面协议
 
-| 字段 | 当前语义 |
-|---|---|
-| `message_type` | `DATA`；控制消息使用独立 CONTROL frame |
-| `record_id` | Kafka `topic:partition:offset` |
-| `payload` / `key` | 严格 JSON |
-| `processing_time` / `event_time` | UTC ISO-8601；event time 可为空 |
-| `change_kind` | INSERT/UPDATE_BEFORE/UPDATE_AFTER/DELETE |
-| `checkpoint_id` | Checkpoint 控制上下文，可为空 |
-| `headers` | 来源、窗口和业务元数据 |
-
-## 数据面协议 v2
-
-编码为 `4-byte big-endian body length + UTF-8 JSON body`，默认 body 上限
-8 MiB。
+编码为 `4-byte big-endian body length + UTF-8 JSON body`，默认 body 上限 8 MiB。
 
 | 帧 | 用途 |
 |---|---|
-| `HELLO` | 声明 job、task 和 `attempt_id`，旧 attempt 被 fencing |
+| `HELLO` | job/task/attempt/coordinator epoch 握手 |
 | `DATA_BATCH` | 有序数据批次 |
-| `CONTROL` | WATERMARK、CHECKPOINT_DRAIN 等控制消息 |
+| `CONTROL` | WATERMARK、DRAIN、BARRIER、CHECKPOINT_COMPLETE |
 | `HEARTBEAT` | 严格递增 sequence |
 | `END_OF_STREAM` | 正常结束 |
 | `ERROR` | 远端错误 |
 
-同一物理通道内 DATA/CONTROL 保序；控制消息广播到逻辑边的全部物理通道。
-多输入 Watermark 取活跃输入最小值，idle 输入暂不阻塞推进，重新 active 后不得
-使 Watermark 回退。
+同一物理通道内 DATA/CONTROL 保序。Barrier 不进入 UDF；收到 Barrier 的输入由
+连接 gate 阻塞 post-barrier 读取，直到 Task 完成全输入对齐。
 
 ## HTTP
 
-JobManager 主要端点：
+JobManager 端点：
 
 | Method | Path | 用途 |
 |---|---|---|
-| GET | `/health` | 控制面摘要 |
-| GET | `/v1/workers` | Worker、incarnation、slot 和心跳 |
-| POST | `/v1/jobs` | 上传 `application/zip` |
-| GET | `/v1/jobs/{job_id}` | 作业、attempt、Checkpoint 和物理任务状态 |
-| POST | `/v1/jobs/{job_id}/checkpoint` | 同步触发一次完整停流 Checkpoint |
-| POST | `/v1/jobs/{job_id}/cancel` | 取消并释放资源 |
+| GET | `/health/live` | 进程存活 |
+| GET | `/health/ready` | 依赖就绪 |
+| GET | `/health/leader` | 仅 ready active 返回 200 |
+| GET | `/metrics` | Prometheus 指标 |
+| GET | `/v1/workers` | Worker、incarnation、slot、epoch |
+| POST | `/v1/jobs` | 上传 ZIP |
+| GET | `/v1/jobs/{job_id}` | 作业、attempt、phase、decided/finalized |
+| POST | `/v1/jobs/{job_id}/checkpoint` | 触发 Checkpoint |
+| POST | `/v1/jobs/{job_id}/cancel` | 取消作业 |
 
-Worker 主要端点包括 `/tasks/deploy`、任务 stop/status，以及
-arm/trigger/wait/complete/abort Checkpoint 控制接口。所有请求携带 attempt，
-低 attempt 请求不得影响新 Runtime。
+外部管理端点要求 HTTPS 与 Bearer Token。内部 JobManager/Worker HTTP 要求 mTLS，
+写请求还受 active role、attempt 和 coordinator epoch fencing。
 
-HTTP 管理端点只面向可信实验网络，不提供认证或 TLS。
+## 确定性验收 Hook
 
-## 日志
+测试 Hook 仅在 `PYSTREAM_ENABLE_TEST_HOOKS=true` 或
+`--enable-test-hooks` 时注册；生产默认关闭并返回 404。
 
-每行是 UTF-8 JSON，稳定字段为：
+```text
+POST /test/checkpoint-hooks/{hook}/arm
+GET  /test/checkpoint-hooks
+POST /test/checkpoint-hooks/{hook}/release
+```
+
+合法 hook：
+
+- `before_barrier`：全 Task 已 arm，Source 尚未注入 Barrier。
+- `before_decision`：snapshot/PREPARED 完成，durable decision 尚未写入。
+- `after_decision`：decision 已持久化，finalize 尚未开始。
+
+release body 为 `{"action":"continue"}` 或 `{"action":"fail"}`。接口仍要求 HAProxy
+证书身份和外部 Bearer Token，不是安全绕过。
+
+## 状态与日志
+
+作业状态的 checkpoint 字段至少包含：
+
+```text
+next_id active_id phase last_completed_id last_decided_id last_finalized_id
+```
+
+稳定日志字段为：
 
 ```text
 timestamp level component job_id operator_id subtask worker_id event message
 ```
 
-关键事件包括 `source_partitions_assigned`、`watermark_advanced`、
-`late_record_dropped`、`checkpoint_completed`、`job_recovery_started` 和
-`worker_re_registered`。`PYSTREAM_LOG_LEVEL` 控制最低级别，默认 `INFO`。
+关键事件包括 Barrier 对齐、checkpoint decision/finalize、事务状态、leader lease、
+作业恢复和认证拒绝。日志不得包含 Token、私钥、access key 或业务 payload。

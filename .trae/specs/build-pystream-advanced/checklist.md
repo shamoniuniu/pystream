@@ -4,9 +4,9 @@
 
 - [x] `v0.2.0^{}` 指向 `64b875b`
 - [x] 高级开发位于 `feature/advanced-v0.3`
-- [ ] 每个里程碑有独立 commit、Git note、远端分支和 revert 说明
-- [ ] `main`、`v0.1.0`、`v0.2.0` 未被改写
-- [ ] 日志和报告不含 Token、私钥、access key 或业务 payload
+- [x] 每个里程碑有独立 commit、Git note、远端分支和 revert 说明
+- [x] `main`、`v0.1.0`、`v0.2.0` 未被改写
+- [x] 日志和报告不含 Token、私钥、access key 或业务 payload
 
 ## 兼容性
 
@@ -100,24 +100,24 @@
 
 ## Core E2E
 
-- [ ] 无故障 baseline
-- [ ] Barrier 前故障
-- [ ] PREPARED/DECIDED 前故障
-- [ ] Worker 60 秒恢复
-- [ ] committed output 无丢失无重复
-- [ ] Kafka lag=0
-- [ ] 项目资源=0
+- [x] 无故障 baseline
+- [x] Barrier 前故障
+- [x] PREPARED/DECIDED 前故障
+- [x] Worker 60 秒恢复
+- [x] committed output 无丢失无重复
+- [x] Kafka lag=0
+- [x] 项目资源=0
 
 ## HA E2E
 
-- [ ] active/standby 正确
-- [ ] DECIDED/FINALIZED 前 active 退出
-- [ ] 30 秒内接管和 finalize
-- [ ] 单存储节点退出
-- [ ] 接管后 Worker 故障
-- [ ] committed output diff=0
-- [ ] 指标/SLO/安全证据完整
-- [ ] 项目资源=0
+- [x] active/standby 正确
+- [x] DECIDED/FINALIZED 前 active 退出
+- [x] 30 秒内接管和 finalize
+- [x] 单存储节点退出
+- [x] 接管后 Worker 故障
+- [x] committed output diff=0
+- [x] 指标/SLO/安全证据完整
+- [x] 项目资源=0
 
 ## 质量门
 
@@ -131,7 +131,7 @@
 
 ## 声明边界
 
-- [ ] 不宣称 Kafka broker HA
-- [ ] 不宣称 Docker 主机容灾
-- [ ] 不宣称 File output volume 容灾
-- [ ] 不宣称不可信 UDF 隔离
+- [x] 不宣称 Kafka broker HA
+- [x] 不宣称 Docker 主机容灾
+- [x] 不宣称 File output volume 容灾
+- [x] 不宣称不可信 UDF 隔离

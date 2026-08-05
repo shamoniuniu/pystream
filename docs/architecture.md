@@ -1,153 +1,144 @@
 # 架构与数据流
 
-本文描述 PyStream 0.2.0 的控制流、数据流、Checkpoint 和恢复边界。代码与测试是
+本文描述 PyStream 0.3.0 的控制流、数据流、Exactly-once 和 HA 边界。代码与测试是
 行为权威来源。
 
 ## 部署拓扑
 
 ```text
 CLI / acceptance tools
-          |
-          v
-JobManager :8080 ---------------- shared artifacts/checkpoints volumes
-  | deploy/status/checkpoint
-  +--------------------+--------------------+
-  v                    v                    v
-Worker-1             Worker-2             Worker-3
-:8081 control        :8081 control        :8081 control
-:9000 data           :9000 data           :9000 data
-  \_____________________|____________________/
-                        |
-                    Kafka :9092
-                        |
-                 shared output volume
+  | HTTPS + Bearer Token
+  v
+HAProxy :8080 ----- leader-only routing
+  |                              Prometheus
+  +-> JobManager A/B <------------ mTLS scrape
+       | active/passive lease
+       | metadata/artifact/checkpoint
+       v
+  S3 HAProxy -> MinIO 1..4 (2 drives each)
+       |
+       +-- mTLS control + coordinator epoch
+       v
+  Worker 1..3 <==== TLS data plane ====>
+       |
+       +-- Kafka SSL source
+       +-- transactional File output volume
 ```
 
-JobManager 持有作业状态、执行图、Worker 资源、Checkpoint coordinator 和恢复
-状态机。Worker 持有 TaskRuntime、算子状态和数据面连接。Kafka 是可重放输入，
-共享 checkpoint 卷允许任务恢复到不同 Worker。
+Core profile 使用单 JobManager、单 MinIO、3 Workers；HA profile 使用两个
+JobManager 和 4 节点 MinIO。Kafka 和 File output 仍是单故障域。
 
 ## 部署与调度
 
 1. CLI 构建带清单和 SHA-256 的 ZIP。
-2. JobManager 复验、安全解压并构建 `StreamGraph`。
+2. active JobManager 校验制品并不可变写入 artifact repository。
 3. 逻辑算子按 parallelism 展开，调度器先做全量 slot 预检。
-4. 非 Source 任务按下游优先顺序部署。
-5. 同一 Source 的 subtasks 并发部署，并按 partition 编号确定性静态分配。
-6. Worker 下载同一制品，按 attempt 隔离 Runtime 和 UDF 命名空间。
+4. 算子之间保持下游优先部署；同一算子的 subtasks 并发部署。
+5. Worker 按 attempt/epoch 隔离 Runtime 和 UDF 命名空间。
+6. Source 按 `partition % parallelism == subtask_index` 确定性分配 Kafka partition。
 
-Source 确定性分配消除了正常部署时消费组 rebalance 导致的跨 Runtime 重放：
+## 数据面与背压
 
-```text
-partition % source_parallelism == subtask_index
-```
+FORWARD 保持 subtask 编号，REBALANCE 轮询下游，HASH 对规范 JSON key 的 SHA-256
+取模。协议 v2 将 DATA 与 CONTROL 分离；同一通道严格保序，HELLO 携带 attempt
+和 coordinator epoch，旧连接被 fencing。
 
-## 数据面
+出通道和 Runtime 使用有界队列。Barrier 到达某输入后，连接 handler 等待该输入
+gate，而不是无界缓存 post-barrier DATA；压力通过 TCP 和上游有界队列反向传播。
 
-```text
-Kafka Source(2)
-  -> Map normalize(2)        FORWARD
-  -> KeyBy word(2)           FORWARD
-  => Reduce word_totals(2)   HASH + changelog
-  -> Map bucket(1)
-  -> KeyBy count(1)
-  -> Reduce distribution(1)  retract + final
-  -> File Sink(1)
-```
+## 事件时间
 
-- FORWARD：相同 subtask 编号。
-- REBALANCE：轮询下游。
-- HASH：规范 JSON key 的 SHA-256 对下游并发度取模。
-- 分支：每条逻辑边独立发送。
-- 合流：多个物理输入共享有界队列，但保留独立 Watermark/Checkpoint 输入状态。
-
-协议 v2 将数据和控制帧分离。同一通道内严格保序，WATERMARK 和
-CHECKPOINT_DRAIN 广播全部物理出通道。HELLO 携带 attempt，旧连接被拒绝。
-
-## 背压
-
-出通道和目标 Runtime 均使用有界队列：
-
-```text
-下游 input queue 满
-  -> TCP 接收变慢
-  -> writer.drain 等待
-  -> output queue 满
-  -> 上游 send 等待
-```
-
-系统不以无限缓冲隐藏过载。Worker 健康和任务状态公开队列深度、峰值、批次和
-记录计数。
-
-## 事件时间与 Watermark
-
-Source 从 RFC3339 字段提取 event time，并按 partition 维护：
+Source 从 RFC3339 字段提取 event time：
 
 ```text
 watermark = max_seen_event_time - max_out_of_orderness
 ```
 
-Runtime 对多输入取活跃输入 Watermark 最小值。idle 输入暂时退出 min 计算；
-重新 active 时不能让全局 Watermark 回退。Reduce 在 Watermark 到达 window end
-时触发事件时间窗口；`event_time <= watermark` 的迟到记录丢弃并记录指标/日志。
+多输入 Runtime 对活跃输入取 Watermark 最小值；idle 输入暂时退出计算，重新 active
+后不能使全局 Watermark 回退。事件时间窗口在 Watermark 到达 window end 时触发。
 
-## Changelog 与 Retract
+## Aligned Checkpoint
 
-上游 changelog Reduce 在状态变化时发送 UPDATE_BEFORE/UPDATE_AFTER。Map、
-KeyBy 和 Shuffle 保留 change kind。下游 Reduce 对旧值执行 retract，对新值
-执行 add；retract 返回 null 时删除空状态。中级示例由此实现“单词计数分布”的
-二级聚合。
+Exactly-once 路径使用持续流 Barrier：
 
-## 停流 Checkpoint
+1. active JobManager 为当前 attempt/epoch 的所有 Task arm。
+2. Source 短暂停顿，冻结每 partition 的 next offset 和时间状态。
+3. Source 把 BARRIER 排在全部前序 DATA 后广播并立即恢复消费。
+4. 输入收到 BARRIER 后停止读取该通道的 post-barrier 帧。
+5. Task 继续处理其他未对齐输入的 pre-barrier DATA。
+6. 全部输入对齐后 snapshot；Sink 同时 pre-commit 当前事务。
+7. Task 转发 BARRIER 并解除所有输入 gate。
+8. Coordinator 复验 task set、identity、SHA、size 和事务 descriptor。
 
-Checkpoint 是 stop-the-world 协调，不是持续流 barrier 对齐：
+显式 At-least-once 作业继续使用 v0.2 的 pause + DRAIN 路径。
 
-1. JobManager 串行分配 checkpoint ID。
-2. 所有 Task arm，Source pause。
-3. Source 在已有 DATA 后广播 CHECKPOINT_DRAIN。
-4. 多输入 Runtime 收齐全部当前 attempt 输入的 DRAIN。
-5. Task 写版本化 JSON snapshot；Source 保存 partition next offset、事件时间和
-   Watermark，Reduce 保存窗口/聚合/输入 Watermark。
-6. JobManager 收齐执行图全部 descriptor，复验 SHA/大小/身份并最后原子写
-   manifest。
-7. manifest 成功后 Source 才提交 offset，所有 Task complete 并恢复消费。
+## 事务输出与决定
 
-任一超时或失败执行 abort；没有完整 manifest 的目录不能恢复。快照写入期间 Source
-暂停，因此 Checkpoint 时间直接增加端到端延迟。
+File Sink 事务生命周期：
 
-## 整作业恢复
+```text
+ACTIVE -> PREPARED -> COMMITTED
+ACTIVE/PREPARED -> ABORTED
+```
 
-Worker 进程启动生成唯一 incarnation。同一 worker ID 出现新 incarnation 时：
+Checkpoint 状态：
 
-1. JobManager 将受影响的中级作业转入恢复流程。
-2. 取消周期 Checkpoint，停止旧 attempt，释放全图 slots。
-3. 选择最高合法完整 manifest；不存在时从初始状态恢复。
-4. attempt 递增并重新调度全图。
-5. Task 在建立输出连接前恢复状态；Source 按 partition seek。
-6. 全部 Task RUNNING 后恢复周期 Checkpoint。
+```text
+ARMED -> ALIGNING -> PREPARED -> DECIDED -> FINALIZING -> FINALIZED
+```
 
-恢复部署失败会在 `max_attempts` 内重试；旧 attempt 的连接、状态上报、stop 和
-Checkpoint 请求均被 fencing。状态 API 持久暴露 recovery attempts，客户端不必
-依赖采到短暂的 RECOVERING 状态。
+- `decision.json` 之前失败：abort 当前事务并从前一决定点恢复。
+- `decision.json` 之后失败：决定不可逆，只能由当前或接管 leader 幂等 finalize。
+- fragment 完成后才原子发布 output manifest。
+- 读取方只读取 manifest 引用并通过 identity/SHA/size 校验的 committed fragments。
+- Source offset、算子状态、Sink fragment 和 output manifest 属于同一 checkpoint。
 
-## 语义与故障域
+## 持久元数据
 
-| 失败/边界 | 行为 |
-|---|---|
-| Worker 业务进程 SIGKILL | 容器自动拉起，新 incarnation 触发整作业恢复 |
-| Kafka/算子状态 | 从同一完整 manifest 恢复，无输入丢失 |
-| File Sink | 普通追加写，Checkpoint 后故障可重放并产生重复 |
-| 损坏/不完整快照 | 忽略并回退前一合法 manifest |
-| JobManager 失败 | 无 HA；控制面和内存中的作业协调状态不可用 |
-| 共享 checkpoint 卷失败 | 所有 Worker 的恢复源同时不可用 |
+S3 compatible repositories 持久化：
 
-因此当前语义为 At-least-once，不是 Exactly-once。共享卷解决跨 Worker 可见性，
-但共享卷和单 JobManager 仍是单故障域。
+```text
+pystream/artifacts/<sha256>.zip
+pystream/control/leader.json
+pystream/jobs/<job_id>/revisions/<revision>.json
+pystream/jobs/<job_id>/current.json
+pystream/checkpoints/<job_id>/<checkpoint>/decision.json
+pystream/checkpoints/<job_id>/<checkpoint>/finalized.json
+```
+
+不可变对象使用 `If-None-Match: *`；leader/current 指针使用 ETag `If-Match` CAS。
+每次恢复重新读取 durable latest manifest，不能让 takeover 缓存使
+`last_decided`/`last_finalized` 回退。
+
+## JobManager HA
+
+- lease TTL 10 秒、renew 3 秒、standby poll 1 秒。
+- 任意时刻只有一个可写 active；HAProxy 仅路由 `/health/leader` ready 的实例。
+- 新 leader CAS 接管后 epoch 严格增加，先完成 DECIDED 未 FINALIZED，再恢复作业。
+- Worker 保存最高 epoch，拒绝旧 epoch 的部署、状态和控制请求。
+- 失去 lease 的 active 进入 protective/standby，不继续写控制状态。
+
+最终 HA 验收在 checkpoint 1 DECIDED、FINALIZED 前终止 active；standby 25.83 秒
+接管并完成 finalize。单 MinIO 节点退出后 checkpoint 2 成功，随后 Worker 故障从
+checkpoint 2 恢复并完成 checkpoint 3，最终 committed output diff=0。
 
 ## 信任边界
 
-- 控制面位于可信实验网络，无认证和 TLS。
-- Python UDF 是可信代码，不提供沙箱。
-- ZIP 防止路径穿越、符号链接、超限和摘要不匹配。
-- Kafka payload、UDF 输出、snapshot 和 manifest 都经过结构/大小校验。
-- File Sink 路径按 job/operator/subtask 隔离。
+- 外部管理入口：HTTPS + Bearer Token。
+- HAProxy、JobManager、Worker HTTP 与 Worker 数据面：mTLS 和证书身份校验。
+- Kafka：SSL client certificate。
+- S3：TLS + access key file Secret。
+- Prometheus：内部证书或独立 metrics token。
+- Secret 只从文件读取，不进入日志、状态响应或验收报告。
+- UDF 仍是可信进程内代码。
+
+## 故障域
+
+| 故障 | 已实证行为 |
+|---|---|
+| Worker 业务进程 SIGKILL | 整作业恢复，attempt 增加，Exactly-once output diff=0 |
+| active JobManager 退出 | standby 接管，epoch 增加，完成不可逆 finalize |
+| 一个 MinIO 节点退出 | artifact/metadata/checkpoint 继续读写 |
+| Kafka broker 退出 | 不承诺 HA，输入不可用 |
+| Docker 主机退出 | 不承诺跨主机容灾 |
+| File output volume 丢失 | 不承诺输出卷容灾 |

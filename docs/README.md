@@ -4,87 +4,82 @@
 
 | Doc | Diátaxis quadrant | Responsibility path | Source of truth | Last verified | Verification cadence | Staleness signal |
 |---|---|---|---|---|---|---|
-| `README.md` | tutorial | 项目维护者；首次运行入口 | `pyproject.toml`、`deploy/compose.yaml`、CLI | 2026-07-30 | 每次里程碑 | 安装、命令或实现阶段变化 |
-| `docs/architecture.md` | explanation；architectural | 架构维护者；理解控制流和数据流 | `src/pystream/control`、`runtime`、`worker` | 2026-07-30 | 每次模块边界变化 | 拓扑、协议、失败语义变化 |
-| `docs/modules.md` | explanation | 各模块修改者；定位责任 | `src/pystream/` | 2026-07-30 | 每次顶层模块变化 | 新模块缺失或依赖方向变化 |
-| `docs/api.md` | reference | API 修改者；编写作业 | Pydantic 模型、协议模型、CLI parser | 2026-07-30 | 每次公共契约变化 | YAML、UDF、CLI 或帧字段变化 |
-| `docs/deployment.md` | how-to；operational | 部署执行者；启动和验收 | Dockerfile、Compose、`scripts/` | 2026-07-30（Docker E2E 通过） | 每次部署资产变化 | 镜像、端口、卷、脚本变化或 E2E 失败 |
-| `docs/testing.md` | how-to | 开发者；执行质量门 | `pyproject.toml`、`tests/` | 2026-07-30 | 每次质量命令变化 | CI/本地命令或门槛变化 |
-| `docs/performance.md` | reference | 性能验证者；复现离线基线 | `scripts/benchmark.py`、`reports/offline-benchmark.json` | 2026-07-27 UTC | 每次里程碑或性能路径变化 | 参数、测量范围或基线环境变化 |
-| `docs/troubleshooting.md` | how-to；operational | 部署执行者；定位失败 | 健康/状态 API、JSON 日志事件 | 2026-07-30 | 每次故障处理变化 | 错误类型、日志字段或端点变化 |
-| `docs/roadmap.md` | explanation | 规格维护者；判断当前语义边界 | 已批准规格、状态/Sink 扩展接口 | 2026-07-30 | 每阶段开始/结束 | 实现能力与阶段标签不一致 |
+| `README.md` | tutorial | 项目维护者；首次入口 | 包版本、CLI、验收脚本 | 2026-08-05 | 每里程碑 | 能力/命令变化 |
+| `docs/architecture.md` | explanation | 架构维护者 | control/runtime/checkpoint | 2026-08-05 | 模块边界变化 | 拓扑/语义变化 |
+| `docs/modules.md` | explanation | 各模块修改者 | `src/pystream/` | 2026-08-05 | 顶层模块变化 | 新模块或依赖变化 |
+| `docs/api.md` | reference | API 修改者 | models/protocol/client | 2026-08-05 | 公共契约变化 | 字段/端点变化 |
+| `docs/deployment.md` | how-to；operational | 部署执行者 | Compose/acceptance scripts | 2026-08-05（Core/HA 通过） | 部署资产变化 | E2E 失效 |
+| `docs/testing.md` | how-to | 开发者 | `pyproject.toml`、tests | 2026-08-05 | 质量门变化 | 命令/门槛变化 |
+| `docs/performance.md` | reference | 性能验证者 | benchmark/report | 2026-07-27 | 每阶段 | 参数/环境变化 |
+| `docs/troubleshooting.md` | how-to；operational | 运行人员 | 状态、日志、evidence | 2026-08-05 | 新故障变化 | 错误/处理变化 |
+| `docs/roadmap.md` | explanation | 规格维护者 | 已批准 spec/evidence | 2026-08-05 | 阶段开始/结束 | 声明与实现不一致 |
 
 ## 读者与任务
 
-- 课程验收者：从根 README 进入，按部署文档运行 WordCount，按测试文档核对证据。
-- 作业开发者：阅读 API 参考，编写 YAML 和可信 Python UDF。
+- 验收者：从根 README 进入，运行 Core/HA 并核对结构化 evidence。
+- 作业开发者：阅读 API，编写 YAML 和可信 Python UDF。
 - 引擎维护者：阅读架构与模块文档，按依赖方向修改代码。
-- 运行人员：使用部署和排障文档、健康端点、状态接口及 JSON 日志。
+- 运行人员：使用部署、排障、健康端点、指标和 JSON 日志。
 
 ## 权威来源
 
-**每类事实只能有一个权威位置。重复内容必须改成链接，或明确标记为非权威摘要；
-不得维护两份可独立修改的命令、字段表或运行语义。**
+**每类事实只能有一个权威位置。重复内容必须改成链接，或明确标记为摘要；不得维护
+两份可独立修改的命令、字段表或运行语义。**
 
 | 信息 | 权威来源 |
 |---|---|
 | 当前代码行为 | `src/pystream/` 与自动化测试 |
-| YAML/UDF 契约 | `src/pystream/api/models.py`、`artifact/udf.py` |
-| 数据协议 | `common/records.py`、`runtime/protocol.py` |
-| 部署拓扑 | `deploy/compose.yaml` 与 `Dockerfile` |
-| 可执行演示步骤 | `scripts/`，`docs/deployment.md` 负责串联 |
-| 性能测量与原始基线 | `scripts/benchmark.py`、`reports/offline-benchmark.json` |
-| 当前/未来语义边界 | 已批准规格与 `docs/roadmap.md` |
+| YAML/UDF 契约 | API models、artifact UDF loader |
+| 数据协议 | common records、runtime protocol |
+| Checkpoint/事务 schema | `src/pystream/checkpoint/` |
+| 部署拓扑 | `deploy/compose.advanced.yaml` 与 Dockerfile |
+| 验收流程 | `scripts/run_advanced_acceptance.py` |
+| 原始运行证据 | `reports/advanced-*-evidence.json` |
+| 当前/未来边界 | 高级 spec 与 `docs/roadmap.md` |
 | 测试门槛 | `pyproject.toml` |
-
-根 README 只提供入口和短路径。字段级细节只在 API 参考维护；排障文档引用事件名，
-不复制协议实现。
 
 ## 当前状态核对
 
 | 主题 | 当前事实 | 验证 |
 |---|---|---|
-| 拓扑 | 单 JobManager、3 Worker、单 Kafka KRaft Broker | Docker E2E 2026-07-30 通过 |
-| 依赖 | Python 3.11、aiohttp、aiokafka、Pydantic、PyYAML | `pyproject.toml`、Dockerfile |
-| 路由 | FORWARD、REBALANCE、规范 JSON + SHA-256 HASH | 路由单测、loopback 集成测试 |
-| 恢复 | Worker 新 incarnation 触发整作业 Checkpoint 恢复 | 单元测试与 SIGKILL E2E |
-| 中级能力 | Watermark、Retract、Checkpoint、At-least-once 已实现 | `docs/roadmap.md` 与验收报告 |
-| 规划能力 | 事务 Sink、Exactly-once、JobManager HA 尚未实现 | `docs/roadmap.md` |
+| 数据语义 | aligned Barrier + transactional manifest Exactly-once | Core/HA fault diff=0 |
+| 控制面 | active/passive JobManager + epoch fencing | 25.828s takeover |
+| 存储 | S3 metadata/checkpoint，4 MinIO 可失去 1 节点 | fault checkpoint 通过 |
+| 安全 | HTTPS/Bearer、mTLS、Kafka SSL、file Secret | 正/负路径测试 |
+| 可观测性 | 5 HA targets、8 SLO rules | Prometheus API evidence |
+| 兼容性 | 无 execution 基础路径、显式 At-least-once | Core regression |
+| 剩余边界 | 单 Kafka、单 Docker 主机、单 output volume、可信 UDF | roadmap |
 
-部署资产变化后，当前“完整通过”状态立即失效，必须重跑 E2E 并更新日期、镜像
-身份和验收报告。
+部署或恢复逻辑变化后，“Core/HA 已通过”立即失效，必须重跑 E2E 并更新 image ID、
+UTC、时延和验收报告。
 
 ## 新鲜度规则
 
-- 每个相关代码变更必须同步检查其权威文档；每个里程碑执行一次全量文档核对。
-- 若 `Last verified` 早于对应验证周期，或权威代码/配置已改变但文档未同批更新，
-  文档立即视为 `stale`。
-- 部署失败、故障演练发现新步骤、接口字段变化、依赖升级、阶段能力上线，均触发
-  当次更新，不等待周期检查。
-- 与当前实现冲突的文档应直接修正；历史设计如仍有价值，移动到归档目录并在标题
-  标注 `ARCHIVED`，不得留在操作入口。
+- 代码变更必须同步检查权威文档。
+- `Last verified` 早于对应验证周期时文档视为 stale。
+- 部署失败、故障演练新发现、接口字段、依赖或阶段能力变化触发当次更新。
+- 历史设计如仍有价值应移到归档并标注 `ARCHIVED`，不能留在操作入口。
 
 ## Docs-as-code
 
-文档与对应代码在同一变更中提交，提交记录提供追踪关系。每次文档变更至少执行：
-
 ```powershell
 .\.venv\Scripts\python -m pytest --no-cov tests/contract/test_documentation.py
-.\.venv\Scripts\python -m ruff check src tests
-.\.venv\Scripts\python -m ruff format --check src tests
+.\.venv\Scripts\python -m ruff check src tests scripts
+.\.venv\Scripts\python -m ruff format --check src tests scripts
 ```
 
-`test_documentation.py` 检查入口文件、模块覆盖、关键命令/限制和相对链接。Markdown
-链接由测试解析，不依赖外部网络。Docker 部署文档的可用性最终由完整演示流程验证。
+`test_documentation.py` 检查入口、模块 docstring、关键语义和相对链接。Docker 文档的
+最终可用性由完整 Core/HA 演示验证。
 
-## 可发现性与可用性
+## 可发现性
 
-从干净克隆开始，读者应在两步内从根 README 找到以下内容：
+从根 README 两步内应能找到：
 
-1. 如何安装与运行测试。
-2. 如何启动集群并验证 WordCount。
-3. 如何编写 YAML/UDF。
-4. 如何定位 Worker、任务、连接和窗口问题。
-5. 当前为什么具备 At-least-once、但不具备 Exactly-once。
+1. 安装与质量门。
+2. Core/HA 启动和验收。
+3. YAML/UDF 与 Exactly-once 输出读取契约。
+4. Worker/JM/MinIO/TLS/Checkpoint 排障。
+5. At-least-once 兼容路径与 Exactly-once 已实证边界。
+6. Kafka、主机、output volume 和 UDF 的剩余风险。
 
-若新读者只能依靠口头说明完成其中任一任务，应视为文档缺陷并在交付前修复。
+需要口头说明才能完成任一项，视为文档缺陷。

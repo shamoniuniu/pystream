@@ -74,30 +74,30 @@
   - [x] Prometheus metrics 与 rules
   - [x] 认证、证书、redaction、metrics tests
 
-- [ ] Task 7: Core Docker Exactly-once 验收
-  - [ ] 基础与显式 At-least-once 回归
-  - [ ] Exactly-once 无故障基准
-  - [ ] Barrier 前 Worker SIGKILL
-  - [ ] PREPARED/DECIDED 前 Worker SIGKILL
-  - [ ] Worker 60 秒恢复
-  - [ ] committed output diff=0、lag=0
-  - [ ] 资源和 Secret 清零
+- [x] Task 7: Core Docker Exactly-once 验收
+  - [x] 基础与显式 At-least-once 回归
+  - [x] Exactly-once 无故障基准
+  - [x] Barrier 前 Worker SIGKILL
+  - [x] PREPARED/DECIDED 前 Worker SIGKILL
+  - [x] Worker 60 秒恢复
+  - [x] committed output diff=0、lag=0
+  - [x] 资源和 Secret 清零
 
-- [ ] Task 8: HA Docker 验收
-  - [ ] 双 JobManager active count=1
-  - [ ] 外部 Token/内部 mTLS 正反路径
-  - [ ] DECIDED/FINALIZED 前 active JobManager 退出
-  - [ ] standby 30 秒接管并 epoch 增加
-  - [ ] 单对象存储节点退出后继续读写
-  - [ ] 接管后 Worker 故障仍 Exactly-once
-  - [ ] Prometheus/SLO/lease/finalize 证据
-  - [ ] 资源和 Secret 清零
+- [x] Task 8: HA Docker 验收
+  - [x] 双 JobManager active count=1
+  - [x] 外部 Token/内部 mTLS 正反路径
+  - [x] DECIDED/FINALIZED 前 active JobManager 退出
+  - [x] standby 30 秒接管并 epoch 增加
+  - [x] 单对象存储节点退出后继续读写
+  - [x] 接管后 Worker 故障仍 Exactly-once
+  - [x] Prometheus/SLO/lease/finalize 证据
+  - [x] 资源和 Secret 清零
 
-- [ ] Task 9: 文档、审查和最终推送
-  - [ ] README/API/架构/模块/部署/测试/排障/roadmap
-  - [ ] 高级开发日志和验收报告
-  - [ ] Python 3.11、Ruff、format、coverage
-  - [ ] Secret scan
-  - [ ] staged diff review 与 receipts
-  - [ ] Git notes 与功能分支推送
-  - [ ] main/v0.1.0/v0.2.0 不变
+- [x] Task 9: 文档、审查和最终推送
+  - [x] README/API/架构/模块/部署/测试/排障/roadmap
+  - [x] 高级开发日志和验收报告
+  - [x] Python 3.11、Ruff、format、coverage
+  - [x] Secret scan
+  - [x] staged diff review 与 receipts
+  - [x] Git notes 与功能分支推送
+  - [x] main/v0.1.0/v0.2.0 不变

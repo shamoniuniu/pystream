@@ -1,0 +1,15 @@
+{
+  "failure": "worker",
+  "profile": "ha",
+  "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+  "operator_id": "word_totals",
+  "worker_id": "worker-1",
+  "service": "worker-ha-1",
+  "container_id": "995b62b80cf9cff69505818de3f00f80f7dc9728ae7bf8b3255497301c8ebfa3",
+  "before": {
+    "restart_count": 0,
+    "started_at": "2026-08-05T05:11:46.300694854Z",
+    "running": true
+  },
+  "injected_at": "2026-08-05T05:14:17.365558+00:00"
+}

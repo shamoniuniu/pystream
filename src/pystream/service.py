@@ -28,6 +28,7 @@ from pystream.control import (
     S3JobMetadataRepository,
     S3LeaderLeaseRepository,
 )
+from pystream.control.testing import CheckpointTestHooks
 from pystream.observability import PyStreamMetrics, configure_logging
 from pystream.runtime import DataPlaneServer
 from pystream.security import (
@@ -70,6 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
     jobmanager.add_argument("--leader-lease-ttl", type=float, default=10.0)
     jobmanager.add_argument("--leader-renew-interval", type=float, default=3.0)
     jobmanager.add_argument("--leader-poll-interval", type=float, default=1.0)
+    jobmanager.add_argument(
+        "--enable-test-hooks",
+        action="store_true",
+        default=_environment_flag("PYSTREAM_ENABLE_TEST_HOOKS"),
+        help="Expose deterministic checkpoint gates for local acceptance only",
+    )
     _add_tls_arguments(jobmanager)
     jobmanager.add_argument(
         "--external-token-file",
@@ -138,6 +145,7 @@ def _create_jobmanager_app(args: argparse.Namespace) -> web.Application:
         if object_store is not None
         else LocalCheckpointStore(args.checkpoint_root)
     )
+    test_hooks = CheckpointTestHooks() if args.enable_test_hooks else None
     manager = JobManager(
         artifact_repository,
         gateway,
@@ -150,6 +158,7 @@ def _create_jobmanager_app(args: argparse.Namespace) -> web.Application:
             CoordinatorRole.STANDBY if args.jobmanager_id is not None else CoordinatorRole.ACTIVE
         ),
         metrics=metrics,
+        test_hooks=test_hooks,
     )
     leadership = None
     if args.jobmanager_id is not None:
@@ -177,6 +186,7 @@ def _create_jobmanager_app(args: argparse.Namespace) -> web.Application:
         metrics_auth=_authenticator(args.metrics_token_file, "metrics token"),
         require_internal_tls=tls_files is not None,
         metrics=metrics,
+        test_hooks=test_hooks,
     )
     app = service.create_app()
     if server_ssl is not None:
@@ -304,6 +314,18 @@ def _add_object_store_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=_environment_path("PYSTREAM_OBJECT_STORE_CA_FILE"),
     )
+
+
+def _environment_flag(name: str) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError(f"{name} must be a boolean flag")
 
 
 def _add_tls_arguments(parser: argparse.ArgumentParser) -> None:

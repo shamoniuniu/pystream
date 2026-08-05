@@ -1,0 +1,1069 @@
+{
+  "schema_version": 1,
+  "profile": "ha",
+  "started_at": "2026-08-05T05:11:05.891047+00:00",
+  "scenarios": [
+    {
+      "name": "ha_combined_faults",
+      "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+      "hook_reached": {
+        "generation": 1,
+        "hook": "after_decision",
+        "status": "REACHED",
+        "action": null,
+        "context": {
+          "checkpoint_id": 1,
+          "attempt_id": 0,
+          "coordinator_epoch": 1
+        }
+      },
+      "active_jobmanager_failure": {
+        "failure": "active-jobmanager",
+        "profile": "ha",
+        "service": "jobmanager-1",
+        "container_id": "223d5f167854615ed2deb80108ba6ddada52c0c7f83e68bda2c217ce46280587",
+        "health_observations": {
+          "jobmanager-1": {
+            "status": "ok",
+            "role": "ACTIVE",
+            "coordinator_epoch": 1,
+            "leader_ready": true,
+            "takeover_pending": 0,
+            "workers": 3,
+            "healthy_workers": 3,
+            "jobs": 1,
+            "running_jobs": 1
+          }
+        },
+        "before": {
+          "restart_count": 0,
+          "started_at": "2026-08-05T05:11:34.633621803Z",
+          "running": true
+        },
+        "injected_at": "2026-08-05T05:12:19.349635+00:00"
+      },
+      "takeover_seconds": 25.828200499992818,
+      "status_after_takeover": {
+        "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+        "name": "advanced-exactly-once",
+        "status": "RUNNING",
+        "coordinator_epoch": 2,
+        "metadata_revision": 8,
+        "error": null,
+        "attempt": 1,
+        "recovery": {
+          "attempts": 1,
+          "max_attempts": 6,
+          "last_failure": "Leader takeover epoch=2",
+          "last_completed_at": "2026-08-05T05:12:51.704679+00:00"
+        },
+        "checkpoint": {
+          "next_id": 2,
+          "last_completed_id": 1,
+          "last_decided_id": 1,
+          "last_finalized_id": 1,
+          "consecutive_failures": 0
+        },
+        "tasks": [
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:words:0",
+            "operator_id": "words",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:words:1",
+            "operator_id": "words",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:normalize:0",
+            "operator_id": "normalize",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:normalize:1",
+            "operator_id": "normalize",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_word:0",
+            "operator_id": "by_word",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_word:1",
+            "operator_id": "by_word",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:word_totals:0",
+            "operator_id": "word_totals",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:word_totals:1",
+            "operator_id": "word_totals",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_count:0",
+            "operator_id": "by_count",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:count_distribution:0",
+            "operator_id": "count_distribution",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:output:0",
+            "operator_id": "output",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 3,
+            "error": null
+          }
+        ]
+      },
+      "verification_after_takeover": {
+        "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+        "status": "RUNNING",
+        "attempt": 1,
+        "coordinator_epoch": 2,
+        "checkpoint": {
+          "next_id": 2,
+          "last_completed_id": 1,
+          "last_decided_id": 1,
+          "last_finalized_id": 1,
+          "consecutive_failures": 0
+        },
+        "visible_rows": [
+          {
+            "window_end": "2026/07/29T00:00:05",
+            "count": 1,
+            "word_count": 1,
+            "occurrences": 1
+          },
+          {
+            "window_end": "2026/07/29T00:00:05",
+            "count": 2,
+            "word_count": 1,
+            "occurrences": 1
+          }
+        ],
+        "manifest_checkpoint_ids": [
+          1
+        ],
+        "kafka_offsets": [
+          {
+            "partition": 0,
+            "committed_offset": 3,
+            "end_offset": 3,
+            "lag": 0
+          },
+          {
+            "partition": 1,
+            "committed_offset": 2,
+            "end_offset": 2,
+            "lag": 0
+          }
+        ],
+        "pending_transactions": 1,
+        "committed_output_exact": true,
+        "semantics": "exactly-once"
+      },
+      "restarted_standby": {
+        "service": "jobmanager-1",
+        "health": "healthy",
+        "leadership": {
+          "active_count": 1,
+          "active_service": "jobmanager-2",
+          "health": {
+            "jobmanager-1": {
+              "status": "ok",
+              "role": "STANDBY",
+              "coordinator_epoch": 0,
+              "leader_ready": false,
+              "takeover_pending": 0,
+              "workers": 0,
+              "healthy_workers": 0,
+              "jobs": 0,
+              "running_jobs": 0
+            },
+            "jobmanager-2": {
+              "status": "ok",
+              "role": "ACTIVE",
+              "coordinator_epoch": 2,
+              "leader_ready": true,
+              "takeover_pending": 0,
+              "workers": 3,
+              "healthy_workers": 3,
+              "jobs": 1,
+              "running_jobs": 1
+            }
+          }
+        }
+      },
+      "minio_failure": {
+        "failure": "minio",
+        "profile": "ha",
+        "service": "minio-1",
+        "container_id": "84c28463e9ada5e37a4c6f0397b8bf843f0a735a92888c5ea51fad8e9152f465",
+        "before": {
+          "restart_count": 0,
+          "started_at": "2026-08-05T05:11:19.355121512Z",
+          "running": true
+        },
+        "failure_mode": "container_stopped_with_non_listening_ip_holder",
+        "network": "pystream-advanced_pystream",
+        "reserved_address": "172.18.0.3",
+        "holder_container_id": "b02e897707492eea14d6307b0f8615db70cf4f101b5341722a1b52ef368a92ae",
+        "injected_at": "2026-08-05T05:13:44.991500+00:00"
+      },
+      "storage_backend_down_seconds": 1.3114958000078332,
+      "storage_recovery_seconds": 28.988282100006472,
+      "storage_leader_health": {
+        "status": "ok",
+        "role": "ACTIVE",
+        "coordinator_epoch": 2,
+        "leader_ready": true,
+        "takeover_pending": 0,
+        "workers": 3,
+        "healthy_workers": 3,
+        "jobs": 1,
+        "running_jobs": 1
+      },
+      "storage_ready_status": {
+        "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+        "name": "advanced-exactly-once",
+        "status": "RUNNING",
+        "coordinator_epoch": 2,
+        "metadata_revision": 8,
+        "error": null,
+        "attempt": 1,
+        "recovery": {
+          "attempts": 1,
+          "max_attempts": 6,
+          "last_failure": "Leader takeover epoch=2",
+          "last_completed_at": "2026-08-05T05:12:51.704679+00:00"
+        },
+        "checkpoint": {
+          "next_id": 2,
+          "last_completed_id": 1,
+          "last_decided_id": 1,
+          "last_finalized_id": 1,
+          "consecutive_failures": 0
+        },
+        "tasks": [
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:words:0",
+            "operator_id": "words",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:words:1",
+            "operator_id": "words",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:normalize:0",
+            "operator_id": "normalize",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:normalize:1",
+            "operator_id": "normalize",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_word:0",
+            "operator_id": "by_word",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_word:1",
+            "operator_id": "by_word",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:word_totals:0",
+            "operator_id": "word_totals",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:word_totals:1",
+            "operator_id": "word_totals",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_count:0",
+            "operator_id": "by_count",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:count_distribution:0",
+            "operator_id": "count_distribution",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:output:0",
+            "operator_id": "output",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 3,
+            "error": null
+          }
+        ]
+      },
+      "checkpoint_after_storage_failure": {
+        "schema_version": 2,
+        "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+        "checkpoint_id": 2,
+        "attempt_id": 1,
+        "coordinator_epoch": 2,
+        "created_at": "2026-08-05T05:14:15.118435+00:00",
+        "snapshots": [
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_count:0",
+            "operator_id": "by_count",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/073627d2294c91b54b7ee98a3c05e233216c6e28156d9ad401b4f7d6d4ecc528.json",
+            "sha256": "53b32b5ab47b1819c3d7c023336065d37fceb65e35ddc2eeae3c35f3eb8fe478",
+            "size": 514,
+            "coordinator_epoch": 2,
+            "transactions": []
+          },
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_word:0",
+            "operator_id": "by_word",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/f9ca9450ff40b0a6eaffa23672f6760045e55ea4e81472e955cf1a4dc64f753f.json",
+            "sha256": "cd91335bd42ac0731f13d0ab9f1fcaf3cf06b8fb7bc9322283f1f3e197ba7d49",
+            "size": 506,
+            "coordinator_epoch": 2,
+            "transactions": []
+          },
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_word:1",
+            "operator_id": "by_word",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/305013aaa2209849e96ef0a1d919c0234df6b3990477249f51f45a6738816e87.json",
+            "sha256": "e5f0f787ef3e45bc162f28aecddbcaa4199faee6f3c79841c3cb468137225661",
+            "size": 506,
+            "coordinator_epoch": 2,
+            "transactions": []
+          },
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:count_distribution:0",
+            "operator_id": "count_distribution",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/f272432df0199a294195495e646ffa67b281215061950605f89970529516046e.json",
+            "sha256": "824580b869564d731fb5585b68f455211fa8595476c1c11aea3502140f22091f",
+            "size": 1301,
+            "coordinator_epoch": 2,
+            "transactions": []
+          },
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:normalize:0",
+            "operator_id": "normalize",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/b1f0ac79db2b26c875902721ba52e264cc4ff1841b5b5a1e761adefb1e3f3131.json",
+            "sha256": "e94d1ff8ef491881d648bcb221d7e99368f4ecbceb4e14d6c4892599251006dc",
+            "size": 506,
+            "coordinator_epoch": 2,
+            "transactions": []
+          },
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:normalize:1",
+            "operator_id": "normalize",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/33bdcc412b583d176bed577f5ca6451e53402b987536a7e3750f1095552c959b.json",
+            "sha256": "280d2444732f542732249b6fcb2c964a1eb4b2b9198d18d0255d22189b298349",
+            "size": 506,
+            "coordinator_epoch": 2,
+            "transactions": []
+          },
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:output:0",
+            "operator_id": "output",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/8f29ad75e2ce4891bcabcdb67e23f575ba1df2fb87007d2d41aec878fc312dd2.json",
+            "sha256": "7220dc27f266aec69dbe3c21f7f587981798f8ff29bbc88af28657f82a2f797d",
+            "size": 960,
+            "coordinator_epoch": 2,
+            "transactions": [
+              {
+                "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+                "checkpoint_id": 2,
+                "attempt_id": 1,
+                "coordinator_epoch": 2,
+                "task_id": "3f01d8833dd3414d81bb6911cabd71fa:output:0",
+                "operator_id": "output",
+                "transaction_id": "6c65d1d0effb450fbf00d14dd393a2a1",
+                "pending_path": "3f01d8833dd3414d81bb6911cabd71fa/output/pending/attempt-00000001/tx-6c65d1d0effb450fbf00d14dd393a2a1/part-00000.csv",
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "size": 0
+              }
+            ]
+          },
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/b7f0c4f40f340527ad1e0e6a71cac5491f1887910a68f8662579da3b3c7f176b.json",
+            "sha256": "299dfc04081eb09c04645842dd7e75d72990a940b7429d053d1b5c33e423c1b4",
+            "size": 634,
+            "coordinator_epoch": 2,
+            "transactions": []
+          },
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:word_totals:0",
+            "operator_id": "word_totals",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/eb3d3c1b05e7f44a4e97dc51b9fe88f0ed235680edc814d4fdcd21ec4bb51977.json",
+            "sha256": "781c8a08c291aa3746c2764ba0bdf32470b889175891ad6f5fdcd6a05f7534bb",
+            "size": 838,
+            "coordinator_epoch": 2,
+            "transactions": []
+          },
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:word_totals:1",
+            "operator_id": "word_totals",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/496033adbbe2996dbe655f6aafdf3813618e82f9275548d28d4fd029dbdd99d5.json",
+            "sha256": "bf321f45a6e74221b7ff826893659c7f0f61e39e2130290abd5f241099eb6d36",
+            "size": 1422,
+            "coordinator_epoch": 2,
+            "transactions": []
+          },
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:words:0",
+            "operator_id": "words",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/af8fb0ca67cd84c79faa6f773132478cae8f5d8ba8c36b006708e6c81ea8bdaf.json",
+            "sha256": "aefbc48751fe9e040ca16c5d499055869c29d97024c3a729f6bbab4a190959e4",
+            "size": 572,
+            "coordinator_epoch": 2,
+            "transactions": []
+          },
+          {
+            "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+            "checkpoint_id": 2,
+            "attempt_id": 1,
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:words:1",
+            "operator_id": "words",
+            "relative_path": "pystream/checkpoints/3f01d8833dd3414d81bb6911cabd71fa/00000000000000000002/attempts/00000001/tasks/a6c29c19ef58586fd220ac35714155d9d6c81176cd4a7f5f9e99a648228cc7ac.json",
+            "sha256": "8943315e0d155e682df2a1d94472ec0ca7ac6287ff626e3f317f3435ddd48c2c",
+            "size": 572,
+            "coordinator_epoch": 2,
+            "transactions": []
+          }
+        ]
+      },
+      "status_after_storage_failure": {
+        "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+        "name": "advanced-exactly-once",
+        "status": "RUNNING",
+        "coordinator_epoch": 2,
+        "metadata_revision": 10,
+        "error": null,
+        "attempt": 1,
+        "recovery": {
+          "attempts": 1,
+          "max_attempts": 6,
+          "last_failure": "Leader takeover epoch=2",
+          "last_completed_at": "2026-08-05T05:12:51.704679+00:00"
+        },
+        "checkpoint": {
+          "next_id": 3,
+          "last_completed_id": 2,
+          "last_decided_id": 2,
+          "last_finalized_id": 2,
+          "consecutive_failures": 0
+        },
+        "tasks": [
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:words:0",
+            "operator_id": "words",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:words:1",
+            "operator_id": "words",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:normalize:0",
+            "operator_id": "normalize",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:normalize:1",
+            "operator_id": "normalize",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_word:0",
+            "operator_id": "by_word",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_word:1",
+            "operator_id": "by_word",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:word_totals:0",
+            "operator_id": "word_totals",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:word_totals:1",
+            "operator_id": "word_totals",
+            "subtask": 1,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_count:0",
+            "operator_id": "by_count",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:count_distribution:0",
+            "operator_id": "count_distribution",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:output:0",
+            "operator_id": "output",
+            "subtask": 0,
+            "attempt_id": 1,
+            "restored_checkpoint_id": 1,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 3,
+            "error": null
+          }
+        ]
+      },
+      "worker_failure": {
+        "failure": "worker",
+        "profile": "ha",
+        "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+        "operator_id": "word_totals",
+        "worker_id": "worker-1",
+        "service": "worker-ha-1",
+        "container_id": "995b62b80cf9cff69505818de3f00f80f7dc9728ae7bf8b3255497301c8ebfa3",
+        "before": {
+          "restart_count": 0,
+          "started_at": "2026-08-05T05:11:46.300694854Z",
+          "running": true
+        },
+        "injected_at": "2026-08-05T05:14:17.365558+00:00"
+      },
+      "worker_recovery_seconds": 19.75534420000622,
+      "status_after_worker_recovery": {
+        "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+        "name": "advanced-exactly-once",
+        "status": "RUNNING",
+        "coordinator_epoch": 2,
+        "metadata_revision": 13,
+        "error": null,
+        "attempt": 2,
+        "recovery": {
+          "attempts": 1,
+          "max_attempts": 6,
+          "last_failure": "RuntimeConnectionError: \u5165\u901a\u9053 ChannelIdentity(job_id='3f01d8833dd3414d81bb6911cabd71fa', upstream_task_id='3f01d8833dd3414d81bb6911cabd71fa:count_distribution:0', downstream_task_id='3f01d8833dd3414d81bb6911cabd71fa:output:0', attempt_id=1, coordinator_epoch=2) \u5931\u8d25: \u8fde\u63a5\u5728\u8bfb\u53d6\u5e27\u957f\u5ea6\u524d\u5173\u95ed; \u65e7 attempt \u6e05\u7406\u9519\u8bef: 3f01d8833dd3414d81bb6911cabd71fa:words:0: Cannot connect to host worker-ha-1:8081 ssl:<ssl.SSLContext object at 0x726e1d72b9b0> [Name or service not known]; 3f01d8833dd3414d81bb6911cabd71fa:normalize:1: Cannot connect to host worker-ha-1:8081 ssl:<ssl.SSLContext object at 0x726e1d72b9b0> [Connect call failed ('172.18.0.14', 8081)]; 3f01d8833dd3414d81bb6911cabd71fa:word_totals:0: Cannot connect to host worker-ha-1:8081 ssl:<ssl.SSLContext object at 0x726e1d72b9b0> [Connect call failed ('172.18.0.14', 8081)]; 3f01d8833dd3414d81bb6911cabd71fa:by_count:0: Cannot connect to host worker-ha-1:8081 ssl:<ssl.SSLContext object at 0x726e1d72b9b0> [Connect call failed ('172.18.0.14', 8081)]",
+          "last_completed_at": "2026-08-05T05:14:36.217786+00:00"
+        },
+        "checkpoint": {
+          "next_id": 3,
+          "last_completed_id": 2,
+          "last_decided_id": 2,
+          "last_finalized_id": 2,
+          "consecutive_failures": 0
+        },
+        "tasks": [
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:words:0",
+            "operator_id": "words",
+            "subtask": 0,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:words:1",
+            "operator_id": "words",
+            "subtask": 1,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:normalize:0",
+            "operator_id": "normalize",
+            "subtask": 0,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 0,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:normalize:1",
+            "operator_id": "normalize",
+            "subtask": 1,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_word:0",
+            "operator_id": "by_word",
+            "subtask": 0,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_word:1",
+            "operator_id": "by_word",
+            "subtask": 1,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 1,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:word_totals:0",
+            "operator_id": "word_totals",
+            "subtask": 0,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:word_totals:1",
+            "operator_id": "word_totals",
+            "subtask": 1,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:to_count_bucket:0",
+            "operator_id": "to_count_bucket",
+            "subtask": 0,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 2,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:by_count:0",
+            "operator_id": "by_count",
+            "subtask": 0,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-1",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:count_distribution:0",
+            "operator_id": "count_distribution",
+            "subtask": 0,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-2",
+            "slot": 3,
+            "error": null
+          },
+          {
+            "task_id": "3f01d8833dd3414d81bb6911cabd71fa:output:0",
+            "operator_id": "output",
+            "subtask": 0,
+            "attempt_id": 2,
+            "restored_checkpoint_id": 2,
+            "status": "RUNNING",
+            "worker_id": "worker-3",
+            "slot": 3,
+            "error": null
+          }
+        ]
+      },
+      "final_verification": {
+        "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+        "status": "RUNNING",
+        "attempt": 2,
+        "coordinator_epoch": 2,
+        "checkpoint": {
+          "next_id": 4,
+          "last_completed_id": 3,
+          "last_decided_id": 3,
+          "last_finalized_id": 3,
+          "consecutive_failures": 0
+        },
+        "visible_rows": [
+          {
+            "window_end": "2026/07/29T00:00:05",
+            "count": 1,
+            "word_count": 1,
+            "occurrences": 1
+          },
+          {
+            "window_end": "2026/07/29T00:00:05",
+            "count": 2,
+            "word_count": 1,
+            "occurrences": 1
+          }
+        ],
+        "manifest_checkpoint_ids": [
+          1,
+          2,
+          3
+        ],
+        "kafka_offsets": [
+          {
+            "partition": 0,
+            "committed_offset": 3,
+            "end_offset": 3,
+            "lag": 0
+          },
+          {
+            "partition": 1,
+            "committed_offset": 2,
+            "end_offset": 2,
+            "lag": 0
+          }
+        ],
+        "pending_transactions": 1,
+        "committed_output_exact": true,
+        "semantics": "exactly-once"
+      },
+      "committed_output_diff_rows": 0
+    }
+  ],
+  "ha": {
+    "leadership_before_failure": {
+      "active_count": 1,
+      "active_service": "jobmanager-1",
+      "health": {
+        "jobmanager-1": {
+          "status": "ok",
+          "role": "ACTIVE",
+          "coordinator_epoch": 1,
+          "leader_ready": true,
+          "takeover_pending": 0,
+          "workers": 3,
+          "healthy_workers": 3,
+          "jobs": 0,
+          "running_jobs": 0
+        },
+        "jobmanager-2": {
+          "status": "ok",
+          "role": "STANDBY",
+          "coordinator_epoch": 0,
+          "leader_ready": false,
+          "takeover_pending": 0,
+          "workers": 0,
+          "healthy_workers": 0,
+          "jobs": 0,
+          "running_jobs": 0
+        }
+      }
+    },
+    "security": {
+      "missing_token": 401,
+      "wrong_token": 401,
+      "wrong_ca_rejected": true,
+      "valid_token_status": 200,
+      "wrong_internal_identity_status": 403
+    },
+    "takeover_seconds": 25.828200499992818,
+    "worker_recovery_seconds": 19.75534420000622,
+    "storage_read_write_after_node_loss": true,
+    "storage_recovery_seconds": 28.988282100006472,
+    "restarted_failed_active_as_standby": true,
+    "committed_output_diff_rows": 0,
+    "kafka_lag": 0,
+    "prometheus": {
+      "healthy_jobmanager_worker_targets": 5,
+      "rule_count": 8
+    }
+  },
+  "result": "passed",
+  "resource_cleanup": {
+    "containers": 0,
+    "networks": 0,
+    "volumes": 0
+  },
+  "secret_directory_removed": true,
+  "finished_at": "2026-08-05T05:15:11.087061+00:00"
+}

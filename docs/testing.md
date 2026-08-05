@@ -7,102 +7,115 @@
 目标解释器为 Python 3.11：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -e ".[dev]"
-.\.venv\Scripts\ruff check .
-.\.venv\Scripts\ruff format --check .
+.\.venv\Scripts\python -m ruff check .
+.\.venv\Scripts\python -m ruff format --check .
 .\.venv\Scripts\python -m pytest
+git diff --check
 ```
 
-pytest 默认启用 branch coverage，并要求 `src/pystream` 总覆盖率至少 80%。
+pytest 默认启用 branch coverage，并要求 `src/pystream` 总覆盖率至少 80%。最终门禁
+必须无 skip，并在 Linux/Python 3.11 中执行。
 
-2026-07-30 最终本地门禁：
+2026-08-05 最终结果：
 
 ```text
-372 passed
-84.40% total coverage
-108 files formatted
+487 passed, 0 skipped
+83.01% branch coverage
 Ruff check passed
+147 files formatted
 ```
-
-完整日志：`reports/intermediate-python311-tests.log`。
 
 ## 测试分层
 
 | 层 | 路径 | 证明内容 |
 |---|---|---|
-| 契约 | `tests/contract/` | YAML/DAG、演示脚本、部署资产、文档和公共约束 |
-| 单元 | `tests/unit/` | Watermark、Retract、Store、Coordinator、恢复、fencing |
-| 离线集成 | `tests/integration/` | TCP loopback、DATA/CONTROL 保序、背压、多 Runtime |
-| Docker E2E | `run_intermediate_acceptance.ps1` | Kafka、3 Worker、Checkpoint、SIGKILL、恢复和 lag |
+| 契约 | `tests/contract/` | YAML/DAG、示例、部署资产、文档、manifest reader |
+| 单元 | `tests/unit/` | Barrier、事务、store、coordinator、HA、fencing |
+| 安全 | `tests/security/` | TLS、Token、身份、Secret redaction |
+| 集成 | `tests/integration/` | TCP/TLS、DATA/CONTROL、背压、多 Runtime、MinIO |
+| Docker E2E | advanced acceptance scripts | 真实 Kafka/MinIO/JM/Worker 故障和 Exactly-once |
 
-关键测试：
+关键覆盖：
 
-- `test_job_api.py`：execution/event-time/checkpoint/restart 与 DAG 能力传播。
-- `test_connectors.py`：事件时间、Watermark、replay skip、确定性 partition 分配。
-- `test_operators.py`：窗口、late record、changelog/retract 和状态 round-trip。
-- `test_checkpoint.py` / `test_store.py`：停流顺序、manifest-last、损坏回退。
-- `test_task_runtime.py`：CONTROL、多输入 Watermark、snapshot/restore。
-- `test_manager.py`：自动恢复、attempt fencing、取消竞态、Source 并发部署。
-- `test_demo_scripts.py`：At-least-once 多重集、显式 Checkpoint、Kafka lag 验证。
-- `test_deployment_assets.py`：固定镜像、非 root 卷权限、原生 Docker 编排。
+- API：默认 Exactly-once、显式 At-least-once、Sink capability。
+- Runtime：per-input Barrier gate、快慢输入、timeout/abort/断连。
+- Source：frozen offset、complete/abort、restore seek。
+- Sink：pre-commit、decision、幂等 finalize、manifest-last。
+- Checkpoint：task set/SHA/size、DECIDED/FINALIZED、损坏回退。
+- Control：lease、双 contender、protective step-down、takeover、旧 epoch 拒绝。
+- Manager：旧 takeover cache 单调恢复、同 operator 并发部署。
+- Security：错 Token/CA/证书身份/过期证书和 Secret 不泄露。
+- Scripts：只读取 verified manifest fragments、Kafka lag 和故障注入契约。
 
 ## 选择性运行
 
 ```powershell
-.\.venv\Scripts\python -m pytest -o addopts="" tests/contract -q
-.\.venv\Scripts\python -m pytest -o addopts="" tests/unit/operators -q
-.\.venv\Scripts\python -m pytest -o addopts="" tests/unit/control -q
+.\.venv\Scripts\python -m pytest --no-cov tests/contract -q
+.\.venv\Scripts\python -m pytest --no-cov tests/unit/control -q
+.\.venv\Scripts\python -m pytest --no-cov tests/security -q
 ```
 
-局部测试关闭默认覆盖率参数，避免未加载模块造成假失败；最终必须运行完整 pytest。
+局部测试关闭 coverage 只用于快速定位；最终必须运行完整 pytest。
 
-## Python 3.11 容器门禁
+Windows 长路径可能导致 pytest 临时目录失败，可显式缩短：
 
-宿主机只有其他 Python 版本时，可以在候选镜像中挂载工作树：
+```powershell
+.\.venv\Scripts\python -m pytest --basetemp C:\t\pystream
+```
+
+## Python 3.11 Linux 门禁
+
+候选镜像可挂载工作树执行：
 
 ```powershell
 docker create --name pystream-python311-tests --user 0 `
-  -v "${PWD}:/workspace" -w /workspace pystream:0.2.0 `
+  -v "${PWD}:/workspace" -w /workspace pystream:0.3.0 `
   /bin/sh -lc "/opt/venv/bin/pip install -e '.[dev]' && /opt/venv/bin/python -m pytest"
-docker start pystream-python311-tests
-docker inspect --format "{{.State.Status}} {{.State.ExitCode}}" pystream-python311-tests
-docker logs pystream-python311-tests
+docker start -a pystream-python311-tests
 docker rm -f pystream-python311-tests
 ```
 
-Windows 长路径可能使宿主测试失败；Linux/Python 3.11 容器结果是发布门禁。
+Ruff、format 与 full pytest 的最终结果记录在
+`reports/advanced-m7-build-receipt.json` 和开发日志。
 
 ## Docker 故障验收
 
-按 [部署文档](deployment.md)运行标准脚本。至少保存：
+普通 pytest 不替代 Docker E2E。最终候选必须运行：
 
-- 初级 WordCount 正确输出与跨 Worker HASH 证据。
-- baseline 与 recovery 输出多重集。
-- Checkpoint 1/2 状态。
-- RestartCount、StartedAt、incarnation、attempt/recovery attempts。
-- 所有 Task 的同一 restored checkpoint。
-- Kafka committed/end offset 与 lag=0。
-- `intermediate_acceptance=passed` 和 `compose_project_resources=0`。
+```powershell
+.\scripts\run_advanced_core_acceptance.ps1 -PythonCommand .\.venv\Scripts\python.exe
+.\scripts\run_advanced_ha_acceptance.ps1 -PythonCommand .\.venv\Scripts\python.exe
+```
 
-普通 pytest 不替代 Docker E2E。
+必须保存：
+
+- 三个确定性提交窗口的 checkpoint phase/attempt/epoch。
+- JobManager 接管和 Worker 恢复耗时。
+- 单 MinIO 节点退出后的新 checkpoint。
+- manifest-visible rows 与 baseline diff=0。
+- Kafka committed/end/lag=0。
+- 5 个 Prometheus JobManager/Worker targets 和 8 条 rules。
+- 最终 Docker 资源与临时 Secret 为 0。
+
+2026-08-05 Docker 最终结果：
+
+```text
+Core: 13.870s / 15.598s Worker recovery, diff=0, lag=0
+HA: 25.828s JM takeover, 19.755s Worker recovery, diff=0, lag=0
+```
 
 ## 性能测量
 
-默认离线基准：
+离线算子基准：
 
 ```powershell
 .\.venv\Scripts\python scripts\benchmark.py `
-  --records 50000 `
-  --partitions 2 `
-  --map-parallelism 2 `
-  --key-parallelism 2 `
-  --reduce-parallelism 3 `
-  --sink-parallelism 1 `
-  --window-seconds 300 `
-  --word-cardinality 100 `
+  --records 50000 --partitions 2 `
+  --map-parallelism 2 --key-parallelism 2 `
+  --reduce-parallelism 3 --sink-parallelism 1 `
+  --window-seconds 300 --word-cardinality 100 `
   --report reports\offline-benchmark.json
 ```
 
-该基准不包含 Kafka、TCP、Docker、Checkpoint 和恢复，不能替代多容器性能或暂停
-时间测量。结果解释见 [性能基线](performance.md)。
+该基准不包含 Kafka、TLS、Docker、S3、Checkpoint 或恢复，不能替代多容器 SLO。
+结果解释见 [性能基线](performance.md)。

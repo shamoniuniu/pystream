@@ -1,0 +1,448 @@
++ docker ps -aq --filter label=com.docker.compose.project=pystream-advanced --filter label=com.docker.compose.service=failure-holder
++ docker ps -q --filter label=com.docker.compose.project=pystream-advanced --filter status=paused
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha down --volumes --remove-orphans --timeout 10
++ C:\Users\Admin\Database\.venv\Scripts\python.exe C:\Users\Admin\Database\scripts\generate_dev_pki.py --output C:\Users\Admin\Database\run\pki --force
+PyStream development PKI written to C:\Users\Admin\Database\run\pki
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha up -d --wait --wait-timeout 300 kafka kafka-init minio-1 minio-2 minio-3 minio-4 object-store object-store-init-ha jobmanager-1 jobmanager-2 jobmanager-router worker-ha-1 worker-ha-2 worker-ha-3 prometheus
+ Network pystream-advanced_pystream Creating
+ Network pystream-advanced_pystream Created
+ Volume pystream-advanced_pystream-minio-1-data-1 Creating
+ Volume pystream-advanced_pystream-minio-1-data-1 Created
+ Volume pystream-advanced_pystream-minio-4-data-2 Creating
+ Volume pystream-advanced_pystream-minio-4-data-2 Created
+ Volume pystream-advanced_pystream-prometheus Creating
+ Volume pystream-advanced_pystream-prometheus Created
+ Volume pystream-advanced_pystream-minio-3-data-2 Creating
+ Volume pystream-advanced_pystream-minio-3-data-2 Created
+ Volume pystream-advanced_pystream-output Creating
+ Volume pystream-advanced_pystream-output Created
+ Volume pystream-advanced_pystream-minio-3-data-1 Creating
+ Volume pystream-advanced_pystream-minio-3-data-1 Created
+ Volume pystream-advanced_pystream-worker-ha-2 Creating
+ Volume pystream-advanced_pystream-worker-ha-2 Created
+ Volume pystream-advanced_pystream-minio-2-data-1 Creating
+ Volume pystream-advanced_pystream-minio-2-data-1 Created
+ Volume pystream-advanced_pystream-minio-2-data-2 Creating
+ Volume pystream-advanced_pystream-minio-2-data-2 Created
+ Volume pystream-advanced_pystream-worker-ha-1 Creating
+ Volume pystream-advanced_pystream-worker-ha-1 Created
+ Volume pystream-advanced_pystream-minio-1-data-2 Creating
+ Volume pystream-advanced_pystream-minio-1-data-2 Created
+ Volume pystream-advanced_pystream-minio-4-data-1 Creating
+ Volume pystream-advanced_pystream-minio-4-data-1 Created
+ Volume pystream-advanced_pystream-worker-ha-3 Creating
+ Volume pystream-advanced_pystream-worker-ha-3 Created
+ Volume pystream-advanced_pystream-kafka Creating
+ Volume pystream-advanced_pystream-kafka Created
+ Container pystream-advanced-kafka-1 Creating
+ Container pystream-advanced-minio-4-1 Creating
+ Container pystream-advanced-minio-3-1 Creating
+ Container pystream-advanced-minio-1-1 Creating
+ Container pystream-advanced-minio-2-1 Creating
+ Container pystream-advanced-prometheus-1 Creating
+ Container pystream-advanced-prometheus-1 Created
+ Container pystream-advanced-minio-4-1 Created
+ Container pystream-advanced-kafka-1 Created
+ Container pystream-advanced-kafka-init-1 Creating
+ Container pystream-advanced-minio-1-1 Created
+ Container pystream-advanced-minio-3-1 Created
+ Container pystream-advanced-minio-2-1 Created
+ Container pystream-advanced-object-store-1 Creating
+ Container pystream-advanced-object-store-1 Created
+ Container pystream-advanced-object-store-init-ha-1 Creating
+ Container pystream-advanced-kafka-init-1 Created
+ Container pystream-advanced-object-store-init-ha-1 Created
+ Container pystream-advanced-jobmanager-2-1 Creating
+ Container pystream-advanced-jobmanager-1-1 Creating
+ Container pystream-advanced-jobmanager-2-1 Created
+ Container pystream-advanced-jobmanager-1-1 Created
+ Container pystream-advanced-jobmanager-router-1 Creating
+ Container pystream-advanced-jobmanager-router-1 Created
+ Container pystream-advanced-worker-ha-3-1 Creating
+ Container pystream-advanced-worker-ha-2-1 Creating
+ Container pystream-advanced-worker-ha-1-1 Creating
+ Container pystream-advanced-worker-ha-2-1 Created
+ Container pystream-advanced-worker-ha-1-1 Created
+ Container pystream-advanced-worker-ha-3-1 Created
+ Container pystream-advanced-minio-1-1 Starting
+ Container pystream-advanced-kafka-1 Starting
+ Container pystream-advanced-minio-3-1 Starting
+ Container pystream-advanced-prometheus-1 Starting
+ Container pystream-advanced-minio-2-1 Starting
+ Container pystream-advanced-minio-4-1 Starting
+ Container pystream-advanced-minio-1-1 Started
+ Container pystream-advanced-kafka-1 Started
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-minio-2-1 Started
+ Container pystream-advanced-minio-3-1 Started
+ Container pystream-advanced-prometheus-1 Started
+ Container pystream-advanced-minio-4-1 Started
+ Container pystream-advanced-object-store-1 Starting
+ Container pystream-advanced-object-store-1 Started
+ Container pystream-advanced-object-store-1 Waiting
+ Container pystream-advanced-object-store-1 Healthy
+ Container pystream-advanced-object-store-init-ha-1 Starting
+ Container pystream-advanced-object-store-init-ha-1 Started
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-kafka-init-1 Starting
+ Container pystream-advanced-kafka-init-1 Started
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-object-store-init-ha-1 Waiting
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-object-store-init-ha-1 Waiting
+ Container pystream-advanced-object-store-init-ha-1 Exited
+ Container pystream-advanced-object-store-init-ha-1 Exited
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-jobmanager-1-1 Starting
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-jobmanager-2-1 Starting
+ Container pystream-advanced-jobmanager-1-1 Started
+ Container pystream-advanced-jobmanager-2-1 Started
+ Container pystream-advanced-jobmanager-1-1 Waiting
+ Container pystream-advanced-jobmanager-2-1 Waiting
+ Container pystream-advanced-jobmanager-2-1 Healthy
+ Container pystream-advanced-jobmanager-1-1 Healthy
+ Container pystream-advanced-jobmanager-router-1 Starting
+ Container pystream-advanced-jobmanager-router-1 Started
+ Container pystream-advanced-object-store-init-ha-1 Waiting
+ Container pystream-advanced-jobmanager-router-1 Waiting
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-object-store-init-ha-1 Waiting
+ Container pystream-advanced-jobmanager-router-1 Waiting
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-object-store-init-ha-1 Waiting
+ Container pystream-advanced-jobmanager-router-1 Waiting
+ Container pystream-advanced-object-store-init-ha-1 Exited
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-object-store-init-ha-1 Exited
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-object-store-init-ha-1 Exited
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-jobmanager-router-1 Healthy
+ Container pystream-advanced-worker-ha-3-1 Starting
+ Container pystream-advanced-jobmanager-router-1 Healthy
+ Container pystream-advanced-worker-ha-1-1 Starting
+ Container pystream-advanced-jobmanager-router-1 Healthy
+ Container pystream-advanced-worker-ha-2-1 Starting
+ Container pystream-advanced-worker-ha-2-1 Started
+ Container pystream-advanced-worker-ha-3-1 Started
+ Container pystream-advanced-worker-ha-1-1 Started
+ Container pystream-advanced-jobmanager-2-1 Waiting
+ Container pystream-advanced-object-store-init-ha-1 Waiting
+ Container pystream-advanced-prometheus-1 Waiting
+ Container pystream-advanced-worker-ha-3-1 Waiting
+ Container pystream-advanced-object-store-1 Waiting
+ Container pystream-advanced-jobmanager-1-1 Waiting
+ Container pystream-advanced-worker-ha-2-1 Waiting
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-minio-2-1 Waiting
+ Container pystream-advanced-worker-ha-1-1 Waiting
+ Container pystream-advanced-minio-3-1 Waiting
+ Container pystream-advanced-jobmanager-router-1 Waiting
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-minio-4-1 Waiting
+ Container pystream-advanced-minio-1-1 Waiting
+ Container pystream-advanced-jobmanager-router-1 Healthy
+ Container pystream-advanced-object-store-init-ha-1 Exited
+ Container pystream-advanced-minio-4-1 Healthy
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-minio-2-1 Healthy
+ Container pystream-advanced-minio-3-1 Healthy
+ Container pystream-advanced-prometheus-1 Healthy
+ Container pystream-advanced-minio-1-1 Healthy
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-jobmanager-1-1 Healthy
+ Container pystream-advanced-jobmanager-2-1 Healthy
+ Container pystream-advanced-object-store-1 Healthy
+ Container pystream-advanced-worker-ha-2-1 Healthy
+ Container pystream-advanced-worker-ha-1-1 Healthy
+ Container pystream-advanced-worker-ha-3-1 Healthy
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router:8080 tools python -c import ssl,urllib.error,urllib.request;c=ssl.create_default_context(cafile='/run/secrets/pystream-ca');c.load_cert_chain('/run/secrets/tools-cert','/run/secrets/tools-key');r=urllib.request.Request('https://worker-ha-1:8081/tasks/not-allowed');
+try:
+ urllib.request.urlopen(r,context=c,timeout=5)
+except urllib.error.HTTPError as e:
+ print(e.code)
+ Container pystream-advanced-tools-run-f65536b92328 Creating
+ Container pystream-advanced-tools-run-f65536b92328 Created
+403
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha ps -q jobmanager-1
++ docker exec 223d5f167854615ed2deb80108ba6ddada52c0c7f83e68bda2c217ce46280587 python -c import json,ssl,urllib.request;c=ssl.create_default_context(cafile='/run/secrets/pystream-ca');c.load_cert_chain('/run/secrets/service-cert','/run/secrets/service-key');print(json.dumps(json.load(urllib.request.urlopen('https://localhost:8080/health',context=c,timeout=3))))
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha ps -q jobmanager-2
++ docker exec 1946a51173d949e3f4daa756add56fac82415e886d2789bebfc184190eb76826 python -c import json,ssl,urllib.request;c=ssl.create_default_context(cafile='/run/secrets/pystream-ca');c.load_cert_chain('/run/secrets/service-cert','/run/secrets/service-key');print(json.dumps(json.load(urllib.request.urlopen('https://localhost:8080/health',context=c,timeout=3))))
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router:8080 tools python /opt/pystream/scripts/produce_advanced.py
+ Container pystream-advanced-tools-run-b05fe453c1ac Creating
+ Container pystream-advanced-tools-run-b05fe453c1ac Created
+{
+  "topic": "advanced-words",
+  "messages": [
+    {
+      "input_id": "advanced-apple-1",
+      "partition": 0,
+      "offset": 0
+    },
+    {
+      "input_id": "advanced-pie-1",
+      "partition": 1,
+      "offset": 0
+    },
+    {
+      "input_id": "advanced-apple-2",
+      "partition": 0,
+      "offset": 1
+    },
+    {
+      "input_id": "advanced-clock-1",
+      "partition": 0,
+      "offset": 2
+    },
+    {
+      "input_id": "advanced-clock-2",
+      "partition": 1,
+      "offset": 1
+    }
+  ]
+}
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router:8080 tools python /opt/pystream/scripts/submit_advanced.py
+ Container pystream-advanced-tools-run-7e4e280613af Creating
+ Container pystream-advanced-tools-run-7e4e280613af Created
+job_id=3f01d8833dd3414d81bb6911cabd71fa
+status=RUNNING
+artifact_sha256=ca77e8892b7cfbfbf596eaeabe6aa6d0e0baeb716ecae5e8484f0309db0f0e92
++ C:\Users\Admin\Database\.venv\Scripts\python.exe C:\Users\Admin\Database\scripts\inject_advanced_failure.py active-jobmanager --profile ha --compose-file C:\Users\Admin\Database\deploy\compose.advanced.yaml --job-id 3f01d8833dd3414d81bb6911cabd71fa --jobmanager-url https://localhost:8080 --evidence-path C:\Users\Admin\Database\reports\ha-active-jobmanager-failure.json
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router:8080 tools python /opt/pystream/scripts/verify_advanced.py --job-id 3f01d8833dd3414d81bb6911cabd71fa --min-attempt 1 --min-epoch 2
+ Container pystream-advanced-tools-run-fb1125deb648 Creating
+ Container pystream-advanced-tools-run-fb1125deb648 Created
+{
+  "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+  "status": "RUNNING",
+  "attempt": 1,
+  "coordinator_epoch": 2,
+  "checkpoint": {
+    "next_id": 2,
+    "last_completed_id": 1,
+    "last_decided_id": 1,
+    "last_finalized_id": 1,
+    "consecutive_failures": 0
+  },
+  "visible_rows": [
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 1,
+      "word_count": 1,
+      "occurrences": 1
+    },
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 2,
+      "word_count": 1,
+      "occurrences": 1
+    }
+  ],
+  "manifest_checkpoint_ids": [
+    1
+  ],
+  "kafka_offsets": [
+    {
+      "partition": 0,
+      "committed_offset": 3,
+      "end_offset": 3,
+      "lag": 0
+    },
+    {
+      "partition": 1,
+      "committed_offset": 2,
+      "end_offset": 2,
+      "lag": 0
+    }
+  ],
+  "pending_transactions": 1,
+  "committed_output_exact": true,
+  "semantics": "exactly-once"
+}
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha start jobmanager-1
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-object-store-1 Waiting
+ Container pystream-advanced-object-store-1 Healthy
+ Container pystream-advanced-object-store-init-ha-1 Starting
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-kafka-init-1 Starting
+ Container pystream-advanced-kafka-init-1 Started
+ Container pystream-advanced-object-store-init-ha-1 Started
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-object-store-init-ha-1 Waiting
+ Container pystream-advanced-object-store-init-ha-1 Exited
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-jobmanager-1-1 Starting
+ Container pystream-advanced-jobmanager-1-1 Started
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha ps -q jobmanager-1
++ docker inspect --format {{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}} 223d5f167854615ed2deb80108ba6ddada52c0c7f83e68bda2c217ce46280587
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha ps -q jobmanager-1
++ docker inspect --format {{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}} 223d5f167854615ed2deb80108ba6ddada52c0c7f83e68bda2c217ce46280587
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha ps -q jobmanager-1
++ docker exec 223d5f167854615ed2deb80108ba6ddada52c0c7f83e68bda2c217ce46280587 python -c import json,ssl,urllib.request;c=ssl.create_default_context(cafile='/run/secrets/pystream-ca');c.load_cert_chain('/run/secrets/service-cert','/run/secrets/service-key');print(json.dumps(json.load(urllib.request.urlopen('https://localhost:8080/health',context=c,timeout=3))))
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha ps -q jobmanager-2
++ docker exec 1946a51173d949e3f4daa756add56fac82415e886d2789bebfc184190eb76826 python -c import json,ssl,urllib.request;c=ssl.create_default_context(cafile='/run/secrets/pystream-ca');c.load_cert_chain('/run/secrets/service-cert','/run/secrets/service-key');print(json.dumps(json.load(urllib.request.urlopen('https://localhost:8080/health',context=c,timeout=3))))
++ C:\Users\Admin\Database\.venv\Scripts\python.exe C:\Users\Admin\Database\scripts\inject_advanced_failure.py minio --profile ha --compose-file C:\Users\Admin\Database\deploy\compose.advanced.yaml --job-id 3f01d8833dd3414d81bb6911cabd71fa --jobmanager-url https://localhost:8080 --evidence-path C:\Users\Admin\Database\reports\ha-minio-failure.json
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha ps -q object-store
++ C:\Users\Admin\Database\.venv\Scripts\python.exe C:\Users\Admin\Database\scripts\inject_advanced_failure.py worker --profile ha --compose-file C:\Users\Admin\Database\deploy\compose.advanced.yaml --job-id 3f01d8833dd3414d81bb6911cabd71fa --jobmanager-url https://localhost:8080 --evidence-path C:\Users\Admin\Database\reports\ha-worker-failure.json
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router:8080 tools python /opt/pystream/scripts/verify_advanced.py --job-id 3f01d8833dd3414d81bb6911cabd71fa --min-attempt 2 --min-epoch 2
+ Container pystream-advanced-tools-run-61ec40acbb05 Creating
+ Container pystream-advanced-tools-run-61ec40acbb05 Created
+{
+  "job_id": "3f01d8833dd3414d81bb6911cabd71fa",
+  "status": "RUNNING",
+  "attempt": 2,
+  "coordinator_epoch": 2,
+  "checkpoint": {
+    "next_id": 4,
+    "last_completed_id": 3,
+    "last_decided_id": 3,
+    "last_finalized_id": 3,
+    "consecutive_failures": 0
+  },
+  "visible_rows": [
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 1,
+      "word_count": 1,
+      "occurrences": 1
+    },
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 2,
+      "word_count": 1,
+      "occurrences": 1
+    }
+  ],
+  "manifest_checkpoint_ids": [
+    1,
+    2,
+    3
+  ],
+  "kafka_offsets": [
+    {
+      "partition": 0,
+      "committed_offset": 3,
+      "end_offset": 3,
+      "lag": 0
+    },
+    {
+      "partition": 1,
+      "committed_offset": 2,
+      "end_offset": 2,
+      "lag": 0
+    }
+  ],
+  "pending_transactions": 1,
+  "committed_output_exact": true,
+  "semantics": "exactly-once"
+}
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha logs --no-color --timestamps
++ docker ps -aq --filter label=com.docker.compose.project=pystream-advanced --filter label=com.docker.compose.service=failure-holder
++ docker rm -f b02e89770749
+b02e89770749
++ docker ps -q --filter label=com.docker.compose.project=pystream-advanced --filter status=paused
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile ha down --volumes --remove-orphans --timeout 10
+ Container pystream-advanced-worker-ha-1-1 Stopping
+ Container pystream-advanced-worker-ha-2-1 Stopping
+ Container pystream-advanced-worker-ha-3-1 Stopping
+ Container pystream-advanced-prometheus-1 Stopping
+ Container pystream-advanced-worker-ha-3-1 Stopped
+ Container pystream-advanced-worker-ha-3-1 Removing
+ Container pystream-advanced-worker-ha-3-1 Removed
+ Container pystream-advanced-worker-ha-2-1 Stopped
+ Container pystream-advanced-worker-ha-2-1 Removing
+ Container pystream-advanced-worker-ha-2-1 Removed
+ Container pystream-advanced-worker-ha-1-1 Stopped
+ Container pystream-advanced-worker-ha-1-1 Removing
+ Container pystream-advanced-worker-ha-1-1 Removed
+ Container pystream-advanced-jobmanager-router-1 Stopping
+ Container pystream-advanced-jobmanager-router-1 Stopped
+ Container pystream-advanced-jobmanager-router-1 Removing
+ Container pystream-advanced-jobmanager-router-1 Removed
+ Container pystream-advanced-jobmanager-1-1 Stopping
+ Container pystream-advanced-jobmanager-2-1 Stopping
+ Container pystream-advanced-jobmanager-1-1 Stopped
+ Container pystream-advanced-jobmanager-1-1 Removing
+ Container pystream-advanced-jobmanager-1-1 Removed
+ Container pystream-advanced-jobmanager-2-1 Stopped
+ Container pystream-advanced-jobmanager-2-1 Removing
+ Container pystream-advanced-prometheus-1 Stopped
+ Container pystream-advanced-prometheus-1 Removing
+ Container pystream-advanced-jobmanager-2-1 Removed
+ Container pystream-advanced-kafka-init-1 Stopping
+ Container pystream-advanced-object-store-init-ha-1 Stopping
+ Container pystream-advanced-object-store-init-ha-1 Stopped
+ Container pystream-advanced-object-store-init-ha-1 Removing
+ Container pystream-advanced-kafka-init-1 Stopped
+ Container pystream-advanced-kafka-init-1 Removing
+ Container pystream-advanced-prometheus-1 Removed
+ Container pystream-advanced-kafka-init-1 Removed
+ Container pystream-advanced-kafka-1 Stopping
+ Container pystream-advanced-object-store-init-ha-1 Removed
+ Container pystream-advanced-object-store-1 Stopping
+ Container pystream-advanced-object-store-1 Stopped
+ Container pystream-advanced-object-store-1 Removing
+ Container pystream-advanced-object-store-1 Removed
+ Container pystream-advanced-minio-2-1 Stopping
+ Container pystream-advanced-minio-4-1 Stopping
+ Container pystream-advanced-minio-3-1 Stopping
+ Container pystream-advanced-minio-2-1 Stopped
+ Container pystream-advanced-minio-2-1 Removing
+ Container pystream-advanced-minio-2-1 Removed
+ Container pystream-advanced-minio-3-1 Stopped
+ Container pystream-advanced-minio-3-1 Removing
+ Container pystream-advanced-minio-4-1 Stopped
+ Container pystream-advanced-minio-4-1 Removing
+ Container pystream-advanced-minio-3-1 Removed
+ Container pystream-advanced-kafka-1 Stopped
+ Container pystream-advanced-kafka-1 Removing
+ Container pystream-advanced-minio-4-1 Removed
+ Container pystream-advanced-kafka-1 Removed
+ Volume pystream-advanced_pystream-worker-ha-3 Removing
+ Volume pystream-advanced_pystream-minio-3-data-1 Removing
+ Volume pystream-advanced_pystream-minio-2-data-2 Removing
+ Network pystream-advanced_pystream Removing
+ Volume pystream-advanced_pystream-minio-2-data-1 Removing
+ Volume pystream-advanced_pystream-minio-1-data-1 Removing
+ Volume pystream-advanced_pystream-prometheus Removing
+ Volume pystream-advanced_pystream-kafka Removing
+ Volume pystream-advanced_pystream-minio-4-data-1 Removing
+ Volume pystream-advanced_pystream-output Removing
+ Volume pystream-advanced_pystream-minio-4-data-2 Removing
+ Volume pystream-advanced_pystream-minio-1-data-2 Removing
+ Volume pystream-advanced_pystream-worker-ha-1 Removing
+ Volume pystream-advanced_pystream-minio-3-data-2 Removing
+ Volume pystream-advanced_pystream-minio-2-data-1 Removed
+ Volume pystream-advanced_pystream-worker-ha-2 Removing
+ Volume pystream-advanced_pystream-minio-3-data-1 Removed
+ Volume pystream-advanced_pystream-minio-2-data-2 Removed
+ Volume pystream-advanced_pystream-worker-ha-2 Removed
+ Volume pystream-advanced_pystream-kafka Removed
+ Volume pystream-advanced_pystream-worker-ha-3 Removed
+ Volume pystream-advanced_pystream-prometheus Removed
+ Volume pystream-advanced_pystream-minio-4-data-2 Removed
+ Volume pystream-advanced_pystream-minio-1-data-1 Removed
+ Volume pystream-advanced_pystream-minio-4-data-1 Removed
+ Volume pystream-advanced_pystream-output Removed
+ Volume pystream-advanced_pystream-worker-ha-1 Removed
+ Volume pystream-advanced_pystream-minio-1-data-2 Removed
+ Volume pystream-advanced_pystream-minio-3-data-2 Removed
+ Network pystream-advanced_pystream Removed
++ docker ps -aq --filter label=com.docker.compose.project=pystream-advanced
++ docker network ls -q --filter label=com.docker.compose.project=pystream-advanced
++ docker volume ls -q --filter label=com.docker.compose.project=pystream-advanced
+advanced_ha_acceptance=passed

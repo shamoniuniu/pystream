@@ -1,147 +1,145 @@
-# Docker 部署与中级验收
+# Docker 部署与高级验收
 
-部署资产权威来源为 `Dockerfile`、`deploy/compose.yaml` 和
-`scripts/run_intermediate_acceptance.ps1`。
+部署资产权威来源为 `Dockerfile`、`deploy/compose.advanced.yaml` 和
+`scripts/run_advanced_acceptance.py`。
 
-> Last verified: 2026-07-30，Docker Engine 29.6.2，Python 3.11.9，
-> `pystream:0.2.0`。初级兼容与中级故障恢复 E2E 均通过。
+> Last verified: 2026-08-05，Docker Engine 29.6.2，Linux/Python 3.11.9，
+> image `sha256:8c9d3581807f4419cf5776cbc3590e61452afd1d4b38720bd68016609f29ca8c`。
+> Core 与 HA E2E 均通过。
 
-## 拓扑与资源
+## Profiles
 
-- Kafka 3.9.1：单 Broker KRaft，`words` 和 `intermediate-words` 各 2 partitions。
-- JobManager：`http://localhost:8080`。
-- Worker 1/2/3：每个 4 slots，共 12 slots。
-- 共享卷：artifacts、checkpoints、output、Kafka 数据。
-- Worker 独立 work 卷。
+| 服务 | Core | HA |
+|---|---:|---:|
+| Kafka SSL broker | 1 | 1 |
+| MinIO | 1 | 4×2 drives |
+| S3 HAProxy | - | 1 |
+| JobManager | 1 | 2 active/passive |
+| JobManager HAProxy | 1 | 1 |
+| Worker | 3 | 3 |
+| Prometheus | 1 | 1 |
 
-JobManager/Worker 使用 UID/GID 10001、只读根文件系统、`cap_drop: ALL` 和
-`no-new-privileges`。镜像预创建并授权 `/data/checkpoints`，使非 root Worker
-可以写共享快照。
+JobManager/Worker 使用非 root 用户、只读根文件系统、`cap_drop: ALL` 和
+`no-new-privileges`。PKI、Token 和 S3 凭据位于临时 `run/pki`，通过 Docker
+Secret 以文件挂载。
 
-## 标准验收
-
-本机 Docker Compose 插件在长时间验收中可能挂起，因此标准脚本使用原生 Docker
-命令创建与清理固定资源，并用
-`.pystream/intermediate-docker-resources.tsv` 记录资源。
+## Core 验收
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File scripts\run_intermediate_acceptance.ps1 `
+.\scripts\run_advanced_core_acceptance.ps1 `
   -PythonCommand .\.venv\Scripts\python.exe
 ```
 
-可用参数：
+流程：
+
+1. 生成临时 PKI/Secret 并启动 Core。
+2. 运行基础 WordCount 回归。
+3. 运行显式 At-least-once 中级回归。
+4. 运行 Exactly-once 无故障 baseline。
+5. 在 `before_barrier` arm gate 后 SIGKILL 承载状态算子的 Worker 子进程。
+6. 在 `before_decision` PREPARED gate 后再次注入 Worker 故障。
+7. 对三组 manifest-visible rows 比较多重集。
+8. 验证 Kafka 两 partitions lag=0、pending transaction 受控。
+9. 删除作业、容器、网络、卷和临时 Secret。
+
+最终结果：
 
 ```text
+advanced_core_acceptance=passed
+before_barrier recovery=13.870s
+before_decision recovery=15.598s
+committed output diff=0
+kafka lag=0
+containers=0 networks=0 volumes=0 secrets_removed=true
+```
+
+## HA 验收
+
+```powershell
+.\scripts\run_advanced_ha_acceptance.ps1 `
+  -PythonCommand .\.venv\Scripts\python.exe
+```
+
+流程：
+
+1. 启动 4 MinIO、S3 proxy、2 JobManagers、3 Workers、Kafka 和 Prometheus。
+2. 验证 ACTIVE=1、STANDBY=1。
+3. 验证正确 Token/CA 路径；无/错 Token、错 CA、错误内部身份被拒绝。
+4. 在 checkpoint 1 `after_decision`、FINALIZED 前终止 active JobManager。
+5. standby 获取新 epoch，完成 finalize，并把旧 active 重启为 standby。
+6. 删除一个 MinIO 容器；以无 9000 监听的 holder 保留其旧 IP，避免 Docker 把
+   peer 地址重分配给 Worker。
+7. 等待 S3 proxy 摘除 backend，并完成 checkpoint 2 读写。
+8. 在降级存储下 SIGKILL Worker，恢复到 attempt 2 并完成 checkpoint 3。
+9. 验证 manifest rows、lag、Prometheus targets/rules 和最终清理。
+
+最终结果：
+
+```text
+advanced_ha_acceptance=passed
+jobmanager takeover=25.828s (SLO <=30s)
+storage checkpoint=28.988s
+worker recovery=19.755s (SLO <=60s)
+checkpoint manifests=1,2,3
+committed output diff=0
+kafka lag=0
+prometheus targets=5 rules=8
+containers=0 networks=0 volumes=0 secrets_removed=true
+```
+
+## 证据
+
+| 文件 | 内容 |
+|---|---|
+| `reports/advanced-core-acceptance.log` | Core 命令 transcript |
+| `reports/advanced-core-runtime.log` | Core 服务 JSON 日志 |
+| `reports/advanced-core-evidence.json` | Core 场景、状态、output、lag、清理 |
+| `reports/advanced-ha-acceptance.log` | HA 命令 transcript |
+| `reports/advanced-ha-runtime.log` | HA 服务 JSON 日志 |
+| `reports/advanced-ha-evidence.json` | HA 接管、存储、Worker、指标、清理 |
+| `reports/*-failure.json` | 注入目标、容器状态和 UTC 时间 |
+
+验证器只读取 output manifest 引用的 fragments，不把 glob 目录结果当作 committed
+真值。报告不得包含私钥、Bearer Token 或 S3 access key。
+
+## 常用参数
+
+```text
+-SkipBuild
 -KeepEnvironment
--LogPath reports/intermediate-acceptance.log
--RuntimeLogPath reports/intermediate-runtime.log
--EvidencePath reports/intermediate-failure-evidence.json
+-LogPath <path>
+-RuntimeLogPath <path>
+-EvidencePath <path>
 ```
 
-默认流程：
+只有源代码和镜像完全一致时才可使用 `-SkipBuild`。最终候选应先构建一次，然后让
+Core/HA 复用同一 image ID。
 
-1. 精确删除 ledger 中旧资源并确认资源为 0。
-2. 创建 network、7 个 volumes 和 6 个长期/初始化容器。
-3. 验证 Kafka、JobManager、3 Worker healthy。
-4. 运行初级 WordCount，验证 `apple=2, pie=1` 和跨 Worker HASH。
-5. 运行中级 event-time/retract baseline。
-6. 显式触发 Checkpoint 1。
-7. 写入 recovery 窗口并等待追加 Sink 输出。
-8. 在承载状态算子的 Worker 内执行：
-
-   ```sh
-   kill -9 $(cat /proc/1/task/1/children)
-   ```
-
-   它终止 tini 的业务子进程，使 `restart: unless-stopped` 自动拉起容器。
-9. 验证 RestartCount、StartedAt、incarnation、recovery attempts、attempt 和统一
-   restored checkpoint。
-10. 显式触发恢复后 Checkpoint 2。
-11. 验证 baseline 精确一次、recovery 窗口允许重复、Kafka lag=0、无输入丢失。
-12. 取消作业并删除所有容器、网络和卷。
-
-成功标记：
-
-```text
-intermediate_acceptance=passed
-compose_project_resources=0
-```
-
-## 验收专用 Checkpoint 控制
-
-示例默认周期仍为 `10s`。验收提交工具在临时作业副本中将周期覆盖为 `1h`，并通过
-`POST /v1/jobs/{job_id}/checkpoint` 在精确边界触发 Checkpoint。这样故障必定位于
-Checkpoint 1 之后、Checkpoint 2 之前，不依赖 Docker CLI 速度。
-
-该覆盖不会修改 `examples/intermediate/job.yaml`。
-
-## At-least-once 预期
-
-baseline 输出：
-
-```text
-2026/07/29T00:00:05,1,1
-2026/07/29T00:00:05,2,1
-```
-
-recovery 输出在故障恢复后各出现两次，其中一次是允许的追加 Sink 重放：
-
-```text
-2026/07/29T00:00:10,1,1
-2026/07/29T00:00:10,2,2
-```
-
-Kafka 最终：
-
-```text
-partition 0: committed=6, end=6, lag=0
-partition 1: committed=4, end=4, lag=0
-```
-
-这证明输入无丢失且故障边界允许重复，不证明 Exactly-once。
-
-## Compose 手工启动
-
-Compose 仍可用于日常观察：
+## 手工观察
 
 ```powershell
-docker compose -f deploy/compose.yaml up -d --build
-docker compose -f deploy/compose.yaml ps
-Invoke-RestMethod http://localhost:8080/health
-Invoke-RestMethod http://localhost:8080/v1/workers
+.\.venv\Scripts\python.exe scripts\generate_dev_pki.py --output run\pki --force
+docker compose -f deploy\compose.advanced.yaml --profile core up -d --wait
+docker compose -f deploy\compose.advanced.yaml --profile core ps
+docker compose -f deploy\compose.advanced.yaml --profile core down -v
+Remove-Item -Recurse -Force run\pki
 ```
 
-初级工具示例：
+管理入口是 `https://localhost:8080`，必须提供 CA、客户端证书和
+`PYSTREAM_EXTERNAL_TOKEN_FILE`。不要把 Secret 值放入命令行或环境日志。
 
-```powershell
-docker compose -f deploy/compose.yaml --profile tools run --rm tools scripts/produce_wordcount.py
-docker compose -f deploy/compose.yaml --profile tools run --rm tools scripts/submit_wordcount.py
-docker compose -f deploy/compose.yaml --profile tools run --rm tools scripts/wait_for_window.py
-docker compose -f deploy/compose.yaml --profile tools run --rm tools scripts/verify_wordcount.py
-```
+## 成功与兼容标记
 
-手工停止：
-
-```powershell
-docker compose -f deploy/compose.yaml down
-docker compose -f deploy/compose.yaml down -v
-```
-
-`down -v` 删除 Kafka、Checkpoint 和输出证据，不可恢复。
-
-## 运行证据
-
-- `reports/intermediate-acceptance.log`：完整主流程。
-- `reports/intermediate-runtime.log`：JobManager/Worker JSON 日志。
-- `reports/intermediate-failure-evidence.json`：RestartCount、incarnation、attempt、
-  恢复点和状态 trace。
-- `reports/intermediate-acceptance.md`：验收摘要。
+高级脚本的成功标记是 `advanced_core_acceptance=passed` 和
+`advanced_ha_acceptance=passed`。中级历史验收仍使用
+`compose_project_resources=0`；高级结构化证据使用
+`resource_cleanup={containers:0,networks:0,volumes:0}`。
 
 ## 运行限制
 
-- Checkpoint 会暂停 Source 并 drain 全图；大状态或慢 Sink 会延长暂停。
-- checkpoint 命名卷允许跨 Worker 恢复，但共享卷和单 JobManager 都是单故障域。
-- `restart: unless-stopped` 不会把 `docker kill` 视为自动恢复场景，因此标准故障
-  注入杀容器内业务子进程。
-- Docker CLI 可能在请求已生效后超时；脚本通过 inspect 验证真实状态并有限重试。
+- Kafka 是单 broker，脚本不注入 broker 故障。
+- 全栈位于单 Docker Desktop 主机，不证明跨主机 HA。
+- 事务 File Sink 位于单共享 output volume，不证明卷丢失容灾。
+- MinIO holder 是验收辅助容器，只提供连接拒绝以保留故障节点网络身份，不提供
+  存储服务。
+- 在线范围依赖使镜像尚未达到 byte-for-byte 可复现。

@@ -1,150 +1,134 @@
 # 故障排查
 
-先保留状态和日志，再重启。标准证据位于 `reports/intermediate-*.log/json`。
+先保留状态、evidence 和运行日志，再重启。高级证据位于
+`reports/advanced-{core,ha}-*.{log,json}`。
 
 ## 最短诊断路径
 
-```powershell
-Invoke-RestMethod http://localhost:8080/health
-Invoke-RestMethod http://localhost:8080/v1/workers
-Invoke-RestMethod http://localhost:8080/v1/jobs/<job_id>
-docker logs pystream-jobmanager-1
-docker logs pystream-worker-1-1
-```
-
-日志稳定字段：
-
-```text
-timestamp level component job_id operator_id subtask worker_id event
-```
-
-## Docker 命令挂起
-
-症状：`docker start/create/inspect/logs` 长时间无输出。
-
-- 不并行发起更多 Docker 枚举命令。
-- 标准验收脚本为每个原生命令设置硬超时。
-- `start` 超时后 inspect：目标仍为 `created` 才重试；已是 running/exited 则继续。
-- create 成功后立即写 resource ledger，失败时只删除已知资源。
-- 最终必须出现 `compose_project_resources=0`。
-
-Compose 插件挂起时使用 `scripts/run_intermediate_acceptance.ps1`，不要改用无界
-`docker ps -aq`、network/volume 全量枚举。
-
-## 服务或提交失败
-
-### JobManager/Worker 不健康
-
-检查：
-
-- 主机 8080 是否冲突。
-- checkpoint/artifact/output 卷是否可写。
-- Worker `/health` 的 `heartbeat_error` 和 runtime errors。
-- Worker 是否以 UID/GID 10001 运行。
-
-`PermissionError: /data/checkpoints` 表示镜像没有为非 root 用户初始化挂载点权限，
-必须重建包含 `/data/checkpoints` chown 的镜像。
-
-### 资源不足
-
-状态 API 返回 required/available slots。中级示例有 12 个物理任务，默认集群正好
-提供 12 slots；任一 Worker 未注册都会阻止整图部署。
-
-### YAML/制品拒绝
+管理入口要求 CA、客户端证书和 Bearer Token。优先使用 tools 容器：
 
 ```powershell
-.\.venv\Scripts\python -m pystream validate examples/intermediate/job.yaml
+docker compose -f deploy\compose.advanced.yaml --profile ha ps
+docker compose -f deploy\compose.advanced.yaml --profile ha logs --no-color jobmanager-1
+docker compose -f deploy\compose.advanced.yaml --profile ha logs --no-color worker-ha-1
 ```
 
-检查未知字段、Reduce keyed 输入、event-time execution、retract UDF、ZIP 摘要、
-路径穿越和符号链接。
-
-## 事件时间无输出
-
-1. 检查 Source `records_read`、partition assignment 和 event time 解析。
-2. 检查 `current_watermark` 与每输入 idle/active 状态。
-3. 确认两 partitions 都有推进 Watermark 的 clock 记录。
-4. 检查 `late_record_dropped`；`event_time <= watermark` 不会进入窗口。
-5. 检查 Reduce active windows 和 `window_triggered`。
-
-多输入 Watermark 取活跃输入最小值，不是最大值。
-
-## 二级聚合错误或重复
-
-- baseline 出现重复：优先检查 Source 是否发生动态 group rebalance；多并发必须使用
-  确定性 manual partition assignment。
-- count distribution 错误：检查 UPDATE_BEFORE/UPDATE_AFTER 顺序和 retract UDF。
-- baseline 只能出现一次；recovery 窗口在 At-least-once 故障边界允许重复。
-- 行顺序不稳定，验证必须比较多重集。
-
-## Checkpoint 失败
-
-状态字段：
+状态重点：
 
 ```text
-checkpoint.next_id
-checkpoint.last_completed_id
-checkpoint.consecutive_failures
+role leader_ready coordinator_epoch attempt checkpoint.phase
+last_decided_id last_finalized_id healthy_workers
 ```
+
+## TLS、Token 或身份拒绝
+
+- 外部 401：检查 external token file 是否挂载，不能改用明文 CLI 参数。
+- TLS handshake 失败：检查 CA、证书有效期、SAN 和 client certificate。
+- 内部 403：证书可建立 TLS，但 SAN/CN 不符合 endpoint 身份策略。
+- Worker 注册 403：证书身份必须与 `worker_id` 绑定。
+- `/metrics` 401/403：metrics token/Prometheus certificate 与管理 Token 分离。
+
+禁止把 Token、私钥或 access key 打印出来排障。检查 PKI manifest 的证书元数据和
+Prometheus auth rejection 指标。
+
+## Leader 或路由异常
+
+`/health/live` 只证明进程存活；HAProxy 使用 `/health/leader`，只有 ready active
+返回 200。
+
+- 两个 standby：检查 S3 leader object、lease renew 错误和 object store 可用性。
+- active 短暂返回 503：可能正在 protective step-down 或 takeover。
+- epoch 不增加：检查 ETag CAS 冲突和 standby 日志。
+- 旧 active 恢复后必须成为 standby，不能手工绕过 leader routing。
+- takeover 只在完成 DECIDED finalize、元数据加载和 Worker 重注册后 leader-ready。
+
+## Checkpoint 或 Exactly-once 失败
 
 检查顺序：
 
-1. Source 是否 pause 并广播 DRAIN。
-2. 所有输入是否收齐同一 checkpoint/attempt DRAIN。
-3. snapshot SHA、大小、schema 和 task set 是否通过。
-4. manifest 是否最后原子写入。
-5. Source 是否只在 manifest 成功后 commit/resume。
+1. Task 是否全部 arm。
+2. Source 是否冻结 next offsets 并注入同 checkpoint/attempt/epoch 的 BARRIER。
+3. 输入 gate 是否只阻塞 post-barrier 帧。
+4. 全 task snapshot 和 PREPARED transaction descriptor 是否齐全。
+5. `decision.json` 是否写入。
+6. DECIDED 后是否仅重试 finalize，未执行 abort。
+7. `finalized.json` 和 output manifest 是否完成。
+8. `last_decided_id >= last_finalized_id` 且不会因旧 takeover cache 回退。
 
-损坏高版本 manifest 应被忽略并回退前一完整版本。连续失败达到配置阈值后进入恢复。
+`pending_transactions=1` 可以是正在处理下一 checkpoint 的 ACTIVE transaction，
+不代表历史 PREPARED 泄漏。可见结果必须由 manifest reader 校验，不能直接 glob。
 
-显式触发：
+## Worker 故障后恢复慢
 
-```powershell
-Invoke-RestMethod -Method Post `
-  http://localhost:8080/v1/jobs/<job_id>/checkpoint
-```
-
-Checkpoint 是停流操作；慢 Sink、大状态或 Docker I/O 延迟会增加暂停时间。
-
-## Worker SIGKILL 后未恢复
-
-不要使用：
+标准故障注入杀容器内业务子进程：
 
 ```powershell
-docker kill --signal SIGKILL pystream-worker-1-1
-```
-
-Docker 将其视为人工停止，`restart: unless-stopped` 不会自动拉起。标准注入为：
-
-```powershell
-docker exec pystream-worker-1-1 /bin/sh -c `
+docker exec <worker-container> /bin/sh -c `
   "kill -9 `$(cat /proc/1/task/1/children)"
 ```
 
-应验证：
+不要使用 `docker kill` 代替该测试；`restart: unless-stopped` 会把人工容器停止视为
+不自动恢复。
 
-- RestartCount 增加、StartedAt 改变。
-- incarnation 改变。
-- `recovery.attempts` 增加；不要求轮询必然采到短暂 RECOVERING。
-- 最终作业 RUNNING，所有 Task attempt 一致、恢复点一致。
+检查：
 
-新 Worker 注册后端口可能尚未完全 ready，首次恢复部署可失败并进入下一 attempt；
-只要未耗尽 `max_attempts` 且最终一致，即为正常重试路径。
+- RestartCount、StartedAt、incarnation 是否改变。
+- 作业 attempt 是否增加、所有 Task attempt 是否一致。
+- restored checkpoint 是否为 durable latest manifest。
+- 同一算子 subtasks 是否并发进入 DEPLOYING。
+- Worker 恢复 SLO 是 60 秒；最终 HA 实测 19.755 秒。
 
-## Kafka lag 验证失败
+## 单 MinIO 节点故障
 
-lag 验证分离两个 consumer：
+直接 `docker stop` 后，Docker 可能把旧 `minio-1` IP 分给新 Worker，存活 MinIO
+会把 peer 连接发到错误 TLS 身份。验收脚本采用：
 
-- 无 group 的 metadata consumer 跟踪 topic 并读取 partitions/end offsets。
-- 无订阅的 group consumer 只读取 committed offsets，避免加入业务组触发 rebalance。
+1. 记录节点 network/IP。
+2. 删除故障 MinIO 容器。
+3. 在同 IP/alias 创建无 9000 监听的 failure holder。
+4. 等待 S3 HAProxy 摘除 backend。
 
-`Topic ... not found in cluster metadata` 在 broker 刚启动时可能瞬态出现；验证脚本
-有 30 秒有界 metadata 刷新。超时后仍为空才判失败。
+这样 peer 得到连接拒绝且网络身份不被复用。holder 只用于故障模型，清理时先删除。
+若 leader 在存储收敛期间进入 protective，等待同一 ready epoch 稳定后再触发
+checkpoint。
 
-## 清理失败
+## Kafka lag 异常
 
-标准脚本只删除 ledger 中固定容器、network 和 volumes。若进程中断，重新运行脚本
-会先读取 ledger 清理。不要删除不属于 `pystream` 的 Docker 资源。
+lag verifier 分离 metadata consumer 和 group offset reader，避免加入业务 consumer
+group 触发 rebalance。逐 partition 检查：
 
-出现新故障时保留时间、job_id、attempt、checkpoint、Worker/incarnation、状态
-JSON、运行日志和输入/输出多重集。
+```text
+committed_offset end_offset lag
+```
+
+最终必须两 partitions lag=0。Topic metadata 刚创建时允许有限重试，超时后仍缺失
+才判失败。
+
+## Prometheus 证据异常
+
+配置 job label 是复数：
+
+```text
+pystream-jobmanagers
+pystream-workers
+```
+
+HA 最终要求两个 JobManager 与三个 Workers 共 5 个 healthy targets，rules=8。
+target up 只证明 scrape 成功，active count/lease/finalize 仍需 rules 和状态证据。
+
+## Docker 清理失败
+
+重新运行验收脚本会先删除 failure holder、解除 paused 容器，再执行 Compose down。
+最终结构化证据必须满足：
+
+```text
+containers=0 networks=0 volumes=0
+secret_directory_removed=true
+```
+
+不要删除不带 `com.docker.compose.project=pystream-advanced` 标签的资源。
+
+## 剩余故障域
+
+Kafka broker、Docker 主机和 File output volume 不具备本项目 HA。UDF 是可信代码，
+阻塞或终止 Worker 时只能依靠 Worker/作业恢复，不能隔离恶意行为。

@@ -33,6 +33,11 @@ from pystream.control.errors import (
 from pystream.control.leader import LeaderCoordinator
 from pystream.control.manager import JobManager
 from pystream.control.models import TaskStatus
+from pystream.control.testing import (
+    CHECKPOINT_TEST_HOOKS,
+    CheckpointTestHookError,
+    CheckpointTestHooks,
+)
 from pystream.observability import PyStreamMetrics, log_event
 from pystream.security import (
     AuthenticationError,
@@ -60,6 +65,7 @@ class JobManagerHttpService:
         metrics_auth: BearerTokenAuthenticator | None = None,
         require_internal_tls: bool = False,
         metrics: PyStreamMetrics | None = None,
+        test_hooks: CheckpointTestHooks | None = None,
     ) -> None:
         if max_artifact_size <= 0:
             raise ValueError("max_artifact_size 必须大于 0")
@@ -73,6 +79,7 @@ class JobManagerHttpService:
         self.metrics_auth = metrics_auth
         self.require_internal_tls = require_internal_tls
         self.metrics = metrics or PyStreamMetrics()
+        self.test_hooks = test_hooks
         self._reconcile_task: asyncio.Task[None] | None = None
 
     def create_app(self) -> web.Application:
@@ -100,6 +107,13 @@ class JobManagerHttpService:
             "/jobs/{job_id}/artifacts/{sha256}",
             self._download_artifact,
         )
+        if self.test_hooks is not None:
+            app.router.add_post("/test/checkpoint-hooks/{hook}/arm", self._arm_test_hook)
+            app.router.add_get("/test/checkpoint-hooks", self._test_hook_status)
+            app.router.add_post(
+                "/test/checkpoint-hooks/{hook}/release",
+                self._release_test_hook,
+            )
         app.on_startup.append(self._startup)
         app.on_cleanup.append(self._cleanup)
         return app
@@ -143,6 +157,17 @@ class JobManagerHttpService:
                 self.metrics.record_auth_rejection("external_api", "invalid_token")
                 return _authentication_response("管理 API 认证失败")
             return await handler(request)
+        if path.startswith("/test/"):
+            if self.test_hooks is None:
+                raise web.HTTPNotFound()
+            if self.require_internal_tls and "haproxy" not in peer_identities(request.transport):
+                return _authorization_response("测试 API 代理证书身份不被允许")
+            if self.external_auth is not None:
+                try:
+                    self.external_auth.authenticate(request.headers.get("Authorization"))
+                except AuthenticationError:
+                    return _authentication_response("测试 API 认证失败")
+            return await handler(request)
         if not self.require_internal_tls:
             return await handler(request)
         try:
@@ -176,7 +201,7 @@ class JobManagerHttpService:
                 str(exc),
                 headers={"Retry-After": "1"},
             )
-        except (InsufficientSlots, InvalidStateTransition) as exc:
+        except (CheckpointTestHookError, InsufficientSlots, InvalidStateTransition) as exc:
             return _error_response(409, str(exc))
         except WorkerNotFound as exc:
             return _error_response(404, str(exc))
@@ -321,6 +346,31 @@ class JobManagerHttpService:
             attempt_id=manifest.attempt_id,
         )
         return web.json_response(manifest.to_dict())
+
+    async def _arm_test_hook(self, request: web.Request) -> web.Response:
+        hooks = self._require_test_hooks()
+        hook = request.match_info["hook"]
+        if hook not in CHECKPOINT_TEST_HOOKS:
+            raise web.HTTPNotFound()
+        return web.json_response(hooks.arm(hook))
+
+    async def _test_hook_status(self, request: web.Request) -> web.Response:
+        del request
+        return web.json_response(self._require_test_hooks().view())
+
+    async def _release_test_hook(self, request: web.Request) -> web.Response:
+        hooks = self._require_test_hooks()
+        hook = request.match_info["hook"]
+        if hook not in CHECKPOINT_TEST_HOOKS:
+            raise web.HTTPNotFound()
+        document = await _json_object(request)
+        action = _required_string(document, "action")
+        return web.json_response(hooks.release(hook, action))
+
+    def _require_test_hooks(self) -> CheckpointTestHooks:
+        if self.test_hooks is None:  # pragma: no cover - route registration guarantees
+            raise web.HTTPNotFound()
+        return self.test_hooks
 
     async def _cancel(self, request: web.Request) -> web.Response:
         job_id = request.match_info["job_id"]

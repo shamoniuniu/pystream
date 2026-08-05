@@ -1,35 +1,37 @@
 # PyStream
 
-PyStream 是一个用于课程实践的简易分布式流计算系统。项目使用 Python 3.11，
-以 YAML 描述 DAG，以 Python UDF 描述计算逻辑，并由独立 JobManager、Worker
-和 Kafka 容器完成调度、Shuffle、窗口聚合、Checkpoint 与故障恢复。
+PyStream 是一个用于课程实践的分布式流计算系统。项目使用 Python 3.11，以 YAML
+描述 DAG，以 Python UDF 描述计算逻辑，由 JobManager、Worker、Kafka 和 S3
+兼容对象存储完成调度、Shuffle、事件时间、Checkpoint 与故障恢复。
 
-> 当前版本：`0.2.0` 中级阶段。已实现并实证 At-least-once；未实现
-> Exactly-once、事务 Sink 或 JobManager HA。
+> 当前版本：`0.3.0` 高级阶段。Core/HA Docker E2E 已实证端到端
+> Exactly-once、JobManager 自动接管、单 MinIO 节点容错和安全控制面。
 
 ## 已实现能力
 
 | 能力 | 实现 |
 |---|---|
 | 作业 API 与 DAG | 严格 `pystream/v1` YAML、拓扑校验、分支/合流、每算子并发度 |
-| 逻辑分发 | 带 SHA-256 清单的 ZIP，Worker 安全解压并隔离加载可信 UDF |
 | 调度与 Shuffle | slot 预检、均衡放置、FORWARD/REBALANCE/跨 Worker HASH |
-| 事件时间 | RFC3339 提取、有限乱序 Watermark、多输入 min/idle、滚动窗口、迟到丢弃 |
+| 事件时间 | RFC3339、有限乱序 Watermark、多输入 min/idle、窗口、迟到丢弃 |
 | Changelog | INSERT/UPDATE_BEFORE/UPDATE_AFTER、retract UDF、二级聚合 |
-| Checkpoint | 停流 drain、版本化 JSON 快照、manifest-last、Kafka offset/Watermark/算子状态 |
-| 自动恢复 | Worker incarnation、attempt fencing、整作业重调度、最近完整 Checkpoint 恢复 |
-| 一致性 | Kafka 输入无丢失；故障边界允许追加 File Sink 重复，即 At-least-once |
-| 可观测性 | JSON 日志、健康/状态端点、恢复/Checkpoint/队列/记录指标 |
+| Checkpoint | 持续流 aligned Barrier、输入 gate、冻结 Kafka offset、状态快照 |
+| Exactly-once | 事务 File Sink、PREPARED/DECIDED/FINALIZED、manifest-last 可见性 |
+| 持久状态 | S3 artifact、Checkpoint、作业 revision/current pointer、ETag CAS |
+| 高可用 | 双 JobManager lease、coordinator epoch fencing、接管与 finalize 恢复 |
+| 安全 | 外部 HTTPS + Bearer、内部/数据面 mTLS、Kafka SSL、file-only Secret |
+| 可观测性 | JSON 日志、Prometheus 指标、8 条 SLO 告警规则 |
 
 ## 目录
 
 ```text
 src/pystream/             引擎实现
-examples/wordcount/       初级处理时间 WordCount
-examples/intermediate/    事件时间 + Retract 二级聚合
-deploy/compose.yaml       Kafka、JobManager、3 Worker 集群
-scripts/                  生产、提交、故障注入、验证和清理脚本
-tests/                    契约、单元和 loopback 集成测试
+examples/wordcount/       基础处理时间 WordCount
+examples/intermediate/    显式 At-least-once 事件时间作业
+examples/advanced/        Exactly-once 事务输出作业
+deploy/compose.advanced.yaml  Core/HA 高级拓扑
+scripts/                  提交、故障注入、验证和清理脚本
+tests/                    契约、单元、集成和安全测试
 reports/                  开发、测试和 Docker 验收证据
 docs/                     API、架构、部署、测试与排障文档
 ```
@@ -46,30 +48,34 @@ python -m venv .venv
 .\.venv\Scripts\python -m pytest
 ```
 
-宿主机其他兼容版本只能作为补充验证，最终门禁必须使用 Python 3.11。
+pytest 默认启用 branch coverage，门槛为 80%。宿主机其他 Python 版本只能用于补充
+验证，最终门禁在 Linux/Python 3.11 中执行。
 
 ## Docker E2E 验收
 
-要求 Docker Desktop 使用 Linux containers。标准验收脚本使用固定资源名和
-resource ledger，不依赖本机 Compose 插件的运行稳定性：
+要求 Docker Desktop 使用 Linux containers。脚本会生成临时 PKI/Secret、启动
+固定镜像、执行故障演练、保存结构化证据，并确认容器、网络、卷和 Secret 清零。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File scripts\run_intermediate_acceptance.ps1 `
+.\scripts\run_advanced_core_acceptance.ps1 `
+  -PythonCommand .\.venv\Scripts\python.exe
+
+.\scripts\run_advanced_ha_acceptance.ps1 `
   -PythonCommand .\.venv\Scripts\python.exe
 ```
 
-脚本依次验证：
+最终实测：
 
-1. 初级 WordCount 兼容性。
-2. 中级事件时间与 Retract 输出。
-3. 显式完整 Checkpoint。
-4. 单 Worker 业务进程 `SIGKILL`、容器自动拉起和新 incarnation 注册。
-5. 整作业恢复、attempt 递增和统一恢复点。
-6. 恢复后 Checkpoint、Kafka lag=0、无输入丢失和允许的 Sink 重复。
-7. 容器、网络和命名卷全部清零。
+| 场景 | 结果 |
+|---|---|
+| Core `before_barrier` Worker 故障 | 13.87 秒恢复，output diff=0 |
+| Core `before_decision` Worker 故障 | 15.60 秒恢复，output diff=0 |
+| HA DECIDED 后 active JobManager 退出 | 25.83 秒接管，epoch 1 -> 2 |
+| 单 MinIO 节点退出后新 Checkpoint | 28.99 秒完成 |
+| 降级存储下 Worker 故障 | 19.76 秒恢复，output diff=0 |
+| 最终 Kafka/Prometheus/清理 | lag=0，5 targets，8 rules，资源=0 |
 
-详细命令和证据解释见 [部署与验证](docs/deployment.md)。
+完整流程和证据解释见 [部署与验证](docs/deployment.md)。
 
 ## 文档导航
 
@@ -85,15 +91,13 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## 语义边界
 
-- Checkpoint 是停流协调：Source 暂停，整图 drain 完成后才写 manifest；其暂停
-  时间会直接增加输入处理延迟。
-- Checkpoint 位于共享命名卷，允许 Worker 间恢复，但共享卷和单 JobManager
-  仍是单故障域。
-- File Sink 为普通追加写。恢复会重放最近完整 Checkpoint 之后的数据，因此允许
-  重复行，不是 Exactly-once。
-- Kafka Source 在多并发时按 `partition % parallelism == subtask` 确定性分配；
-  Source parallelism 不能超过 topic partition 能力。
-- 不提供认证、TLS、多租户、不可信 UDF 沙箱或 JobManager HA。
+- `execution` 存在时默认 `exactly_once`；显式 `at_least_once` 保留 v0.2 DRAIN 和
+  append Sink 兼容路径；缺少 `execution` 时保持基础 fail-fast 行为。
+- Exactly-once 读取方只把 output manifest 引用且通过 SHA/size 校验的 committed
+  fragments 视为可见结果，不能扫描 pending/committed 目录推断真值。
+- 本地 HA 可承受一个 JobManager、一个 MinIO 节点或一个 Worker 进程退出。
+- Kafka 仍是单 broker；全部容器位于单 Docker 主机；File output 是单共享卷。
+- Python UDF 是可信代码，不提供不可信代码沙箱、动态扩缩容或跨主机容灾。
 
-中级规格和验收标准位于 `.trae/specs/build-pystream-intermediate/`。初级基线由
-Git tag `v0.1.0` 固定，可使用 `git revert` 回退中级提交。
+高级规格和验收标准位于 `.trae/specs/build-pystream-advanced/`。`v0.3.0` tag
+仍固定在 Milestone 5，不因本次验收移动；功能回退使用 `git revert <sha>`。

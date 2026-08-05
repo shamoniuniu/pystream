@@ -1,0 +1,553 @@
++ docker ps -aq --filter label=com.docker.compose.project=pystream-advanced --filter label=com.docker.compose.service=failure-holder
++ docker ps -q --filter label=com.docker.compose.project=pystream-advanced --filter status=paused
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core down --volumes --remove-orphans --timeout 10
++ C:\Users\Admin\Database\.venv\Scripts\python.exe C:\Users\Admin\Database\scripts\generate_dev_pki.py --output C:\Users\Admin\Database\run\pki --force
+PyStream development PKI written to C:\Users\Admin\Database\run\pki
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core up -d --wait --wait-timeout 300 kafka kafka-init minio-core object-store-init-core jobmanager jobmanager-router-core worker-1 worker-2 worker-3 prometheus
+ Network pystream-advanced_pystream Creating
+ Network pystream-advanced_pystream Created
+ Volume pystream-advanced_pystream-prometheus Creating
+ Volume pystream-advanced_pystream-prometheus Created
+ Volume pystream-advanced_pystream-kafka Creating
+ Volume pystream-advanced_pystream-kafka Created
+ Volume pystream-advanced_pystream-worker-1 Creating
+ Volume pystream-advanced_pystream-worker-1 Created
+ Volume pystream-advanced_pystream-output Creating
+ Volume pystream-advanced_pystream-output Created
+ Volume pystream-advanced_pystream-worker-2 Creating
+ Volume pystream-advanced_pystream-worker-2 Created
+ Volume pystream-advanced_pystream-worker-3 Creating
+ Volume pystream-advanced_pystream-worker-3 Created
+ Volume pystream-advanced_pystream-minio-core Creating
+ Volume pystream-advanced_pystream-minio-core Created
+ Container pystream-advanced-kafka-1 Creating
+ Container pystream-advanced-minio-core-1 Creating
+ Container pystream-advanced-prometheus-1 Creating
+ Container pystream-advanced-prometheus-1 Created
+ Container pystream-advanced-kafka-1 Created
+ Container pystream-advanced-kafka-init-1 Creating
+ Container pystream-advanced-minio-core-1 Created
+ Container pystream-advanced-object-store-init-core-1 Creating
+ Container pystream-advanced-object-store-init-core-1 Created
+ Container pystream-advanced-kafka-init-1 Created
+ Container pystream-advanced-jobmanager-1 Creating
+ Container pystream-advanced-jobmanager-1 Created
+ Container pystream-advanced-jobmanager-router-core-1 Creating
+ Container pystream-advanced-jobmanager-router-core-1 Created
+ Container pystream-advanced-worker-3-1 Creating
+ Container pystream-advanced-worker-2-1 Creating
+ Container pystream-advanced-worker-1-1 Creating
+ Container pystream-advanced-worker-3-1 Created
+ Container pystream-advanced-worker-1-1 Created
+ Container pystream-advanced-worker-2-1 Created
+ Container pystream-advanced-kafka-1 Starting
+ Container pystream-advanced-minio-core-1 Starting
+ Container pystream-advanced-prometheus-1 Starting
+ Container pystream-advanced-kafka-1 Started
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-minio-core-1 Started
+ Container pystream-advanced-minio-core-1 Waiting
+ Container pystream-advanced-prometheus-1 Started
+ Container pystream-advanced-minio-core-1 Healthy
+ Container pystream-advanced-object-store-init-core-1 Starting
+ Container pystream-advanced-object-store-init-core-1 Started
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-kafka-init-1 Starting
+ Container pystream-advanced-kafka-init-1 Started
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-object-store-init-core-1 Waiting
+ Container pystream-advanced-object-store-init-core-1 Exited
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-jobmanager-1 Starting
+ Container pystream-advanced-jobmanager-1 Started
+ Container pystream-advanced-jobmanager-1 Waiting
+ Container pystream-advanced-jobmanager-1 Healthy
+ Container pystream-advanced-jobmanager-router-core-1 Starting
+ Container pystream-advanced-jobmanager-router-core-1 Started
+ Container pystream-advanced-jobmanager-router-core-1 Waiting
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-object-store-init-core-1 Waiting
+ Container pystream-advanced-object-store-init-core-1 Waiting
+ Container pystream-advanced-object-store-init-core-1 Waiting
+ Container pystream-advanced-jobmanager-router-core-1 Waiting
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-jobmanager-router-core-1 Waiting
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-object-store-init-core-1 Exited
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-object-store-init-core-1 Exited
+ Container pystream-advanced-object-store-init-core-1 Exited
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-jobmanager-router-core-1 Healthy
+ Container pystream-advanced-worker-2-1 Starting
+ Container pystream-advanced-jobmanager-router-core-1 Healthy
+ Container pystream-advanced-worker-3-1 Starting
+ Container pystream-advanced-jobmanager-router-core-1 Healthy
+ Container pystream-advanced-worker-1-1 Starting
+ Container pystream-advanced-worker-1-1 Started
+ Container pystream-advanced-worker-3-1 Started
+ Container pystream-advanced-worker-2-1 Started
+ Container pystream-advanced-worker-3-1 Waiting
+ Container pystream-advanced-worker-2-1 Waiting
+ Container pystream-advanced-jobmanager-router-core-1 Waiting
+ Container pystream-advanced-kafka-1 Waiting
+ Container pystream-advanced-worker-1-1 Waiting
+ Container pystream-advanced-object-store-init-core-1 Waiting
+ Container pystream-advanced-kafka-init-1 Waiting
+ Container pystream-advanced-minio-core-1 Waiting
+ Container pystream-advanced-prometheus-1 Waiting
+ Container pystream-advanced-jobmanager-1 Waiting
+ Container pystream-advanced-minio-core-1 Healthy
+ Container pystream-advanced-object-store-init-core-1 Exited
+ Container pystream-advanced-jobmanager-router-core-1 Healthy
+ Container pystream-advanced-jobmanager-1 Healthy
+ Container pystream-advanced-kafka-init-1 Exited
+ Container pystream-advanced-prometheus-1 Healthy
+ Container pystream-advanced-kafka-1 Healthy
+ Container pystream-advanced-worker-2-1 Healthy
+ Container pystream-advanced-worker-3-1 Healthy
+ Container pystream-advanced-worker-1-1 Healthy
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/produce_wordcount.py
+ Container pystream-advanced-tools-run-2d747e0a26ab Creating
+ Container pystream-advanced-tools-run-2d747e0a26ab Created
+已向 words 写入 3 条消息
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/submit_wordcount.py
+ Container pystream-advanced-tools-run-daa253c8a99b Creating
+ Container pystream-advanced-tools-run-daa253c8a99b Created
+job_id=699834e3cef8456ca25f226d04eb5359
+status=RUNNING
+artifact_sha256=e5c412a9e721c5179935fdf6442109510def30fe8406d47eeb8f699d9dc30a61
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/wait_for_window.py --job-id 699834e3cef8456ca25f226d04eb5359
+ Container pystream-advanced-tools-run-df3968ea2395 Creating
+ Container pystream-advanced-tools-run-df3968ea2395 Created
+job_id=699834e3cef8456ca25f226d04eb5359
+output_files=/data/output/699834e3cef8456ca25f226d04eb5359/output/part-00000.csv
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/verify_wordcount.py --job-id 699834e3cef8456ca25f226d04eb5359
+ Container pystream-advanced-tools-run-adc92ad5a988 Creating
+ Container pystream-advanced-tools-run-adc92ad5a988 Created
+{
+  "job_id": "699834e3cef8456ca25f226d04eb5359",
+  "status": "RUNNING",
+  "workers": [
+    "worker-1",
+    "worker-2",
+    "worker-3"
+  ],
+  "task_count": 10,
+  "cross_worker_hash_channels": [
+    {
+      "source_task_id": "699834e3cef8456ca25f226d04eb5359:by_word:0",
+      "source_worker_id": "worker-2",
+      "target_task_id": "699834e3cef8456ca25f226d04eb5359:totals:0",
+      "target_worker_id": "worker-1",
+      "partitioning": "hash"
+    },
+    {
+      "source_task_id": "699834e3cef8456ca25f226d04eb5359:by_word:0",
+      "source_worker_id": "worker-2",
+      "target_task_id": "699834e3cef8456ca25f226d04eb5359:totals:2",
+      "target_worker_id": "worker-3",
+      "partitioning": "hash"
+    },
+    {
+      "source_task_id": "699834e3cef8456ca25f226d04eb5359:by_word:1",
+      "source_worker_id": "worker-3",
+      "target_task_id": "699834e3cef8456ca25f226d04eb5359:totals:0",
+      "target_worker_id": "worker-1",
+      "partitioning": "hash"
+    },
+    {
+      "source_task_id": "699834e3cef8456ca25f226d04eb5359:by_word:1",
+      "source_worker_id": "worker-3",
+      "target_task_id": "699834e3cef8456ca25f226d04eb5359:totals:1",
+      "target_worker_id": "worker-2",
+      "partitioning": "hash"
+    }
+  ],
+  "counts": {
+    "apple": 2,
+    "pie": 1
+  },
+  "rows": [
+    [
+      "2026/08/05T05:17:20",
+      "pie",
+      1
+    ],
+    [
+      "2026/08/05T05:17:20",
+      "apple",
+      2
+    ]
+  ],
+  "files": [
+    "/data/output/699834e3cef8456ca25f226d04eb5359/output/part-00000.csv"
+  ]
+}
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/cleanup_wordcount.py --job-id 699834e3cef8456ca25f226d04eb5359
+ Container pystream-advanced-tools-run-8b3481303a02 Creating
+ Container pystream-advanced-tools-run-8b3481303a02 Created
+job_id=699834e3cef8456ca25f226d04eb5359
+status=CANCELLED
+output_removed=True
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/produce_intermediate.py --phase baseline
+ Container pystream-advanced-tools-run-cd3af7de435c Creating
+ Container pystream-advanced-tools-run-cd3af7de435c Created
+{
+  "phase": "baseline",
+  "topic": "intermediate-words",
+  "messages": [
+    {
+      "input_id": "baseline-apple-1",
+      "partition": 0,
+      "offset": 0
+    },
+    {
+      "input_id": "baseline-pie-1",
+      "partition": 1,
+      "offset": 0
+    },
+    {
+      "input_id": "baseline-apple-2",
+      "partition": 0,
+      "offset": 1
+    },
+    {
+      "input_id": "baseline-clock-1",
+      "partition": 0,
+      "offset": 2
+    },
+    {
+      "input_id": "baseline-clock-2",
+      "partition": 1,
+      "offset": 1
+    }
+  ]
+}
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/submit_intermediate.py --checkpoint-interval 1h
+ Container pystream-advanced-tools-run-c76931ddf49a Creating
+ Container pystream-advanced-tools-run-c76931ddf49a Created
+job_id=b215a92d3a7241bfaa1f1e5b3ebee6fb
+status=RUNNING
+artifact_sha256=26d8d2cda8a8a6acf159f8cf5a000cd03a98baab28ffc0d92a71f377c4e04c54
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/wait_for_intermediate.py --job-id b215a92d3a7241bfaa1f1e5b3ebee6fb --phase baseline
+ Container pystream-advanced-tools-run-786d2d1399c3 Creating
+ Container pystream-advanced-tools-run-786d2d1399c3 Created
+job_id=b215a92d3a7241bfaa1f1e5b3ebee6fb
+phase=baseline
+output_files=/data/output/b215a92d3a7241bfaa1f1e5b3ebee6fb/output/part-00000.csv
+observed_rows={('2026/07/29T00:00:05', 1, 1): 1, ('2026/07/29T00:00:05', 2, 1): 1}
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/wait_for_checkpoint.py --job-id b215a92d3a7241bfaa1f1e5b3ebee6fb --min-checkpoint 1 --trigger
+ Container pystream-advanced-tools-run-73a95ac355e7 Creating
+ Container pystream-advanced-tools-run-73a95ac355e7 Created
+{
+  "job_id": "b215a92d3a7241bfaa1f1e5b3ebee6fb",
+  "attempt": 0,
+  "checkpoint": {
+    "next_id": 2,
+    "last_completed_id": 1,
+    "last_decided_id": 1,
+    "last_finalized_id": 1,
+    "consecutive_failures": 0
+  }
+}
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/cleanup_intermediate.py --job-id b215a92d3a7241bfaa1f1e5b3ebee6fb
+ Container pystream-advanced-tools-run-41db825fadaf Creating
+ Container pystream-advanced-tools-run-41db825fadaf Created
+job_id=b215a92d3a7241bfaa1f1e5b3ebee6fb
+status=CANCELLED
+output_removed=True
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/produce_advanced.py
+ Container pystream-advanced-tools-run-c09dc8ae3b87 Creating
+ Container pystream-advanced-tools-run-c09dc8ae3b87 Created
+{
+  "topic": "advanced-words",
+  "messages": [
+    {
+      "input_id": "advanced-apple-1",
+      "partition": 0,
+      "offset": 0
+    },
+    {
+      "input_id": "advanced-pie-1",
+      "partition": 1,
+      "offset": 0
+    },
+    {
+      "input_id": "advanced-apple-2",
+      "partition": 0,
+      "offset": 1
+    },
+    {
+      "input_id": "advanced-clock-1",
+      "partition": 0,
+      "offset": 2
+    },
+    {
+      "input_id": "advanced-clock-2",
+      "partition": 1,
+      "offset": 1
+    }
+  ]
+}
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/submit_advanced.py
+ Container pystream-advanced-tools-run-04341754c42c Creating
+ Container pystream-advanced-tools-run-04341754c42c Created
+job_id=c3942d1bd04548c4b009cb6944ab485c
+status=RUNNING
+artifact_sha256=ca77e8892b7cfbfbf596eaeabe6aa6d0e0baeb716ecae5e8484f0309db0f0e92
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/verify_advanced.py --job-id c3942d1bd04548c4b009cb6944ab485c --min-attempt 0 --min-epoch 0
+ Container pystream-advanced-tools-run-3b1f1fd7521a Creating
+ Container pystream-advanced-tools-run-3b1f1fd7521a Created
+{
+  "job_id": "c3942d1bd04548c4b009cb6944ab485c",
+  "status": "RUNNING",
+  "attempt": 0,
+  "coordinator_epoch": 0,
+  "checkpoint": {
+    "next_id": 2,
+    "last_completed_id": 1,
+    "last_decided_id": 1,
+    "last_finalized_id": 1,
+    "consecutive_failures": 0
+  },
+  "visible_rows": [
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 1,
+      "word_count": 1,
+      "occurrences": 1
+    },
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 2,
+      "word_count": 1,
+      "occurrences": 1
+    }
+  ],
+  "manifest_checkpoint_ids": [
+    1
+  ],
+  "kafka_offsets": [
+    {
+      "partition": 0,
+      "committed_offset": 3,
+      "end_offset": 3,
+      "lag": 0
+    },
+    {
+      "partition": 1,
+      "committed_offset": 2,
+      "end_offset": 2,
+      "lag": 0
+    }
+  ],
+  "pending_transactions": 1,
+  "committed_output_exact": true,
+  "semantics": "exactly-once"
+}
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/cleanup_advanced.py --job-id c3942d1bd04548c4b009cb6944ab485c --keep-output
+ Container pystream-advanced-tools-run-49fbdb30249e Creating
+ Container pystream-advanced-tools-run-49fbdb30249e Created
+job_id=c3942d1bd04548c4b009cb6944ab485c
+status=CANCELLED
+output_removed=False
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/submit_advanced.py
+ Container pystream-advanced-tools-run-40c6f11e20d0 Creating
+ Container pystream-advanced-tools-run-40c6f11e20d0 Created
+job_id=65ce9e5f42e346969a695260b82a27f9
+status=RUNNING
+artifact_sha256=ca77e8892b7cfbfbf596eaeabe6aa6d0e0baeb716ecae5e8484f0309db0f0e92
++ C:\Users\Admin\Database\.venv\Scripts\python.exe C:\Users\Admin\Database\scripts\inject_advanced_failure.py worker --profile core --compose-file C:\Users\Admin\Database\deploy\compose.advanced.yaml --job-id 65ce9e5f42e346969a695260b82a27f9 --jobmanager-url https://localhost:8080 --evidence-path C:\Users\Admin\Database\reports\core-before_barrier-worker-failure.json
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/verify_advanced.py --job-id 65ce9e5f42e346969a695260b82a27f9 --min-attempt 1 --min-epoch 0
+ Container pystream-advanced-tools-run-f7b0291c71f3 Creating
+ Container pystream-advanced-tools-run-f7b0291c71f3 Created
+{
+  "job_id": "65ce9e5f42e346969a695260b82a27f9",
+  "status": "RUNNING",
+  "attempt": 1,
+  "coordinator_epoch": 0,
+  "checkpoint": {
+    "next_id": 3,
+    "last_completed_id": 2,
+    "last_decided_id": 2,
+    "last_finalized_id": 2,
+    "consecutive_failures": 0
+  },
+  "visible_rows": [
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 1,
+      "word_count": 1,
+      "occurrences": 1
+    },
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 2,
+      "word_count": 1,
+      "occurrences": 1
+    }
+  ],
+  "manifest_checkpoint_ids": [
+    2
+  ],
+  "kafka_offsets": [
+    {
+      "partition": 0,
+      "committed_offset": 3,
+      "end_offset": 3,
+      "lag": 0
+    },
+    {
+      "partition": 1,
+      "committed_offset": 2,
+      "end_offset": 2,
+      "lag": 0
+    }
+  ],
+  "pending_transactions": 1,
+  "committed_output_exact": true,
+  "semantics": "exactly-once"
+}
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/cleanup_advanced.py --job-id 65ce9e5f42e346969a695260b82a27f9 --keep-output
+ Container pystream-advanced-tools-run-beea159eb676 Creating
+ Container pystream-advanced-tools-run-beea159eb676 Created
+job_id=65ce9e5f42e346969a695260b82a27f9
+status=CANCELLED
+output_removed=False
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/submit_advanced.py
+ Container pystream-advanced-tools-run-1203a6ed42a8 Creating
+ Container pystream-advanced-tools-run-1203a6ed42a8 Created
+job_id=6945b54b621044beaf1cf814a4114669
+status=RUNNING
+artifact_sha256=ca77e8892b7cfbfbf596eaeabe6aa6d0e0baeb716ecae5e8484f0309db0f0e92
++ C:\Users\Admin\Database\.venv\Scripts\python.exe C:\Users\Admin\Database\scripts\inject_advanced_failure.py worker --profile core --compose-file C:\Users\Admin\Database\deploy\compose.advanced.yaml --job-id 6945b54b621044beaf1cf814a4114669 --jobmanager-url https://localhost:8080 --evidence-path C:\Users\Admin\Database\reports\core-before_decision-worker-failure.json
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/verify_advanced.py --job-id 6945b54b621044beaf1cf814a4114669 --min-attempt 1 --min-epoch 0
+ Container pystream-advanced-tools-run-2b676d4964dd Creating
+ Container pystream-advanced-tools-run-2b676d4964dd Created
+{
+  "job_id": "6945b54b621044beaf1cf814a4114669",
+  "status": "RUNNING",
+  "attempt": 1,
+  "coordinator_epoch": 0,
+  "checkpoint": {
+    "next_id": 3,
+    "last_completed_id": 2,
+    "last_decided_id": 2,
+    "last_finalized_id": 2,
+    "consecutive_failures": 0
+  },
+  "visible_rows": [
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 1,
+      "word_count": 1,
+      "occurrences": 1
+    },
+    {
+      "window_end": "2026/07/29T00:00:05",
+      "count": 2,
+      "word_count": 1,
+      "occurrences": 1
+    }
+  ],
+  "manifest_checkpoint_ids": [
+    2
+  ],
+  "kafka_offsets": [
+    {
+      "partition": 0,
+      "committed_offset": 3,
+      "end_offset": 3,
+      "lag": 0
+    },
+    {
+      "partition": 1,
+      "committed_offset": 2,
+      "end_offset": 2,
+      "lag": 0
+    }
+  ],
+  "pending_transactions": 1,
+  "committed_output_exact": true,
+  "semantics": "exactly-once"
+}
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core run --rm -T -e PYSTREAM_JOBMANAGER_URL=https://jobmanager-router-core:8080 tools python /opt/pystream/scripts/cleanup_advanced.py --job-id 6945b54b621044beaf1cf814a4114669 --keep-output
+ Container pystream-advanced-tools-run-4af9b7e28fe9 Creating
+ Container pystream-advanced-tools-run-4af9b7e28fe9 Created
+job_id=6945b54b621044beaf1cf814a4114669
+status=CANCELLED
+output_removed=False
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core logs --no-color --timestamps
++ docker ps -aq --filter label=com.docker.compose.project=pystream-advanced --filter label=com.docker.compose.service=failure-holder
++ docker ps -q --filter label=com.docker.compose.project=pystream-advanced --filter status=paused
++ docker compose -f C:\Users\Admin\Database\deploy\compose.advanced.yaml --profile core down --volumes --remove-orphans --timeout 10
+ Container pystream-advanced-prometheus-1 Stopping
+ Container pystream-advanced-worker-1-1 Stopping
+ Container pystream-advanced-worker-3-1 Stopping
+ Container pystream-advanced-worker-2-1 Stopping
+ Container pystream-advanced-worker-2-1 Stopped
+ Container pystream-advanced-worker-2-1 Removing
+ Container pystream-advanced-worker-2-1 Removed
+ Container pystream-advanced-worker-1-1 Stopped
+ Container pystream-advanced-worker-1-1 Removing
+ Container pystream-advanced-worker-3-1 Stopped
+ Container pystream-advanced-worker-3-1 Removing
+ Container pystream-advanced-worker-1-1 Removed
+ Container pystream-advanced-worker-3-1 Removed
+ Container pystream-advanced-jobmanager-router-core-1 Stopping
+ Container pystream-advanced-jobmanager-router-core-1 Stopped
+ Container pystream-advanced-jobmanager-router-core-1 Removing
+ Container pystream-advanced-jobmanager-router-core-1 Removed
+ Container pystream-advanced-jobmanager-1 Stopping
+ Container pystream-advanced-jobmanager-1 Stopped
+ Container pystream-advanced-jobmanager-1 Removing
+ Container pystream-advanced-jobmanager-1 Removed
+ Container pystream-advanced-kafka-init-1 Stopping
+ Container pystream-advanced-object-store-init-core-1 Stopping
+ Container pystream-advanced-kafka-init-1 Stopped
+ Container pystream-advanced-kafka-init-1 Removing
+ Container pystream-advanced-object-store-init-core-1 Stopped
+ Container pystream-advanced-object-store-init-core-1 Removing
+ Container pystream-advanced-object-store-init-core-1 Removed
+ Container pystream-advanced-minio-core-1 Stopping
+ Container pystream-advanced-kafka-init-1 Removed
+ Container pystream-advanced-kafka-1 Stopping
+ Container pystream-advanced-minio-core-1 Stopped
+ Container pystream-advanced-minio-core-1 Removing
+ Container pystream-advanced-minio-core-1 Removed
+ Container pystream-advanced-prometheus-1 Stopped
+ Container pystream-advanced-prometheus-1 Removing
+ Container pystream-advanced-prometheus-1 Removed
+ Container pystream-advanced-kafka-1 Stopped
+ Container pystream-advanced-kafka-1 Removing
+ Container pystream-advanced-kafka-1 Removed
+ Volume pystream-advanced_pystream-worker-3 Removing
+ Volume pystream-advanced_pystream-minio-core Removing
+ Volume pystream-advanced_pystream-output Removing
+ Volume pystream-advanced_pystream-worker-2 Removing
+ Network pystream-advanced_pystream Removing
+ Volume pystream-advanced_pystream-worker-3 Removed
+ Volume pystream-advanced_pystream-prometheus Removing
+ Volume pystream-advanced_pystream-kafka Removing
+ Volume pystream-advanced_pystream-worker-1 Removing
+ Volume pystream-advanced_pystream-output Removed
+ Volume pystream-advanced_pystream-worker-2 Removed
+ Volume pystream-advanced_pystream-minio-core Removed
+ Volume pystream-advanced_pystream-kafka Removed
+ Volume pystream-advanced_pystream-prometheus Removed
+ Volume pystream-advanced_pystream-worker-1 Removed
+ Network pystream-advanced_pystream Removed
++ docker ps -aq --filter label=com.docker.compose.project=pystream-advanced
++ docker network ls -q --filter label=com.docker.compose.project=pystream-advanced
++ docker volume ls -q --filter label=com.docker.compose.project=pystream-advanced
+advanced_core_acceptance=passed

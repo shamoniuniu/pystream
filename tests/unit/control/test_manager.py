@@ -219,6 +219,25 @@ class SourceBarrierGateway(RecordingGateway):
         await super().deploy_task(worker, deployment)
 
 
+class OperatorBarrierGateway(RecordingGateway):
+    """要求指定算子的全部 subtasks 同时进入部署调用。"""
+
+    def __init__(self, operator_id: str, expected: int) -> None:
+        super().__init__()
+        self.operator_id = operator_id
+        self.expected = expected
+        self.entries = 0
+        self.barrier = asyncio.Event()
+
+    async def deploy_task(self, worker: WorkerNode, deployment: TaskDeployment) -> None:
+        if deployment.task.operator_id == self.operator_id:
+            self.entries += 1
+            if self.entries == self.expected:
+                self.barrier.set()
+            await asyncio.wait_for(self.barrier.wait(), timeout=1)
+        await super().deploy_task(worker, deployment)
+
+
 class RecordingMetadataRepository:
     def __init__(self) -> None:
         self.revisions: list[JobMetadataRevision] = []
@@ -423,6 +442,27 @@ async def test_submit_job_同一source的subtasks并发加入消费组(
         "job-source-barrier:words:0",
         "job-source-barrier:words:1",
     }
+
+
+@pytest.mark.asyncio
+async def test_submit_job_同一非source算子的subtasks并发且保持算子顺序(
+    tmp_path,
+    linear_graph: StreamGraph,
+) -> None:
+    gateway = OperatorBarrierGateway("totals", expected=3)
+    manager = manager_with_workers(tmp_path, gateway)
+
+    job = await manager.submit_job(linear_graph, b"bundle", job_id="job-operator-barrier")
+
+    assert job.status is JobStatus.RUNNING
+    assert gateway.entries == 3
+    operator_order = [task_id.split(":")[1] for _, task_id in gateway.deploy_calls]
+    assert max(index for index, value in enumerate(operator_order) if value == "output") < min(
+        index for index, value in enumerate(operator_order) if value == "totals"
+    )
+    assert max(index for index, value in enumerate(operator_order) if value == "totals") < min(
+        index for index, value in enumerate(operator_order) if value == "by_word"
+    )
 
 
 @pytest.mark.asyncio
@@ -998,6 +1038,8 @@ async def test_jobmanager手动checkpoint更新状态并保留周期任务(
         assert checkpoint == {
             "next_id": 2,
             "last_completed_id": 1,
+            "last_decided_id": 1,
+            "last_finalized_id": 1,
             "consecutive_failures": 0,
         }
         assert manager._runs["job-checkpoint"].checkpoint_task is not None
@@ -1097,6 +1139,51 @@ async def test_task失败从最近完整checkpoint恢复全图(
         task.attempt_id == 1 and task.restored_checkpoint_id == 1
         for task in manager.get_execution_graph("job-recover").tasks.values()
     )
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_worker恢复忽略旧takeover_cache并保持checkpoint单调(
+    tmp_path,
+    two_task_graph: StreamGraph,
+) -> None:
+    gateway = RecordingGateway()
+    metadata = RecordingMetadataRepository()
+    checkpoint_store = S3CheckpointStore(MemoryObjectStore())
+    manager = manager_with_workers(
+        tmp_path,
+        gateway,
+        worker_count=2,
+        slots=2,
+        metadata_repository=metadata,
+        checkpoint_store=checkpoint_store,
+    )
+    graph = checkpoint_graph(two_task_graph)
+    await manager.submit_job(graph, b"bundle", job_id="job-stale-restore-cache")
+    first = await manager.trigger_checkpoint("job-stale-restore-cache")
+    run = manager._runs["job-stale-restore-cache"]
+    run.restore_manifest = first
+    second = await manager.trigger_checkpoint("job-stale-restore-cache")
+    assert second.checkpoint_id == 2
+
+    failed_task_id = gateway.deploy_calls[0][1]
+    await manager.report_task_status(
+        "job-stale-restore-cache",
+        failed_task_id,
+        TaskStatus.FAILED,
+        "runtime disconnected",
+        attempt_id=0,
+    )
+    recovery = run.recovery_task
+    assert recovery is not None
+    await asyncio.wait_for(recovery, timeout=2)
+
+    assert run.job.status is JobStatus.RUNNING
+    assert run.restore_manifest is not None
+    assert run.restore_manifest.checkpoint_id == 2
+    assert run.last_decided_checkpoint_id == 2
+    assert run.last_finalized_checkpoint_id == 2
+    assert {task.restored_checkpoint_id for task in run.execution_graph.tasks.values()} == {2}
     await manager.close()
 
 

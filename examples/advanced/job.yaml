@@ -1,0 +1,101 @@
+api_version: pystream/v1
+
+job:
+  name: advanced-exactly-once
+
+execution:
+  delivery_guarantee: exactly_once
+  event_time:
+    max_out_of_orderness: 2s
+    idle_timeout: 30s
+  checkpoint:
+    interval: 1h
+    timeout: 30s
+    max_consecutive_failures: 3
+  restart:
+    max_attempts: 6
+    delay: 1s
+
+operators:
+  - id: words
+    type: source
+    parallelism: 2
+    config:
+      connector: kafka
+      topic: advanced-words
+      value_format: json
+      bootstrap_servers: kafka:9092
+      bad_record_policy: fail
+      validator: exactly_once_udfs:validate_input
+      event_time:
+        pointer: /event_time
+        format: rfc3339
+
+  - id: normalize
+    type: map
+    parallelism: 2
+    udf: exactly_once_udfs:normalize
+
+  - id: by_word
+    type: key_by
+    parallelism: 2
+    udf: exactly_once_udfs:word_key
+
+  - id: word_totals
+    type: reduce
+    parallelism: 2
+    udf: exactly_once_udfs:add_word_counts
+    emit_mode: changelog
+    window:
+      type: tumbling
+      time_characteristic: event
+      size: 5s
+
+  - id: to_count_bucket
+    type: map
+    parallelism: 1
+    udf: exactly_once_udfs:to_count_bucket
+
+  - id: by_count
+    type: key_by
+    parallelism: 1
+    udf: exactly_once_udfs:count_key
+
+  - id: count_distribution
+    type: reduce
+    parallelism: 1
+    udf: exactly_once_udfs:add_bucket
+    retract_udf: exactly_once_udfs:remove_bucket
+    emit_mode: final
+    window:
+      type: tumbling
+      time_characteristic: event
+      size: 5s
+
+  - id: output
+    type: sink
+    parallelism: 1
+    config:
+      connector: file
+      format: csv
+      output_path: /data/output
+      columns:
+        - /headers/window_end
+        - /payload/count
+        - /payload/word_count
+
+edges:
+  - from: words
+    to: normalize
+  - from: normalize
+    to: by_word
+  - from: by_word
+    to: word_totals
+  - from: word_totals
+    to: to_count_bucket
+  - from: to_count_bucket
+    to: by_count
+  - from: by_count
+    to: count_distribution
+  - from: count_distribution
+    to: output

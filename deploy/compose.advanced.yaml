@@ -278,7 +278,7 @@ services:
         ssl.truststore.password=$${password}
         ssl.endpoint.identification.algorithm=https
         EOF
-        for topic in words intermediate-words; do
+        for topic in words intermediate-words advanced-words; do
           /opt/kafka/bin/kafka-topics.sh \
             --bootstrap-server kafka:9092 \
             --command-config /tmp/kafka-client.properties \
@@ -510,6 +510,7 @@ services:
       PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
       PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
       PYSTREAM_EXTERNAL_TOKEN_FILE: /run/secrets/external-token
+      PYSTREAM_ENABLE_TEST_HOOKS: ${PYSTREAM_ENABLE_TEST_HOOKS:-false}
     secrets:
       - object-store-access-key
       - object-store-secret-key
@@ -559,6 +560,7 @@ services:
       PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
       PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
       PYSTREAM_EXTERNAL_TOKEN_FILE: /run/secrets/external-token
+      PYSTREAM_ENABLE_TEST_HOOKS: ${PYSTREAM_ENABLE_TEST_HOOKS:-false}
     secrets:
       - object-store-access-key
       - object-store-secret-key
@@ -610,6 +612,7 @@ services:
       PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
       PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
       PYSTREAM_EXTERNAL_TOKEN_FILE: /run/secrets/external-token
+      PYSTREAM_ENABLE_TEST_HOOKS: ${PYSTREAM_ENABLE_TEST_HOOKS:-false}
     secrets:
       - object-store-access-key
       - object-store-secret-key
@@ -984,6 +987,35 @@ services:
     networks:
       - pystream
 
+  tools:
+    <<: *pystream-service
+    profiles:
+      - core
+      - ha
+    hostname: tools
+    restart: "no"
+    environment:
+      PYSTREAM_JOBMANAGER_URL: ${PYSTREAM_JOBMANAGER_URL:-https://jobmanager-router-core:8080}
+      PYSTREAM_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PYSTREAM_OUTPUT_ROOT: /data/output
+      PYSTREAM_EXTERNAL_TOKEN_FILE: /run/secrets/external-token
+      PYSTREAM_TLS_CA_FILE: /run/secrets/pystream-ca
+      PYSTREAM_KAFKA_CA_FILE: /run/secrets/pystream-ca
+      PYSTREAM_KAFKA_CERT_FILE: /run/secrets/tools-cert
+      PYSTREAM_KAFKA_KEY_FILE: /run/secrets/tools-key
+    secrets:
+      - pystream-ca
+      - external-token
+      - source: tools-cert
+        target: tools-cert
+      - source: tools-key
+        target: tools-key
+    volumes:
+      - pystream-output:/data/output
+    command:
+      - python
+      - --version
+
 networks:
   pystream:
     driver: bridge
@@ -1049,6 +1081,10 @@ secrets:
     file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/prometheus.crt
   prometheus-key:
     file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/prometheus.key
+  tools-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/tools.crt
+  tools-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/tools.key
   minio-core-cert:
     file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/minio-core.crt
   minio-core-key:

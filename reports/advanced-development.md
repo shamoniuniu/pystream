@@ -309,3 +309,73 @@
   - Kafka broker、Docker 主机或 File output volume HA
 - 上一回退点：`c39edd8`
 - 提交与远端备份：本日志随 Task 6 commit 推送
+
+## 2026-08-05T05:33:02Z - Task 7/8/9 最终 Exactly-once 与 HA 验收
+
+- 状态：Core/HA Docker E2E、文档和 Linux/Python 3.11 最终质量门完成
+- 候选镜像：
+  - tag：`pystream:0.3.0`
+  - ID：`sha256:8c9d3581807f4419cf5776cbc3590e61452afd1d4b38720bd68016609f29ca8c`
+  - created：`2026-08-05T04:47:29.968777384Z`
+- 确定性故障窗口：
+  - `before_barrier`：全 Task arm，Source 尚未注入 Barrier
+  - `before_decision`：snapshot/PREPARED 完成，durable decision 尚未写入
+  - `after_decision`：decision 已写入，finalize 尚未开始
+  - 仅 `PYSTREAM_ENABLE_TEST_HOOKS=true` 或 `--enable-test-hooks` 注册测试路由
+- Core Docker：
+  - 基础 WordCount 与显式 At-least-once 中级回归通过
+  - Exactly-once baseline 通过
+  - `before_barrier` Worker SIGKILL：`13.870s` 恢复，attempt 1
+  - `before_decision` Worker SIGKILL：`15.598s` 恢复，attempt 1
+  - 三组 manifest-visible committed rows diff=0
+  - Kafka 两 partitions lag=0
+  - containers=0、networks=0、volumes=0、临时 Secret 已删除
+- HA Docker：
+  - 初始角色 ACTIVE=1、STANDBY=1
+  - 无/错 Token、错 CA、错误内部证书身份均被拒绝
+  - checkpoint 1 在 DECIDED 后、FINALIZED 前终止 active JobManager
+  - standby `25.828s` 接管，epoch 1 -> 2，完成 checkpoint 1 finalize
+  - 单 MinIO 节点退出后 `28.988s` 完成 checkpoint 2
+  - 降级存储下 Worker SIGKILL：`19.755s` 恢复到 attempt 2
+  - checkpoint 3 FINALIZED；manifest IDs=1,2,3
+  - 最终 committed rows diff=0、Kafka lag=0
+  - Prometheus：5 个 JobManager/Worker targets、8 条 rules
+  - containers=0、networks=0、volumes=0、临时 Secret 已删除
+- 实现修复：
+  - Worker 恢复每次比较 durable latest manifest，防止 takeover cache 使
+    `last_decided` 落后于 `last_finalized`
+  - 算子之间保持下游优先，同一算子 subtasks 并发部署，降低恢复耗时
+  - MinIO 故障删除节点并以无 9000 监听的 holder 保留旧 IP/alias，避免 Docker
+    把 MinIO peer 地址重分配给 Worker
+  - cleanup 在 Compose down 前显式删除 holder/解除 pause
+  - Prometheus evidence 使用实际复数 job labels
+- 失败与取证：
+  - 早期 HA 504/503：修复旧 active 重启、leader-ready 重试和存储稳定判断
+  - 旧 restore cache 触发 `last_finalized > last_decided`：实现单调恢复并补回归
+  - `docker stop` 导致 MinIO IP 被 Worker 复用：改为固定 IP failure holder
+  - `docker pause` 模拟节点卡死导致 lease 反复失稳：恢复为真实节点退出
+  - Docker 29.6 禁止 `--network none` 容器再连接普通网络：改为释放旧节点后
+    直接按原 IP 创建 holder
+  - 第一次最终 HA 功能链通过但 Prometheus target filter 使用单数 label：
+    修正后完整重跑通过
+- Python 3.11 Linux 最终质量门：
+  - pytest：487 passed、0 skipped
+  - 真实 MinIO conditional write/repository integration：通过
+  - branch coverage：83.01%
+  - Ruff check：通过
+  - Ruff format：147 files
+  - `git diff --check`：通过
+  - 文档/部署/演示契约短门：33 passed
+- Secret 与声明边界：
+  - 私钥、长 Bearer 值、AWS access key 模式：0 命中
+  - 不宣称 Kafka broker HA、Docker 主机容灾、File output volume 容灾或
+    不可信 UDF 隔离
+  - Python 在线范围依赖仍使镜像不是 byte-for-byte 可复现
+- 最终证据：
+  - `reports/advanced-acceptance.md`
+  - `reports/advanced-core-evidence.json`
+  - `reports/advanced-ha-evidence.json`
+  - `reports/advanced-python311-tests.log`
+  - `reports/advanced-m7-build-receipt.json`
+- 上一回退点：`8b2c84a`
+- Git 策略：独立 Milestone 7 commit；不合并 main；不移动现有 `v0.3.0` tag

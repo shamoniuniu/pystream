@@ -27,12 +27,14 @@ def _load_script(name: str) -> ModuleType:
 
 _load_script("_demo")
 intermediate_demo = _load_script("_intermediate_demo")
+advanced_demo = _load_script("_advanced_demo")
 submit_intermediate = _load_script("submit_intermediate")
 wait_for_window = _load_script("wait_for_window")
 verify_wordcount = _load_script("verify_wordcount")
 wait_for_checkpoint = _load_script("wait_for_checkpoint")
 verify_intermediate = _load_script("verify_intermediate")
 inject_worker_failure = _load_script("inject_worker_failure")
+inject_advanced_failure = _load_script("inject_advanced_failure")
 
 
 class RunningClient:
@@ -48,6 +50,70 @@ def _output_file(tmp_path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True)
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def test_advanced_manifest_reader_only_exposes_verified_fragments(tmp_path: Path) -> None:
+    import hashlib
+    import json
+
+    job_id = "job-advanced"
+    relative = f"{job_id}/output/committed/checkpoint-00000000000000000001/part-00000.csv"
+    fragment = tmp_path / relative
+    fragment.parent.mkdir(parents=True)
+    content = b"2026/07/29T00:00:05,1,1\n2026/07/29T00:00:05,2,1\n"
+    fragment.write_bytes(content)
+    manifest = tmp_path / job_id / "output" / "manifests" / "checkpoint-00000000000000000001.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "job_id": job_id,
+                "checkpoint_id": 1,
+                "attempt_id": 0,
+                "coordinator_epoch": 1,
+                "operator_id": "output",
+                "fragments": [
+                    {
+                        "task_id": f"{job_id}:output:0",
+                        "transaction_id": "tx-1",
+                        "relative_path": relative,
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                        "size": len(content),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows, manifests = advanced_demo.visible_rows(tmp_path, job_id)
+
+    assert rows == advanced_demo.EXPECTED_ROWS
+    assert manifests[0]["checkpoint_id"] == 1
+    fragment.write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        advanced_demo.visible_rows(tmp_path, job_id)
+
+
+def test_advanced_minio_failure_preserves_unavailable_network_identity() -> None:
+    network, address = inject_advanced_failure._network_identity(
+        {
+            "NetworkSettings": {
+                "Networks": {
+                    "pystream": {
+                        "IPAddress": "172.18.0.8",
+                    }
+                }
+            }
+        }
+    )
+
+    assert network == "pystream"
+    assert address == "172.18.0.8"
+    content = (SCRIPTS / "inject_advanced_failure.py").read_text(encoding="utf-8")
+    assert "failure-holder" in content
+    assert '"docker", "pause"' not in content
 
 
 def test_submit_intermediate_仅在临时副本覆盖checkpoint周期(tmp_path: Path) -> None:

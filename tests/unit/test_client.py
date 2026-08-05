@@ -116,6 +116,24 @@ def test_trigger_checkpoint_发送空post并编码job_id():
     assert transport.requests[0]["body"] == b""
 
 
+def test_checkpoint_test_hook_client_contract():
+    transport = FakeTransport(
+        json_response(200, {"hook": "after_decision", "status": "ARMED"}),
+        json_response(200, {"hook": "after_decision", "status": "REACHED"}),
+        json_response(200, {"hook": "after_decision", "status": "RELEASING"}),
+    )
+    client = JobManagerClient("http://manager", transport=transport)
+
+    client.arm_checkpoint_test_hook("after_decision")
+    assert client.checkpoint_test_hook()["status"] == "REACHED"
+    client.release_checkpoint_test_hook("after_decision", action="fail")
+
+    assert transport.requests[0]["url"].endswith("/test/checkpoint-hooks/after_decision/arm")
+    assert transport.requests[1]["url"].endswith("/test/checkpoint-hooks")
+    assert json.loads(transport.requests[2]["body"]) == {"action": "fail"}
+    assert transport.requests[2]["headers"]["Content-Type"] == "application/json"
+
+
 def test_http_json_错误包含状态码和服务端详情():
     transport = FakeTransport(json_response(409, {"error": "状态冲突"}))
     client = JobManagerClient("http://manager", transport=transport)

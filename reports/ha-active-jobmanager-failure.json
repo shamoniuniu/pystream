@@ -1,0 +1,25 @@
+{
+  "failure": "active-jobmanager",
+  "profile": "ha",
+  "service": "jobmanager-1",
+  "container_id": "223d5f167854615ed2deb80108ba6ddada52c0c7f83e68bda2c217ce46280587",
+  "health_observations": {
+    "jobmanager-1": {
+      "status": "ok",
+      "role": "ACTIVE",
+      "coordinator_epoch": 1,
+      "leader_ready": true,
+      "takeover_pending": 0,
+      "workers": 3,
+      "healthy_workers": 3,
+      "jobs": 1,
+      "running_jobs": 1
+    }
+  },
+  "before": {
+    "restart_count": 0,
+    "started_at": "2026-08-05T05:11:34.633621803Z",
+    "running": true
+  },
+  "injected_at": "2026-08-05T05:12:19.349635+00:00"
+}

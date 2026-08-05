@@ -45,6 +45,7 @@ from pystream.control.models import (
 )
 from pystream.control.ports import ArtifactRepository, TaskDeployment, WorkerGateway
 from pystream.control.scheduler import SlotScheduler, WorkerRegistry
+from pystream.control.testing import CheckpointTestHooks
 from pystream.observability import PyStreamMetrics, log_event
 
 
@@ -144,6 +145,7 @@ class JobManager:
         coordinator_epoch: int = 0,
         role: CoordinatorRole = CoordinatorRole.ACTIVE,
         metrics: PyStreamMetrics | None = None,
+        test_hooks: CheckpointTestHooks | None = None,
     ) -> None:
         if (
             isinstance(coordinator_epoch, bool)
@@ -162,6 +164,7 @@ class JobManager:
         self.coordinator_epoch = coordinator_epoch
         self.role = role
         self.metrics = metrics
+        self.test_hooks = test_hooks
         self._leader_ready = role is CoordinatorRole.ACTIVE
         self._activating = False
         self._leadership_lock = asyncio.Lock()
@@ -172,6 +175,7 @@ class JobManager:
                 checkpoint_store,
                 worker_gateway,
                 self.registry.get,
+                test_hooks=test_hooks,
             )
             if checkpoint_store is not None
             else None
@@ -572,6 +576,8 @@ class JobManager:
                 else {
                     "next_id": run.next_checkpoint_id,
                     "last_completed_id": run.last_completed_checkpoint_id,
+                    "last_decided_id": run.last_decided_checkpoint_id,
+                    "last_finalized_id": run.last_finalized_checkpoint_id,
                     "consecutive_failures": run.consecutive_checkpoint_failures,
                 }
             ),
@@ -977,20 +983,29 @@ class JobManager:
                     return
 
             manifest = run.restore_manifest
-            if manifest is None:
-                manifest = (
-                    self.checkpoint_store.latest_manifest(
-                        run.job.job_id,
-                        expected_task_ids=set(run.execution_graph.tasks),
-                    )
-                    if self.checkpoint_store is not None
-                    else None
+            latest_manifest = (
+                self.checkpoint_store.latest_manifest(
+                    run.job.job_id,
+                    expected_task_ids=set(run.execution_graph.tasks),
                 )
+                if self.checkpoint_store is not None
+                else None
+            )
+            if latest_manifest is not None and (
+                manifest is None or latest_manifest.checkpoint_id > manifest.checkpoint_id
+            ):
+                manifest = latest_manifest
             run.restore_manifest = manifest
             restored_checkpoint_id = manifest.checkpoint_id if manifest is not None else None
             if restored_checkpoint_id is not None:
-                run.last_completed_checkpoint_id = restored_checkpoint_id
-                run.last_decided_checkpoint_id = restored_checkpoint_id
+                run.last_completed_checkpoint_id = max(
+                    run.last_completed_checkpoint_id or restored_checkpoint_id,
+                    restored_checkpoint_id,
+                )
+                run.last_decided_checkpoint_id = max(
+                    run.last_decided_checkpoint_id or restored_checkpoint_id,
+                    restored_checkpoint_id,
+                )
                 run.next_checkpoint_id = max(
                     run.next_checkpoint_id,
                     restored_checkpoint_id + 1,
@@ -1090,26 +1105,18 @@ class JobManager:
             self._finish_takeover(run)
 
     async def _deploy_run_tasks(self, run: JobRun) -> None:
-        """保持下游优先，同一 Source 的 subtasks 并发加入消费组。"""
+        """保持算子间下游优先，并发部署同一算子的 subtasks。"""
         ordered = run.execution_graph.deployment_order()
         index = 0
         while index < len(ordered):
             task = ordered[index]
-            if task.operator_type is not OperatorType.SOURCE:
-                await self._deploy_task(run, task)
-                index += 1
-                continue
-            source_tasks: list[TaskInstance] = []
+            operator_tasks: list[TaskInstance] = []
             operator_id = task.operator_id
-            while (
-                index < len(ordered)
-                and ordered[index].operator_type is OperatorType.SOURCE
-                and ordered[index].operator_id == operator_id
-            ):
-                source_tasks.append(ordered[index])
+            while index < len(ordered) and ordered[index].operator_id == operator_id:
+                operator_tasks.append(ordered[index])
                 index += 1
             results = await asyncio.gather(
-                *(self._deploy_task(run, source_task) for source_task in source_tasks),
+                *(self._deploy_task(run, operator_task) for operator_task in operator_tasks),
                 return_exceptions=True,
             )
             failures = [result for result in results if isinstance(result, BaseException)]
