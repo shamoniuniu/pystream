@@ -241,7 +241,7 @@ def test_advanced_compose_包含单节点core和四节点双盘ha对象存储() 
     for index in range(1, 5):
         node = services[f"minio-{index}"]
         assert node["profiles"] == ["ha"]
-        assert node["command"][-1] == "http://minio-{1...4}/data{1...2}"
+        assert node["command"][-1] == "https://minio-{1...4}/data{1...2}"
         assert node["volumes"] == [
             f"pystream-minio-{index}-data-1:/data1",
             f"pystream-minio-{index}-data-2:/data2",
@@ -254,7 +254,8 @@ def test_advanced_compose_包含单节点core和四节点双盘ha对象存储() 
     ) in storage_config
     assert "option httpclose" in storage_config
     assert all(
-        f"server minio-{index} minio-{index}:9000 check" in storage_config for index in range(1, 5)
+        f"server minio-{index} minio-{index}:9000 ssl verify required" in storage_config
+        for index in range(1, 5)
     )
 
 
@@ -270,7 +271,7 @@ def test_advanced_compose_包含双jobmanager和leader_only路由() -> None:
         assert manager["profiles"] == ["ha"]
         assert command[command.index("--jobmanager-id") + 1] == f"jobmanager-{index}"
         assert (
-            manager["environment"]["PYSTREAM_OBJECT_STORE_ENDPOINT"] == "http://object-store:9000"
+            manager["environment"]["PYSTREAM_OBJECT_STORE_ENDPOINT"] == "https://object-store:9000"
         )
         assert manager["depends_on"]["object-store-init-ha"]["condition"] == (
             "service_completed_successfully"
@@ -281,24 +282,27 @@ def test_advanced_compose_包含双jobmanager和leader_only路由() -> None:
     assert router["ports"] == ["8080:8080"]
     assert router["expose"] == ["8082"]
     assert "./haproxy/advanced.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" in router["volumes"]
-    assert "/health/active" in router["healthcheck"]["test"][-1]
+    assert "https://127.0.0.1:8080/health" in router["healthcheck"]["test"][-1]
 
     for index in range(1, 4):
         worker = services[f"worker-ha-{index}"]
         command = worker["command"]
         assert worker["profiles"] == ["ha"]
-        assert command[command.index("--jobmanager-url") + 1] == ("http://jobmanager-router:8082")
+        assert command[command.index("--jobmanager-url") + 1] == ("https://jobmanager-router:8082")
         assert worker["depends_on"]["jobmanager-router"]["condition"] == "service_healthy"
 
     router_config = (ROOT / "deploy" / "haproxy" / "advanced.cfg").read_text(encoding="utf-8")
     assert "bind :8080" in router_config
     assert "bind :8082" in router_config
+    assert "ssl crt /run/secrets/haproxy-pem" in router_config
+    assert "mode tcp" in router_config
+    assert "check-ssl verify required" in router_config
     assert "uri /health/leader" in router_config
     assert "uri /health/active" in router_config
     assert "nameserver docker_dns 127.0.0.11:53" in router_config
     assert router_config.count("resolvers docker resolve-prefer ipv4 init-addr libc,none") == 4
     assert all(
-        router_config.count(f"server jobmanager-{index} jobmanager-{index}:8080 check") == 2
+        router_config.count(f"server jobmanager-{index} jobmanager-{index}:8080") == 2
         for index in range(1, 3)
     )
 
@@ -310,14 +314,17 @@ def test_advanced_compose_对象存储凭据只通过secret文件注入() -> Non
     services = compose["services"]
     secret_names = {"object-store-access-key", "object-store-secret-key"}
 
-    assert set(compose["secrets"]) == secret_names
+    assert secret_names < set(compose["secrets"])
     assert all(
         definition["file"].startswith("${PYSTREAM_OBJECT_STORE_")
-        for definition in compose["secrets"].values()
+        for name, definition in compose["secrets"].items()
+        if name in secret_names
     )
     for name in ("minio-core", "minio-1", "minio-2", "minio-3", "minio-4"):
         service = services[name]
-        assert set(service["secrets"]) == secret_names
+        mounted = {item if isinstance(item, str) else item["source"] for item in service["secrets"]}
+        assert secret_names < mounted
+        assert "pystream-ca" in mounted
         assert set(service["environment"]) == {
             "MINIO_ROOT_USER_FILE",
             "MINIO_ROOT_PASSWORD_FILE",
@@ -335,10 +342,60 @@ def test_advanced_compose_对象存储凭据只通过secret文件注入() -> Non
         "worker-ha-3",
     ):
         service = services[name]
-        assert set(service["secrets"]) == secret_names
+        mounted = {item if isinstance(item, str) else item["source"] for item in service["secrets"]}
+        assert secret_names < mounted
+        assert "pystream-ca" in mounted
         environment = service["environment"]
         assert environment["PYSTREAM_OBJECT_STORE_ACCESS_KEY_FILE"].startswith("/run/secrets/")
         assert environment["PYSTREAM_OBJECT_STORE_SECRET_KEY_FILE"].startswith("/run/secrets/")
+        assert environment["PYSTREAM_OBJECT_STORE_CA_FILE"] == "/run/secrets/pystream-ca"
+
+
+def test_advanced_compose_启用tls_kafka和prometheus安全契约() -> None:
+    compose = yaml.safe_load(
+        (ROOT / "deploy" / "compose.advanced.yaml").read_text(encoding="utf-8")
+    )
+    services = compose["services"]
+    kafka = services["kafka"]
+
+    assert kafka["environment"]["KAFKA_LISTENERS"].startswith("SSL://")
+    assert kafka["environment"]["KAFKA_SSL_CLIENT_AUTH"] == "required"
+    assert {
+        "kafka-server-keystore",
+        "kafka-truststore",
+        "kafka-keystore-password",
+    } <= {item if isinstance(item, str) else item["source"] for item in kafka["secrets"]}
+    assert "PLAINTEXT://kafka:9092" not in str(kafka)
+
+    prometheus = services["prometheus"]
+    assert "@sha256:" in prometheus["image"]
+    assert prometheus["profiles"] == ["core", "ha"]
+    assert {
+        "pystream-ca",
+        "prometheus-cert",
+        "prometheus-key",
+    } == {item if isinstance(item, str) else item["source"] for item in prometheus["secrets"]}
+    assert (
+        "./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" in (prometheus["volumes"])
+    )
+
+    for name in (
+        "worker-1",
+        "worker-2",
+        "worker-3",
+        "worker-ha-1",
+        "worker-ha-2",
+        "worker-ha-3",
+    ):
+        worker = services[name]
+        command = worker["command"]
+        assert command[command.index("--control-address") + 1].startswith("https://")
+        assert command[command.index("--jobmanager-url") + 1].startswith("https://")
+        assert worker["environment"]["PYSTREAM_KAFKA_CERT_FILE"] == ("/run/secrets/service-cert")
+
+    storage_config = (ROOT / "deploy" / "haproxy" / "storage.cfg").read_text(encoding="utf-8")
+    assert "bind :9000 ssl crt /run/secrets/object-store-pem" in storage_config
+    assert storage_config.count("ssl verify required ca-file /run/secrets/pystream-ca") == 4
 
 
 def test_演示脚本齐全并被复制进运行镜像() -> None:

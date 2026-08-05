@@ -4,6 +4,7 @@ x-minio-image: &minio-image minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea
 x-minio-client-image: &minio-client-image minio/mc:RELEASE.2025-04-16T18-13-26Z@sha256:aead63c77f9db9107f1696fb08ecb0faeda23729cde94b0f663edf4fe09728e3
 x-haproxy-image: &haproxy-image haproxy:3.2.5-alpine@sha256:8007effce89a08af0236b9529a0daab5b8b36fa939f4162f28201f1bf8731dbf
 x-kafka-image: &kafka-image apache/kafka:3.9.1@sha256:4ceccc577f03f51f6af8dbfda55194d0d892f4fa7913ffbded567ce3895622ed
+x-prometheus-image: &prometheus-image prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
 
 x-minio-environment: &minio-environment
   MINIO_ROOT_USER_FILE: /run/secrets/object-store-access-key
@@ -24,9 +25,11 @@ x-minio-node: &minio-node
     - "9000"
   command:
     - server
+    - --certs-dir
+    - /run/minio-certs
     - --console-address
     - :9001
-    - http://minio-{1...4}/data{1...2}
+    - https://minio-{1...4}/data{1...2}
   tmpfs:
     - /tmp:size=64m,mode=1777
   networks:
@@ -35,10 +38,10 @@ x-minio-node: &minio-node
     test:
       - CMD-SHELL
       - >-
-        mc alias set health http://127.0.0.1:9000
+        mc --insecure alias set health https://127.0.0.1:9000
         "$$(cat /run/secrets/object-store-access-key)"
         "$$(cat /run/secrets/object-store-secret-key)" >/dev/null 2>&1
-        && mc ready health
+        && mc --insecure ready health
     interval: 5s
     timeout: 5s
     retries: 30
@@ -51,6 +54,21 @@ x-minio-node: &minio-node
       limits:
         cpus: "0.75"
         memory: 768M
+
+x-pystream-environment: &pystream-environment
+  PYSTREAM_OBJECT_STORE_ENDPOINT: https://minio-core:9000
+  PYSTREAM_OBJECT_STORE_BUCKET: pystream
+  PYSTREAM_OBJECT_STORE_REGION: us-east-1
+  PYSTREAM_OBJECT_STORE_ACCESS_KEY_FILE: /run/secrets/object-store-access-key
+  PYSTREAM_OBJECT_STORE_SECRET_KEY_FILE: /run/secrets/object-store-secret-key
+  PYSTREAM_OBJECT_STORE_CA_FILE: /run/secrets/pystream-ca
+  PYSTREAM_TLS_CA_FILE: /run/secrets/pystream-ca
+  PYSTREAM_METRICS_TOKEN_FILE: /run/secrets/metrics-token
+  PYSTREAM_KAFKA_CA_FILE: /run/secrets/pystream-ca
+
+x-pystream-ha-environment: &pystream-ha-environment
+  <<: *pystream-environment
+  PYSTREAM_OBJECT_STORE_ENDPOINT: https://object-store:9000
 
 x-pystream-service: &pystream-service
   build:
@@ -73,15 +91,12 @@ x-pystream-service: &pystream-service
     - ALL
   tmpfs:
     - /tmp:size=64m,mode=1777
-  environment:
-    PYSTREAM_OBJECT_STORE_ENDPOINT: http://minio-core:9000
-    PYSTREAM_OBJECT_STORE_BUCKET: pystream
-    PYSTREAM_OBJECT_STORE_REGION: us-east-1
-    PYSTREAM_OBJECT_STORE_ACCESS_KEY_FILE: /run/secrets/object-store-access-key
-    PYSTREAM_OBJECT_STORE_SECRET_KEY_FILE: /run/secrets/object-store-secret-key
+  environment: *pystream-environment
   secrets:
     - object-store-access-key
     - object-store-secret-key
+    - pystream-ca
+    - metrics-token
   networks:
     - pystream
 
@@ -89,17 +104,12 @@ x-pystream-ha-service: &pystream-ha-service
   <<: *pystream-service
   profiles:
     - ha
-  environment:
-    PYSTREAM_OBJECT_STORE_ENDPOINT: http://object-store:9000
-    PYSTREAM_OBJECT_STORE_BUCKET: pystream
-    PYSTREAM_OBJECT_STORE_REGION: us-east-1
-    PYSTREAM_OBJECT_STORE_ACCESS_KEY_FILE: /run/secrets/object-store-access-key
-    PYSTREAM_OBJECT_STORE_SECRET_KEY_FILE: /run/secrets/object-store-secret-key
+  environment: *pystream-ha-environment
 
 x-worker: &worker
   <<: *pystream-service
   depends_on:
-    jobmanager:
+    jobmanager-router-core:
       condition: service_healthy
     kafka:
       condition: service_healthy
@@ -117,7 +127,7 @@ x-worker: &worker
       - CMD
       - python
       - -c
-      - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8081/health', timeout=2)); assert d['status']=='ok'"
+      - "import json,ssl,urllib.request; c=ssl.create_default_context(cafile='/run/secrets/pystream-ca'); c.load_cert_chain('/run/secrets/service-cert','/run/secrets/service-key'); d=json.load(urllib.request.urlopen('https://localhost:8081/health', context=c, timeout=2)); assert d['status']=='ok'"
     interval: 5s
     timeout: 3s
     retries: 12
@@ -152,7 +162,7 @@ x-ha-worker: &ha-worker
       - CMD
       - python
       - -c
-      - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8081/health', timeout=2)); assert d['status']=='ok'"
+      - "import json,ssl,urllib.request; c=ssl.create_default_context(cafile='/run/secrets/pystream-ca'); c.load_cert_chain('/run/secrets/service-cert','/run/secrets/service-key'); d=json.load(urllib.request.urlopen('https://localhost:8081/health', context=c, timeout=2)); assert d['status']=='ok'"
     interval: 5s
     timeout: 3s
     retries: 12
@@ -178,11 +188,20 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENERS: SSL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: SSL://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,SSL:SSL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: SSL
+      KAFKA_SSL_CLIENT_AUTH: required
+      KAFKA_SSL_KEYSTORE_TYPE: PKCS12
+      KAFKA_SSL_KEYSTORE_FILENAME: kafka-server.p12
+      KAFKA_SSL_KEY_CREDENTIALS: kafka-keystore-password
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: kafka-keystore-password
+      KAFKA_SSL_TRUSTSTORE_TYPE: JKS
+      KAFKA_SSL_TRUSTSTORE_FILENAME: kafka-truststore.jks
+      KAFKA_SSL_TRUSTSTORE_CREDENTIALS: kafka-keystore-password
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -193,16 +212,40 @@ services:
       - "9092"
     volumes:
       - pystream-kafka:/var/lib/kafka/data
+    secrets:
+      - source: kafka-server-keystore
+        target: /etc/kafka/secrets/kafka-server.p12
+      - source: kafka-truststore
+        target: /etc/kafka/secrets/kafka-truststore.jks
+      - source: kafka-keystore-password
+        target: /etc/kafka/secrets/kafka-keystore-password
     networks:
       - pystream
     healthcheck:
       test:
         - CMD-SHELL
-        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --command-config /tmp/kafka-client.properties --list >/dev/null 2>&1
       interval: 5s
       timeout: 5s
       retries: 20
       start_period: 20s
+    command:
+      - /bin/bash
+      - -ec
+      - |
+        password="$$(cat /etc/kafka/secrets/kafka-keystore-password)"
+        cat >/tmp/kafka-client.properties <<EOF
+        security.protocol=SSL
+        ssl.keystore.type=PKCS12
+        ssl.keystore.location=/etc/kafka/secrets/kafka-server.p12
+        ssl.keystore.password=$${password}
+        ssl.key.password=$${password}
+        ssl.truststore.type=JKS
+        ssl.truststore.location=/etc/kafka/secrets/kafka-truststore.jks
+        ssl.truststore.password=$${password}
+        ssl.endpoint.identification.algorithm=https
+        EOF
+        exec /etc/kafka/docker/run
 
   kafka-init:
     image: *kafka-image
@@ -213,15 +256,32 @@ services:
       kafka:
         condition: service_healthy
     restart: "no"
+    secrets:
+      - kafka-client-keystore
+      - kafka-truststore
+      - kafka-keystore-password
     networks:
       - pystream
     command:
       - /bin/bash
       - -ec
       - |
+        password="$$(cat /run/secrets/kafka-keystore-password)"
+        cat >/tmp/kafka-client.properties <<EOF
+        security.protocol=SSL
+        ssl.keystore.type=PKCS12
+        ssl.keystore.location=/run/secrets/kafka-client-keystore
+        ssl.keystore.password=$${password}
+        ssl.key.password=$${password}
+        ssl.truststore.type=JKS
+        ssl.truststore.location=/run/secrets/kafka-truststore
+        ssl.truststore.password=$${password}
+        ssl.endpoint.identification.algorithm=https
+        EOF
         for topic in words intermediate-words; do
           /opt/kafka/bin/kafka-topics.sh \
             --bootstrap-server kafka:9092 \
+            --command-config /tmp/kafka-client.properties \
             --create \
             --if-not-exists \
             --topic "$${topic}" \
@@ -240,12 +300,20 @@ services:
     secrets:
       - object-store-access-key
       - object-store-secret-key
+      - source: minio-core-cert
+        target: /run/minio-certs/public.crt
+      - source: minio-core-key
+        target: /run/minio-certs/private.key
+      - source: pystream-ca
+        target: /run/minio-certs/CAs/pystream-ca.crt
     ports:
       - "9000:9000"
     expose:
       - "9001"
     command:
       - server
+      - --certs-dir
+      - /run/minio-certs
       - --console-address
       - :9001
       - /data
@@ -259,10 +327,10 @@ services:
       test:
         - CMD-SHELL
         - >-
-          mc alias set health http://127.0.0.1:9000
+          mc --insecure alias set health https://127.0.0.1:9000
           "$$(cat /run/secrets/object-store-access-key)"
           "$$(cat /run/secrets/object-store-secret-key)" >/dev/null 2>&1
-          && mc ready health
+          && mc --insecure ready health
       interval: 5s
       timeout: 5s
       retries: 20
@@ -291,10 +359,10 @@ services:
       - -ec
     command:
       - |
-        mc alias set local http://minio-core:9000 \
+        mc --insecure alias set local https://minio-core:9000 \
           "$$(cat /run/secrets/object-store-access-key)" \
           "$$(cat /run/secrets/object-store-secret-key)"
-        mc mb --ignore-existing local/pystream
+        mc --insecure mb --ignore-existing local/pystream
 
   minio-1:
     <<: *minio-node
@@ -302,6 +370,15 @@ services:
     volumes:
       - pystream-minio-1-data-1:/data1
       - pystream-minio-1-data-2:/data2
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - source: minio-1-cert
+        target: /run/minio-certs/public.crt
+      - source: minio-1-key
+        target: /run/minio-certs/private.key
+      - source: pystream-ca
+        target: /run/minio-certs/CAs/pystream-ca.crt
 
   minio-2:
     <<: *minio-node
@@ -309,6 +386,15 @@ services:
     volumes:
       - pystream-minio-2-data-1:/data1
       - pystream-minio-2-data-2:/data2
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - source: minio-2-cert
+        target: /run/minio-certs/public.crt
+      - source: minio-2-key
+        target: /run/minio-certs/private.key
+      - source: pystream-ca
+        target: /run/minio-certs/CAs/pystream-ca.crt
 
   minio-3:
     <<: *minio-node
@@ -316,6 +402,15 @@ services:
     volumes:
       - pystream-minio-3-data-1:/data1
       - pystream-minio-3-data-2:/data2
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - source: minio-3-cert
+        target: /run/minio-certs/public.crt
+      - source: minio-3-key
+        target: /run/minio-certs/private.key
+      - source: pystream-ca
+        target: /run/minio-certs/CAs/pystream-ca.crt
 
   minio-4:
     <<: *minio-node
@@ -323,6 +418,15 @@ services:
     volumes:
       - pystream-minio-4-data-1:/data1
       - pystream-minio-4-data-2:/data2
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - source: minio-4-cert
+        target: /run/minio-certs/public.crt
+      - source: minio-4-key
+        target: /run/minio-certs/private.key
+      - source: pystream-ca
+        target: /run/minio-certs/CAs/pystream-ca.crt
 
   object-store:
     image: *haproxy-image
@@ -348,6 +452,10 @@ services:
       - "9000:9000"
     volumes:
       - ./haproxy/storage.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    secrets:
+      - pystream-ca
+      - source: object-store-pem
+        target: object-store-pem
     tmpfs:
       - /run:size=16m,mode=0755
       - /tmp:size=16m,mode=1777
@@ -387,16 +495,31 @@ services:
       - -ec
     command:
       - |
-        until mc alias set local http://object-store:9000 \
+        until mc --insecure alias set local https://object-store:9000 \
           "$$(cat /run/secrets/object-store-access-key)" \
           "$$(cat /run/secrets/object-store-secret-key)"; do
           sleep 2
         done
-        mc mb --ignore-existing local/pystream
+        mc --insecure mb --ignore-existing local/pystream
 
   jobmanager:
     <<: *pystream-service
     hostname: jobmanager
+    environment:
+      <<: *pystream-environment
+      PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
+      PYSTREAM_EXTERNAL_TOKEN_FILE: /run/secrets/external-token
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - pystream-ca
+      - metrics-token
+      - external-token
+      - source: jobmanager-cert
+        target: service-cert
+      - source: jobmanager-key
+        target: service-key
     depends_on:
       kafka:
         condition: service_healthy
@@ -413,8 +536,8 @@ services:
       - 0.0.0.0
       - --port
       - "8080"
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
     volumes:
       - pystream-output:/data/output
     healthcheck:
@@ -422,7 +545,7 @@ services:
         - CMD
         - python
         - -c
-        - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:8080/health', timeout=2)); assert d['status']=='ok'"
+        - "import json,ssl,urllib.request; c=ssl.create_default_context(cafile='/run/secrets/pystream-ca'); c.load_cert_chain('/run/secrets/service-cert','/run/secrets/service-key'); d=json.load(urllib.request.urlopen('https://localhost:8080/health', context=c, timeout=2)); assert d['status']=='ok'"
       interval: 5s
       timeout: 3s
       retries: 12
@@ -431,6 +554,21 @@ services:
   jobmanager-1:
     <<: *pystream-ha-service
     hostname: jobmanager-1
+    environment:
+      <<: *pystream-ha-environment
+      PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
+      PYSTREAM_EXTERNAL_TOKEN_FILE: /run/secrets/external-token
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - pystream-ca
+      - metrics-token
+      - external-token
+      - source: jobmanager-1-cert
+        target: service-cert
+      - source: jobmanager-1-key
+        target: service-key
     depends_on:
       kafka:
         condition: service_healthy
@@ -458,7 +596,7 @@ services:
         - CMD
         - python
         - -c
-        - "import json,urllib.request; json.load(urllib.request.urlopen('http://localhost:8080/health', timeout=2))"
+        - "import json,ssl,urllib.request; c=ssl.create_default_context(cafile='/run/secrets/pystream-ca'); c.load_cert_chain('/run/secrets/service-cert','/run/secrets/service-key'); json.load(urllib.request.urlopen('https://localhost:8080/health', context=c, timeout=2))"
       interval: 5s
       timeout: 3s
       retries: 12
@@ -467,6 +605,21 @@ services:
   jobmanager-2:
     <<: *pystream-ha-service
     hostname: jobmanager-2
+    environment:
+      <<: *pystream-ha-environment
+      PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
+      PYSTREAM_EXTERNAL_TOKEN_FILE: /run/secrets/external-token
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - pystream-ca
+      - metrics-token
+      - external-token
+      - source: jobmanager-2-cert
+        target: service-cert
+      - source: jobmanager-2-key
+        target: service-key
     depends_on:
       kafka:
         condition: service_healthy
@@ -494,11 +647,48 @@ services:
         - CMD
         - python
         - -c
-        - "import json,urllib.request; json.load(urllib.request.urlopen('http://localhost:8080/health', timeout=2))"
+        - "import json,ssl,urllib.request; c=ssl.create_default_context(cafile='/run/secrets/pystream-ca'); c.load_cert_chain('/run/secrets/service-cert','/run/secrets/service-key'); json.load(urllib.request.urlopen('https://localhost:8080/health', context=c, timeout=2))"
       interval: 5s
       timeout: 3s
       retries: 12
       start_period: 5s
+
+  jobmanager-router-core:
+    image: *haproxy-image
+    profiles:
+      - core
+    hostname: jobmanager-router-core
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "8080:8080"
+    expose:
+      - "8082"
+    volumes:
+      - ./haproxy/advanced-core.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    secrets:
+      - pystream-ca
+      - source: haproxy-pem
+        target: haproxy-pem
+    tmpfs:
+      - /run:size=16m,mode=0755
+      - /tmp:size=16m,mode=1777
+    networks:
+      - pystream
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget --no-check-certificate -q -T 2 -O /dev/null https://127.0.0.1:8080/health
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   jobmanager-router:
     image: *haproxy-image
@@ -522,6 +712,10 @@ services:
       - "8082"
     volumes:
       - ./haproxy/advanced.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    secrets:
+      - pystream-ca
+      - source: haproxy-pem
+        target: haproxy-pem
     tmpfs:
       - /run:size=16m,mode=0755
       - /tmp:size=16m,mode=1777
@@ -530,7 +724,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - wget -q -T 2 -O /dev/null http://127.0.0.1:8082/health/active
+        - wget --no-check-certificate -q -T 2 -O /dev/null https://127.0.0.1:8080/health
       interval: 5s
       timeout: 3s
       retries: 10
@@ -538,6 +732,21 @@ services:
   worker-1:
     <<: *worker
     hostname: worker-1
+    environment:
+      <<: *pystream-environment
+      PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
+      PYSTREAM_KAFKA_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_KAFKA_KEY_FILE: /run/secrets/service-key
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - pystream-ca
+      - metrics-token
+      - source: worker-1-cert
+        target: service-cert
+      - source: worker-1-key
+        target: service-key
     command:
       - python
       - -m
@@ -546,13 +755,13 @@ services:
       - --worker-id
       - worker-1
       - --control-address
-      - http://worker-1:8081
+      - https://worker-1:8081
       - --data-host
       - worker-1
       - --slots
       - "4"
       - --jobmanager-url
-      - http://jobmanager:8080
+      - https://jobmanager-router-core:8082
     volumes:
       - pystream-output:/data/output
       - pystream-worker-1:/data/work
@@ -560,6 +769,21 @@ services:
   worker-2:
     <<: *worker
     hostname: worker-2
+    environment:
+      <<: *pystream-environment
+      PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
+      PYSTREAM_KAFKA_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_KAFKA_KEY_FILE: /run/secrets/service-key
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - pystream-ca
+      - metrics-token
+      - source: worker-2-cert
+        target: service-cert
+      - source: worker-2-key
+        target: service-key
     command:
       - python
       - -m
@@ -568,13 +792,13 @@ services:
       - --worker-id
       - worker-2
       - --control-address
-      - http://worker-2:8081
+      - https://worker-2:8081
       - --data-host
       - worker-2
       - --slots
       - "4"
       - --jobmanager-url
-      - http://jobmanager:8080
+      - https://jobmanager-router-core:8082
     volumes:
       - pystream-output:/data/output
       - pystream-worker-2:/data/work
@@ -582,6 +806,21 @@ services:
   worker-3:
     <<: *worker
     hostname: worker-3
+    environment:
+      <<: *pystream-environment
+      PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
+      PYSTREAM_KAFKA_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_KAFKA_KEY_FILE: /run/secrets/service-key
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - pystream-ca
+      - metrics-token
+      - source: worker-3-cert
+        target: service-cert
+      - source: worker-3-key
+        target: service-key
     command:
       - python
       - -m
@@ -590,13 +829,13 @@ services:
       - --worker-id
       - worker-3
       - --control-address
-      - http://worker-3:8081
+      - https://worker-3:8081
       - --data-host
       - worker-3
       - --slots
       - "4"
       - --jobmanager-url
-      - http://jobmanager:8080
+      - https://jobmanager-router-core:8082
     volumes:
       - pystream-output:/data/output
       - pystream-worker-3:/data/work
@@ -604,6 +843,21 @@ services:
   worker-ha-1:
     <<: *ha-worker
     hostname: worker-ha-1
+    environment:
+      <<: *pystream-ha-environment
+      PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
+      PYSTREAM_KAFKA_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_KAFKA_KEY_FILE: /run/secrets/service-key
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - pystream-ca
+      - metrics-token
+      - source: worker-1-cert
+        target: service-cert
+      - source: worker-1-key
+        target: service-key
     command:
       - python
       - -m
@@ -612,13 +866,13 @@ services:
       - --worker-id
       - worker-1
       - --control-address
-      - http://worker-ha-1:8081
+      - https://worker-ha-1:8081
       - --data-host
       - worker-ha-1
       - --slots
       - "4"
       - --jobmanager-url
-      - http://jobmanager-router:8082
+      - https://jobmanager-router:8082
     volumes:
       - pystream-output:/data/output
       - pystream-worker-ha-1:/data/work
@@ -626,6 +880,21 @@ services:
   worker-ha-2:
     <<: *ha-worker
     hostname: worker-ha-2
+    environment:
+      <<: *pystream-ha-environment
+      PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
+      PYSTREAM_KAFKA_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_KAFKA_KEY_FILE: /run/secrets/service-key
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - pystream-ca
+      - metrics-token
+      - source: worker-2-cert
+        target: service-cert
+      - source: worker-2-key
+        target: service-key
     command:
       - python
       - -m
@@ -634,13 +903,13 @@ services:
       - --worker-id
       - worker-2
       - --control-address
-      - http://worker-ha-2:8081
+      - https://worker-ha-2:8081
       - --data-host
       - worker-ha-2
       - --slots
       - "4"
       - --jobmanager-url
-      - http://jobmanager-router:8082
+      - https://jobmanager-router:8082
     volumes:
       - pystream-output:/data/output
       - pystream-worker-ha-2:/data/work
@@ -648,6 +917,21 @@ services:
   worker-ha-3:
     <<: *ha-worker
     hostname: worker-ha-3
+    environment:
+      <<: *pystream-ha-environment
+      PYSTREAM_TLS_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_TLS_KEY_FILE: /run/secrets/service-key
+      PYSTREAM_KAFKA_CERT_FILE: /run/secrets/service-cert
+      PYSTREAM_KAFKA_KEY_FILE: /run/secrets/service-key
+    secrets:
+      - object-store-access-key
+      - object-store-secret-key
+      - pystream-ca
+      - metrics-token
+      - source: worker-3-cert
+        target: service-cert
+      - source: worker-3-key
+        target: service-key
     command:
       - python
       - -m
@@ -656,16 +940,49 @@ services:
       - --worker-id
       - worker-3
       - --control-address
-      - http://worker-ha-3:8081
+      - https://worker-ha-3:8081
       - --data-host
       - worker-ha-3
       - --slots
       - "4"
       - --jobmanager-url
-      - http://jobmanager-router:8082
+      - https://jobmanager-router:8082
     volumes:
       - pystream-output:/data/output
       - pystream-worker-ha-3:/data/work
+
+  prometheus:
+    image: *prometheus-image
+    profiles:
+      - core
+      - ha
+    hostname: prometheus
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - pystream-prometheus:/prometheus
+    secrets:
+      - pystream-ca
+      - source: prometheus-cert
+        target: prometheus-cert
+      - source: prometheus-key
+        target: prometheus-key
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    networks:
+      - pystream
 
 networks:
   pystream:
@@ -689,9 +1006,76 @@ volumes:
   pystream-worker-ha-1:
   pystream-worker-ha-2:
   pystream-worker-ha-3:
+  pystream-prometheus:
 
 secrets:
   object-store-access-key:
-    file: ${PYSTREAM_OBJECT_STORE_ACCESS_KEY_FILE:-./secrets/object-store-access-key}
+    file: ${PYSTREAM_OBJECT_STORE_ACCESS_KEY_SOURCE:-../run/pki/secrets/object-store-access-key}
   object-store-secret-key:
-    file: ${PYSTREAM_OBJECT_STORE_SECRET_KEY_FILE:-./secrets/object-store-secret-key}
+    file: ${PYSTREAM_OBJECT_STORE_SECRET_KEY_SOURCE:-../run/pki/secrets/object-store-secret-key}
+  pystream-ca:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/ca.crt
+  external-token:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/secrets/external-token
+  metrics-token:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/secrets/metrics-token
+  haproxy-pem:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/haproxy.pem
+  jobmanager-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/jobmanager.crt
+  jobmanager-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/jobmanager.key
+  jobmanager-1-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/jobmanager-1.crt
+  jobmanager-1-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/jobmanager-1.key
+  jobmanager-2-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/jobmanager-2.crt
+  jobmanager-2-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/jobmanager-2.key
+  worker-1-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/worker-1.crt
+  worker-1-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/worker-1.key
+  worker-2-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/worker-2.crt
+  worker-2-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/worker-2.key
+  worker-3-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/worker-3.crt
+  worker-3-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/worker-3.key
+  prometheus-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/prometheus.crt
+  prometheus-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/prometheus.key
+  minio-core-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/minio-core.crt
+  minio-core-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/minio-core.key
+  minio-1-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/minio-1.crt
+  minio-1-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/minio-1.key
+  minio-2-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/minio-2.crt
+  minio-2-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/minio-2.key
+  minio-3-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/minio-3.crt
+  minio-3-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/minio-3.key
+  minio-4-cert:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/minio-4.crt
+  minio-4-key:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/minio-4.key
+  object-store-pem:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/services/object-store.pem
+  kafka-server-keystore:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/secrets/kafka-server.p12
+  kafka-client-keystore:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/secrets/kafka-client.p12
+  kafka-truststore:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/secrets/kafka-truststore.jks
+  kafka-keystore-password:
+    file: ${PYSTREAM_PKI_ROOT:-../run/pki}/secrets/kafka-keystore-password

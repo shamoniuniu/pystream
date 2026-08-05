@@ -11,10 +11,12 @@ from pystream.observability.logging import (
     configure_logging,
     log_event,
 )
+from pystream.observability.metrics import PyStreamMetrics
 
 __all__ = [
     "STANDARD_FIELDS",
     "JsonLogFormatter",
+    "PyStreamMetrics",
     "configure_logging",
     "log_event",
 ]

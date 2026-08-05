@@ -8,6 +8,7 @@ import json
 import os
 from collections.abc import Sequence
 
+from _demo import kafka_client_options
 from aiokafka import AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 
@@ -39,7 +40,10 @@ async def reset_topic(bootstrap_servers: str, topic: str, partitions: int) -> No
     """删除并重建 topic，避免历史消息污染重复演示。"""
     if partitions <= 0:
         raise ValueError("--partitions 必须大于 0")
-    admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap_servers)
+    admin = AIOKafkaAdminClient(
+        bootstrap_servers=bootstrap_servers,
+        **kafka_client_options(),
+    )
     await admin.start()
     try:
         topics = await admin.list_topics()
@@ -73,6 +77,7 @@ async def produce(
     producer = AIOKafkaProducer(
         bootstrap_servers=bootstrap_servers,
         acks="all",
+        **kafka_client_options(),
         value_serializer=lambda value: json.dumps(
             value,
             ensure_ascii=False,

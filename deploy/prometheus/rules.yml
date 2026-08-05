@@ -1,0 +1,64 @@
+groups:
+  - name: pystream-slo
+    rules:
+      - alert: PyStreamActiveJobManagerCount
+        expr: sum(pystream_leader_role{role="ACTIVE"}) != 1
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: PyStream requires exactly one active JobManager
+
+      - alert: PyStreamLeaderLeaseLow
+        expr: pystream_lease_remaining_seconds < 6 and on(instance) pystream_leader_epoch > 0
+        for: 5s
+        labels:
+          severity: critical
+        annotations:
+          summary: JobManager lease has less than two renew intervals remaining
+
+      - alert: PyStreamCheckpointFinalizeStalled
+        expr: pystream_checkpoint_decided_age_seconds > 30
+        for: 5s
+        labels:
+          severity: critical
+        annotations:
+          summary: A DECIDED checkpoint has not finalized within 30 seconds
+
+      - alert: PyStreamCheckpointFailureLimit
+        expr: pystream_checkpoint_consecutive_failures >= 3
+        for: 5s
+        labels:
+          severity: critical
+        annotations:
+          summary: Checkpoint consecutive failure limit reached
+
+      - alert: PyStreamObjectStoreUnavailable
+        expr: pystream_object_store_available == 0
+        for: 10s
+        labels:
+          severity: critical
+        annotations:
+          summary: The latest object store request failed
+
+      - alert: PyStreamJobManagerRecoverySLOBreach
+        expr: pystream_job_recovery_last_duration_seconds{component="job"} > 30
+        labels:
+          severity: critical
+        annotations:
+          summary: JobManager recovery exceeded 30 seconds
+
+      - alert: PyStreamWorkerRecoverySLOBreach
+        expr: pystream_job_recovery_last_duration_seconds{component="worker"} > 60
+        labels:
+          severity: critical
+        annotations:
+          summary: Worker recovery exceeded 60 seconds
+
+      - alert: PyStreamCertificateExpiring
+        expr: pystream_tls_certificate_expiry_seconds - time() < 604800
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: A PyStream TLS certificate expires in less than seven days

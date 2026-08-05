@@ -7,11 +7,16 @@
 from __future__ import annotations
 
 import json
+import os
+import ssl
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+
+from pystream.security import read_secret_file
 
 
 class ClientError(RuntimeError):
@@ -44,6 +49,9 @@ class HttpTransport(Protocol):
 class UrllibTransport:
     """基于 Python 标准库的同步 HTTP 传输。"""
 
+    def __init__(self, ssl_context: ssl.SSLContext | None = None) -> None:
+        self.ssl_context = ssl_context
+
     def request(
         self,
         method: str,
@@ -56,7 +64,11 @@ class UrllibTransport:
         """发送 HTTP 请求，并保留 HTTP 错误响应供上层统一解析。"""
         request = Request(url, data=body, headers=headers, method=method)
         try:
-            with urlopen(request, timeout=timeout) as response:
+            with urlopen(
+                request,
+                timeout=timeout,
+                context=self.ssl_context,
+            ) as response:
                 return HttpResponse(status=response.status, body=response.read())
         except HTTPError as exc:
             return HttpResponse(status=exc.code, body=exc.read())
@@ -74,6 +86,8 @@ class JobManagerClient:
         *,
         timeout: float = 10.0,
         transport: HttpTransport | None = None,
+        token_file: str | Path | None = None,
+        ca_file: str | Path | None = None,
     ) -> None:
         normalized = base_url.rstrip("/")
         if not normalized.startswith(("http://", "https://")):
@@ -82,7 +96,15 @@ class JobManagerClient:
             raise ClientError("HTTP timeout 必须大于 0")
         self.base_url = normalized
         self.timeout = timeout
-        self.transport = transport or UrllibTransport()
+        token_file = token_file or os.getenv("PYSTREAM_EXTERNAL_TOKEN_FILE")
+        ca_file = ca_file or os.getenv("PYSTREAM_TLS_CA_FILE")
+        self._token = (
+            read_secret_file(token_file, "management API token") if token_file is not None else None
+        )
+        ssl_context = (
+            ssl.create_default_context(cafile=str(ca_file)) if ca_file is not None else None
+        )
+        self.transport = transport or UrllibTransport(ssl_context)
 
     def submit(self, artifact: bytes, sha256: str, filename: str) -> dict[str, object]:
         """上传不可变 ZIP 制品并返回 job_id 与初始状态。"""
@@ -103,6 +125,14 @@ class JobManagerClient:
         return self._json_request(
             "GET",
             f"/v1/jobs/{quote(job_id, safe='')}",
+            expected_statuses={200},
+        )
+
+    def workers(self) -> dict[str, object]:
+        """Return the current Worker resource view."""
+        return self._json_request(
+            "GET",
+            "/v1/workers",
             expected_statuses={200},
         )
 
@@ -137,6 +167,8 @@ class JobManagerClient:
             "Accept": "application/json",
             **(headers or {}),
         }
+        if self._token is not None:
+            request_headers["Authorization"] = f"Bearer {self._token}"
         response = self.transport.request(
             method,
             f"{self.base_url}{path}",

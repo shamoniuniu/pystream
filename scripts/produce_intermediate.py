@@ -7,6 +7,7 @@ import asyncio
 import json
 from collections.abc import Sequence
 
+from _demo import kafka_client_options
 from _intermediate_demo import DEFAULT_BOOTSTRAP_SERVERS, DEFAULT_TOPIC
 from aiokafka import AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
@@ -131,7 +132,10 @@ async def reset_topic(bootstrap_servers: str, topic: str, partitions: int) -> No
     """删除并重建 topic，保证 baseline 从空输入开始。"""
     if partitions != 2:
         raise ValueError("中级确定性数据集要求 --partitions=2")
-    admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap_servers)
+    admin = AIOKafkaAdminClient(
+        bootstrap_servers=bootstrap_servers,
+        **kafka_client_options(),
+    )
     await admin.start()
     try:
         topics = await admin.list_topics()
@@ -165,6 +169,7 @@ async def produce(
     producer = AIOKafkaProducer(
         bootstrap_servers=bootstrap_servers,
         acks="all",
+        **kafka_client_options(),
         value_serializer=lambda value: json.dumps(
             value,
             ensure_ascii=False,

@@ -64,15 +64,15 @@
   - [x] HAProxy leader-only routing
   - [x] 双 contender、lease loss、stale epoch tests
 
-- [ ] Task 6: mTLS、Token、Secret 与 Prometheus
-  - [ ] 外部 HTTPS/Bearer Token
-  - [ ] 内部 HTTP mTLS
-  - [ ] Worker 数据面 mTLS
-  - [ ] Kafka SSL client
-  - [ ] 对象存储 TLS/access key Secret
-  - [ ] PKI/Secret 生成与轮换脚本
-  - [ ] Prometheus metrics 与 rules
-  - [ ] 认证、证书、redaction、metrics tests
+- [x] Task 6: mTLS、Token、Secret 与 Prometheus
+  - [x] 外部 HTTPS/Bearer Token
+  - [x] 内部 HTTP mTLS
+  - [x] Worker 数据面 mTLS
+  - [x] Kafka SSL client
+  - [x] 对象存储 TLS/access key Secret
+  - [x] PKI/Secret 生成与轮换脚本
+  - [x] Prometheus metrics 与 rules
+  - [x] 认证、证书、redaction、metrics tests
 
 - [ ] Task 7: Core Docker Exactly-once 验收
   - [ ] 基础与显式 At-least-once 回归

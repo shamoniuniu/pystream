@@ -11,6 +11,8 @@ dependencies = [
     "aiohttp>=3.10,<4",
     "aiokafka>=0.11,<1",
     "boto3>=1.35.70,<2",
+    "cryptography>=43,<47",
+    "prometheus-client>=0.21,<1",
     "pydantic>=2.7,<3",
     "PyYAML>=6,<7",
 ]

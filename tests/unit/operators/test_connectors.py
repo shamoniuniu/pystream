@@ -252,6 +252,41 @@ async def test_source_subtasks_share_group_disable_auto_commit_and_use_distinct_
 
 
 @pytest.mark.asyncio
+async def test_source_forwards_kafka_ssl_client_options_without_overriding_offsets() -> None:
+    consumer = FakeConsumer()
+    factory = RecordingConsumerFactory(consumer)
+    ssl_context = object()
+    source = KafkaJsonSource(
+        fixed_context(),
+        job_id="job-1",
+        config=source_config(),
+        consumer_factory=factory,
+        consumer_options={
+            "security_protocol": "SSL",
+            "ssl_context": ssl_context,
+        },
+    )
+
+    await source.open()
+    await source.close()
+
+    arguments = factory.calls[0][1]
+    assert arguments["security_protocol"] == "SSL"
+    assert arguments["ssl_context"] is ssl_context
+    assert arguments["enable_auto_commit"] is False
+
+
+def test_source_rejects_security_options_that_override_offset_contract() -> None:
+    with pytest.raises(ValueError, match="不能覆盖"):
+        KafkaJsonSource(
+            fixed_context(),
+            job_id="job-1",
+            config=source_config(),
+            consumer_options={"enable_auto_commit": True},
+        )
+
+
+@pytest.mark.asyncio
 async def test_parallel_source_按subtask确定性分配partition避免rebalance重放() -> None:
     consumer = FakeConsumer(
         assigned_partitions={

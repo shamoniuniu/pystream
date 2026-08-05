@@ -245,3 +245,67 @@
   - Kafka broker、Docker 主机或 File output volume HA
 - 上一回退点：`8882d9e`
 - 提交与远端备份：本日志随 Task 5 commit 推送
+
+## 2026-08-05T03:09:40Z - Task 6 mTLS、Token、Secret 与 Prometheus
+
+- 状态：实现、core/HA 安全烟测、Python 3.11 质量门完成
+- TLS、认证与 Secret：
+  - 新增统一 SSL context、SAN/CN 身份校验、恒定时间 Bearer 比较和 file-only
+    Secret loader
+  - 外部 `:8080` 终止 HTTPS，并以 `haproxy` 服务证书连接 ready leader
+  - 内部 `:8082` TCP TLS 透传，保留 Worker 客户端证书身份并选择 active leader
+  - JobManager/Worker HTTP、Worker 数据面均强制 mTLS；Worker 注册身份绑定
+    certificate SAN 与 `worker_id`
+  - CLI、演示 producer/consumer、故障注入和等待脚本均从文件加载 CA、Token 和证书
+  - Kafka broker 要求 SSL client auth；私钥使用 PKCS#12，CA truststore 使用 JKS
+  - MinIO core/HA、S3 HAProxy 与 PyStream S3 client 全链路 TLS
+  - `scripts/generate_dev_pki.py` 支持生成/强制轮换 CA、服务证书、Kafka stores、
+    Token 和对象存储凭据；manifest 仅包含证书元数据
+- Prometheus：
+  - JobManager/Worker 提供受客户端证书或 scrape token 保护的 `/metrics`
+  - 导出 leader/lease、checkpoint/barrier、transaction/finalize、recovery、
+    object store、TLS/auth 和证书到期指标
+  - Prometheus `v3.5.0` 镜像固定 digest；配置与 8 条 SLO rules 经 `promtool` 通过
+- 安全负面测试：
+  - 无 Token/错 Token 返回 401，正确 Token 可访问；管理 Token 与 metrics Token 隔离
+  - 错 CA、过期证书在 TLS 握手阶段被拒绝
+  - 错服务身份、Worker certificate/worker_id 不匹配返回 403
+  - 数据面拒绝非 Worker 证书；日志、错误、metrics 和 PKI manifest 不包含 Secret
+- core Docker 动态证据：
+  - TLS Kafka、TLS MinIO、HTTPS JobManager/HAProxy、3 mTLS Workers 和 Prometheus 健康
+  - 正确 Token 观察到 `3/3` healthy Workers；无 Token/错 Token 均为 401
+  - 明文 HTTP 到 HTTPS 入口被断开
+  - Prometheus mTLS targets：1 JobManager + 3 Workers 全部 up
+  - 真实 WordCount 经 Kafka SSL、控制面 mTLS 和数据面 mTLS 完成，
+    committed 兼容输出为 `pie=1, apple=2`
+  - 指标证据：auth rejection=2、object store requests=53、证书剩余约 30 天
+- HA Docker 动态证据：
+  - 4 个双盘 MinIO 节点、TLS S3 代理、2 JobManagers、3 Workers、Kafka、
+    HAProxy 和 Prometheus 全部 healthy
+  - Prometheus 角色为 `jobmanager-2=ACTIVE`、`jobmanager-1=STANDBY`
+  - 两个 JobManager 和三个 HA Worker metrics targets 全部 up
+  - Prometheus 证书经内部 TLS 透传后访问 Worker API，被服务身份策略拒绝为 403
+- 故障/修复记录：
+  - 为 Python 3.13/OpenSSL 严格链验证补充 certificate SKI/AKI
+  - 按 Apache Kafka 镜像原生 filename/credentials file 契约挂载 SSL Secret
+  - cert-only PKCS#12 不被 Java 识别为 trust anchor，改为标准库生成 JKS v2
+  - MinIO 本地 health/init 命令显式处理自签 CA，实际 S3 数据路径仍严格校验
+  - Compose 宿主 Secret source 变量改为 `*_SOURCE`，避免 M5 `.env` 的容器
+    `*_FILE` 路径覆盖新凭据
+- Python 3.11 Linux 质量门：
+  - pytest：478 passed，无 skip
+  - branch coverage：82.92%
+  - Ruff check：通过
+  - Ruff format：通过
+  - `git diff --check`：通过
+- staged review：
+  - 41 个文件均属于 Task 6 范围，未暂存差异为 0
+  - receipt JSON 与 core/ha Compose 解析通过
+  - 私钥、Bearer、AWS key 模式 Secret scan：0 命中
+  - 未解决 blocker：0
+- 资源清理：core/HA containers=0、networks=0、volumes=0
+- 未在本里程碑宣称：
+  - DECIDED/FINALIZED Docker 精确崩溃窗口和 committed output fault diff
+  - Kafka broker、Docker 主机或 File output volume HA
+- 上一回退点：`c39edd8`
+- 提交与远端备份：本日志随 Task 6 commit 推送

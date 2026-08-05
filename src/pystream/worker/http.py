@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import ssl
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
@@ -16,11 +17,19 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from aiohttp import ClientResponseError, ClientSession, ClientTimeout, web
+from prometheus_client import CONTENT_TYPE_LATEST
 
 from pystream.checkpoint import TaskSnapshotDescriptor
 from pystream.control import ArtifactDescriptor, TaskDeployment, TaskStatus, WorkerNode
-from pystream.observability import log_event
+from pystream.observability import PyStreamMetrics, log_event
 from pystream.runtime import DataPlaneServer, RuntimeErrorBase, RuntimeSnapshot
+from pystream.security import (
+    AuthenticationError,
+    BearerTokenAuthenticator,
+    PeerIdentityError,
+    peer_identities,
+    require_peer_identity,
+)
 from pystream.worker.manager import (
     ArtifactFetcher,
     StatusReporter,
@@ -91,11 +100,18 @@ class WorkerHttpService:
         manager: WorkerTaskManager,
         data_server: DataPlaneServer,
         registration_client: RegistrationClient,
+        *,
+        metrics_auth: BearerTokenAuthenticator | None = None,
+        require_internal_tls: bool = False,
+        metrics: PyStreamMetrics | None = None,
     ) -> None:
         self.config = config
         self.manager = manager
         self.data_server = data_server
         self.registration_client = registration_client
+        self.metrics_auth = metrics_auth
+        self.require_internal_tls = require_internal_tls
+        self.metrics = metrics or PyStreamMetrics()
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._heartbeat_error: str | None = None
         self._registered_epoch: int | None = None
@@ -103,8 +119,9 @@ class WorkerHttpService:
 
     def create_app(self) -> web.Application:
         """创建带生命周期钩子和控制路由的应用。"""
-        app = web.Application()
+        app = web.Application(middlewares=[self._security_middleware])
         app.router.add_get("/health", self._health)
+        app.router.add_get("/metrics", self._metrics)
         app.router.add_post("/tasks/deploy", self._deploy)
         app.router.add_get("/tasks", self._tasks)
         app.router.add_post(
@@ -132,6 +149,45 @@ class WorkerHttpService:
         app.on_startup.append(self._startup)
         app.on_cleanup.append(self._cleanup)
         return app
+
+    @web.middleware
+    async def _security_middleware(
+        self,
+        request: web.Request,
+        handler,
+    ) -> web.StreamResponse:
+        if request.path == "/health":
+            return await handler(request)
+        if request.path == "/metrics":
+            if "prometheus" in peer_identities(request.transport):
+                return await handler(request)
+            if self.metrics_auth is not None:
+                try:
+                    self.metrics_auth.authenticate(request.headers.get("Authorization"))
+                except AuthenticationError:
+                    self.metrics.record_auth_rejection("metrics", "invalid_token")
+                    return _authentication_response("Metrics 认证失败")
+                return await handler(request)
+            if not self.require_internal_tls:
+                return await handler(request)
+            self.metrics.record_auth_rejection("metrics", "missing_identity")
+            return _authentication_response("Metrics 认证失败")
+        if not self.require_internal_tls:
+            return await handler(request)
+        try:
+            require_peer_identity(
+                request.transport,
+                exact=frozenset({"jobmanager"}),
+                prefixes=("jobmanager-",),
+            )
+        except PeerIdentityError:
+            self.metrics.record_tls_failure("worker_http")
+            self.metrics.record_auth_rejection("worker_control", "invalid_identity")
+            return web.json_response(
+                {"error": "JobManager certificate identity 不被允许"},
+                status=403,
+            )
+        return await handler(request)
 
     async def _startup(self, _: web.Application) -> None:
         await self.data_server.start()
@@ -256,6 +312,13 @@ class WorkerHttpService:
                     "errors": sum(item.errors for item in snapshots),
                 },
             }
+        )
+
+    async def _metrics(self, _: web.Request) -> web.Response:
+        self.metrics.update_worker(self.manager.snapshots())
+        return web.Response(
+            body=self.metrics.render(),
+            headers={"Content-Type": CONTENT_TYPE_LATEST},
         )
 
     async def _deploy(self, request: web.Request) -> web.Response:
@@ -440,11 +503,13 @@ class _HttpClientBase:
         *,
         session: ClientSession | None = None,
         timeout: float = 10.0,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._session = session
         self._owns_session = session is None
         self._timeout = ClientTimeout(total=timeout)
+        self._ssl_context = ssl_context
 
     async def _get_session(self) -> ClientSession:
         if self._session is None:
@@ -466,7 +531,7 @@ class HttpArtifactFetcher(_HttpClientBase, ArtifactFetcher):
             f"{self.base_url}/jobs/{quote(descriptor.job_id, safe='')}"
             f"/artifacts/{descriptor.sha256}"
         )
-        async with session.get(path) as response:
+        async with session.get(path, ssl=self._ssl_context) as response:
             response.raise_for_status()
             return await response.read()
 
@@ -532,7 +597,11 @@ class HttpJobManagerClient(_HttpClientBase, RegistrationClient):
 
     async def _post(self, path: str, document: dict[str, Any]) -> dict[str, Any]:
         session = await self._get_session()
-        async with session.post(f"{self.base_url}{path}", json=document) as response:
+        async with session.post(
+            f"{self.base_url}{path}",
+            json=document,
+            ssl=self._ssl_context,
+        ) as response:
             response.raise_for_status()
             result = await response.json()
         if not isinstance(result, dict) or not all(isinstance(key, str) for key in result):
@@ -548,14 +617,21 @@ class HttpWorkerGateway(_HttpClientBase):
         *,
         session: ClientSession | None = None,
         timeout: float = 10.0,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
-        super().__init__("", session=session, timeout=timeout)
+        super().__init__(
+            "",
+            session=session,
+            timeout=timeout,
+            ssl_context=ssl_context,
+        )
 
     async def deploy_task(self, worker: WorkerNode, deployment: TaskDeployment) -> None:
         session = await self._get_session()
         async with session.post(
             f"{worker.control_address.rstrip('/')}/tasks/deploy",
             json=deployment_to_dict(deployment),
+            ssl=self._ssl_context,
         ) as response:
             try:
                 response.raise_for_status()
@@ -573,7 +649,8 @@ class HttpWorkerGateway(_HttpClientBase):
         session = await self._get_session()
         async with session.delete(
             f"{worker.control_address.rstrip('/')}/tasks/{quote(task_id, safe='')}"
-            f"?attempt_id={attempt_id}&coordinator_epoch={coordinator_epoch}"
+            f"?attempt_id={attempt_id}&coordinator_epoch={coordinator_epoch}",
+            ssl=self._ssl_context,
         ) as response:
             try:
                 response.raise_for_status()
@@ -688,7 +765,11 @@ class HttpWorkerGateway(_HttpClientBase):
         method = session.get if action is None else session.post
         # Checkpoint 的总超时由 JobManager coordinator 控制; 不能被 Gateway
         # 的普通 10 秒请求超时提前截断。
-        async with method(path, timeout=ClientTimeout(total=None)) as response:
+        async with method(
+            path,
+            timeout=ClientTimeout(total=None),
+            ssl=self._ssl_context,
+        ) as response:
             try:
                 response.raise_for_status()
             except ClientResponseError as exc:
@@ -747,6 +828,14 @@ def _response_coordinator_epoch(document: dict[str, Any]) -> int:
 def _validate_coordinator_epoch(value: object) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise WorkerRequestError("coordinator_epoch 必须是非负整数")
+
+
+def _authentication_response(message: str) -> web.Response:
+    return web.json_response(
+        {"error": message},
+        status=401,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 __all__ = [

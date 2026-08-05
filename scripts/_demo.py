@@ -7,12 +7,31 @@ import os
 import time
 from collections import Counter
 from pathlib import Path
-from urllib.request import urlopen
+
+from pystream.client import JobManagerClient
+from pystream.security import TlsFiles, create_client_ssl_context
 
 DEFAULT_JOBMANAGER_URL = os.getenv("PYSTREAM_JOBMANAGER_URL", "http://localhost:8080")
 DEFAULT_OUTPUT_ROOT = Path(os.getenv("PYSTREAM_OUTPUT_ROOT", "output"))
 JOB_ID_MARKER = ".last_wordcount_job_id"
 EXPECTED_WORDCOUNT = Counter({"apple": 2, "pie": 1})
+
+
+def kafka_client_options() -> dict[str, object]:
+    """Build aiokafka SSL options from file-only environment settings."""
+    ca_file = os.getenv("PYSTREAM_KAFKA_CA_FILE")
+    cert_file = os.getenv("PYSTREAM_KAFKA_CERT_FILE")
+    key_file = os.getenv("PYSTREAM_KAFKA_KEY_FILE")
+    configured = (ca_file, cert_file, key_file)
+    if all(value is None for value in configured):
+        return {}
+    if any(value is None for value in configured):
+        raise ValueError("Kafka SSL 要求同时配置 CA、certificate 和 private key 文件")
+    files = TlsFiles(Path(ca_file), Path(cert_file), Path(key_file))
+    return {
+        "security_protocol": "SSL",
+        "ssl_context": create_client_ssl_context(files),
+    }
 
 
 def marker_path(output_root: Path) -> Path:
@@ -52,12 +71,10 @@ def wait_for_workers(
     """等待控制面看到足够数量的健康 Worker。"""
     deadline = time.monotonic() + timeout
     last_count = 0
+    client = JobManagerClient(jobmanager_url, timeout=3)
     while time.monotonic() < deadline:
         try:
-            with urlopen(f"{jobmanager_url.rstrip('/')}/v1/workers", timeout=3) as response:
-                import json
-
-                document = json.load(response)
+            document = client.workers()
             workers = document.get("workers", [])
             last_count = sum(
                 isinstance(item, dict) and item.get("healthy") is True for item in workers

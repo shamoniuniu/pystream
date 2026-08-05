@@ -6,6 +6,7 @@ from contextlib import suppress
 from typing import Any
 from uuid import uuid4
 
+from pystream.observability import PyStreamMetrics
 from pystream.storage.errors import (
     ObjectConflict,
     ObjectNotFound,
@@ -37,10 +38,12 @@ class S3ObjectStore:
         access_key_id: str | None = None,
         secret_access_key: str | None = None,
         verify: bool | str = True,
+        metrics: PyStreamMetrics | None = None,
     ) -> None:
         if not bucket:
             raise ValueError("bucket 不能为空")
         self.bucket = bucket
+        self.metrics = metrics
         if client is None:
             try:
                 import boto3
@@ -72,9 +75,13 @@ class S3ObjectStore:
             content = response["Body"].read()
             etag = _normalize_etag(response["ETag"])
         except Exception as exc:
-            raise _translate_error("get", key, exc) from exc
+            translated = _translate_error("get", key, exc)
+            self._record("get", _status(translated))
+            raise translated from exc
         if not isinstance(content, bytes):
+            self._record("get", "error")
             raise ObjectStoreError(f"S3 get {key!r} 返回非 bytes Body")
+        self._record("get", "ok")
         return ObjectValue(content=content, etag=etag)
 
     def put_if_absent(self, key: str, content: bytes) -> str:
@@ -87,9 +94,13 @@ class S3ObjectStore:
                 Body=content,
                 IfNoneMatch="*",
             )
-            return _normalize_etag(response["ETag"])
+            etag = _normalize_etag(response["ETag"])
+            self._record("put_if_absent", "ok")
+            return etag
         except Exception as exc:
-            raise _translate_error("put_if_absent", key, exc) from exc
+            translated = _translate_error("put_if_absent", key, exc)
+            self._record("put_if_absent", _status(translated))
+            raise translated from exc
 
     def put_if_match(self, key: str, content: bytes, etag: str) -> str:
         """使用 ETag 前置条件更新单个 mutable pointer。"""
@@ -103,9 +114,13 @@ class S3ObjectStore:
                 Body=content,
                 IfMatch=f'"{etag}"',
             )
-            return _normalize_etag(response["ETag"])
+            updated_etag = _normalize_etag(response["ETag"])
+            self._record("put_if_match", "ok")
+            return updated_etag
         except Exception as exc:
-            raise _translate_error("put_if_match", key, exc) from exc
+            translated = _translate_error("put_if_match", key, exc)
+            self._record("put_if_match", _status(translated))
+            raise translated from exc
 
     def list_keys(self, prefix: str) -> tuple[str, ...]:
         """遍历 continuation token，返回稳定排序结果。"""
@@ -123,7 +138,9 @@ class S3ObjectStore:
             try:
                 response = self._client.list_objects_v2(**arguments)
             except Exception as exc:
-                raise _translate_error("list", prefix, exc) from exc
+                translated = _translate_error("list", prefix, exc)
+                self._record("list", _status(translated))
+                raise translated from exc
             contents = response.get("Contents", [])
             if not isinstance(contents, list):
                 raise ObjectStoreError("S3 list Contents 不是数组")
@@ -138,6 +155,7 @@ class S3ObjectStore:
             if not isinstance(raw_token, str) or not raw_token:
                 raise ObjectStoreError("S3 list 分页缺少 continuation token")
             continuation_token = raw_token
+        self._record("list", "ok")
         return tuple(sorted(keys))
 
     def probe_conditional_writes(
@@ -182,6 +200,10 @@ class S3ObjectStore:
         with suppress(Exception):
             self._client.delete_object(Bucket=self.bucket, Key=key)
 
+    def _record(self, operation: str, status: str) -> None:
+        if self.metrics is not None:
+            self.metrics.record_object_store(operation, status)
+
 
 def _validate_key(key: str) -> None:
     if not isinstance(key, str) or not key or key.startswith("/"):
@@ -224,6 +246,14 @@ def _translate_error(operation: str, key: str, error: Exception) -> ObjectStoreE
     if code in _CONFLICT_CODES or status in _CONFLICT_CODES:
         return ObjectConflict(message)
     return ObjectStoreError(f"{message}: {type(error).__name__}: {error}")
+
+
+def _status(error: ObjectStoreError) -> str:
+    if isinstance(error, ObjectNotFound):
+        return "not_found"
+    if isinstance(error, ObjectConflict):
+        return "conflict"
+    return "error"
 
 
 __all__ = ["S3ObjectStore"]

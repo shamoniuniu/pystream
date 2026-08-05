@@ -8,7 +8,9 @@ HTTP 服务。模块只负责依赖注入与进程生命周期，不复制领域
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
+import ssl
 from collections.abc import Sequence
 from datetime import timedelta
 from pathlib import Path
@@ -26,8 +28,15 @@ from pystream.control import (
     S3JobMetadataRepository,
     S3LeaderLeaseRepository,
 )
-from pystream.observability import configure_logging
+from pystream.observability import PyStreamMetrics, configure_logging
 from pystream.runtime import DataPlaneServer
+from pystream.security import (
+    BearerTokenAuthenticator,
+    TlsFiles,
+    create_client_ssl_context,
+    create_server_ssl_context,
+    read_secret_file,
+)
 from pystream.storage import S3ObjectStore
 from pystream.worker import (
     HttpArtifactFetcher,
@@ -37,6 +46,8 @@ from pystream.worker import (
     WorkerServiceConfig,
     WorkerTaskManager,
 )
+
+SERVER_SSL_CONTEXT = web.AppKey("pystream.server_ssl_context", ssl.SSLContext)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,6 +70,13 @@ def build_parser() -> argparse.ArgumentParser:
     jobmanager.add_argument("--leader-lease-ttl", type=float, default=10.0)
     jobmanager.add_argument("--leader-renew-interval", type=float, default=3.0)
     jobmanager.add_argument("--leader-poll-interval", type=float, default=1.0)
+    _add_tls_arguments(jobmanager)
+    jobmanager.add_argument(
+        "--external-token-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_EXTERNAL_TOKEN_FILE"),
+    )
+    _add_metrics_arguments(jobmanager)
     jobmanager.set_defaults(app_factory=_create_jobmanager_app)
 
     worker = subparsers.add_parser("worker", help="启动 Worker 控制面与数据面")
@@ -75,6 +93,23 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--work-root", type=Path, default=Path("/data/work"))
     worker.add_argument("--checkpoint-root", type=Path, default=Path("/data/checkpoints"))
     _add_object_store_arguments(worker)
+    _add_tls_arguments(worker)
+    _add_metrics_arguments(worker)
+    worker.add_argument(
+        "--kafka-ca-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_KAFKA_CA_FILE"),
+    )
+    worker.add_argument(
+        "--kafka-cert-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_KAFKA_CERT_FILE"),
+    )
+    worker.add_argument(
+        "--kafka-key-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_KAFKA_KEY_FILE"),
+    )
     worker.set_defaults(app_factory=_create_worker_app)
     return parser
 
@@ -82,7 +117,14 @@ def build_parser() -> argparse.ArgumentParser:
 def _create_jobmanager_app(args: argparse.Namespace) -> web.Application:
     if args.heartbeat_timeout <= 0:
         raise ValueError("--heartbeat-timeout 必须大于 0")
-    gateway = HttpWorkerGateway()
+    metrics = PyStreamMetrics()
+    tls_files = _tls_files(args)
+    client_ssl = create_client_ssl_context(tls_files) if tls_files is not None else None
+    server_ssl = create_server_ssl_context(tls_files) if tls_files is not None else None
+    if tls_files is not None:
+        metrics.observe_certificate(args.jobmanager_id or "jobmanager", tls_files.cert_file)
+    gateway = HttpWorkerGateway(ssl_context=client_ssl)
+    args._pystream_metrics = metrics
     object_store = _object_store(args)
     if args.jobmanager_id is not None and object_store is None:
         raise ValueError("--jobmanager-id 要求配置对象存储")
@@ -107,6 +149,7 @@ def _create_jobmanager_app(args: argparse.Namespace) -> web.Application:
         role=(
             CoordinatorRole.STANDBY if args.jobmanager_id is not None else CoordinatorRole.ACTIVE
         ),
+        metrics=metrics,
     )
     leadership = None
     if args.jobmanager_id is not None:
@@ -121,13 +164,23 @@ def _create_jobmanager_app(args: argparse.Namespace) -> web.Application:
             ttl=timedelta(seconds=args.leader_lease_ttl),
             renew_interval=timedelta(seconds=args.leader_renew_interval),
             poll_interval=timedelta(seconds=args.leader_poll_interval),
+            metrics=metrics,
         )
     service = JobManagerHttpService(
         manager,
         reconcile_interval=args.reconcile_interval,
         leadership=leadership,
+        external_auth=_authenticator(
+            args.external_token_file,
+            "external management token",
+        ),
+        metrics_auth=_authenticator(args.metrics_token_file, "metrics token"),
+        require_internal_tls=tls_files is not None,
+        metrics=metrics,
     )
     app = service.create_app()
+    if server_ssl is not None:
+        app[SERVER_SSL_CONTEXT] = server_ssl
 
     async def close_gateway(_: web.Application) -> None:
         await gateway.close()
@@ -137,10 +190,54 @@ def _create_jobmanager_app(args: argparse.Namespace) -> web.Application:
 
 
 def _create_worker_app(args: argparse.Namespace) -> web.Application:
-    artifact_fetcher = HttpArtifactFetcher(args.jobmanager_url)
-    jobmanager_client = HttpJobManagerClient(args.jobmanager_url)
-    data_server = DataPlaneServer(args.data_listen_host, args.data_port)
+    metrics = PyStreamMetrics()
+    tls_files = _tls_files(args)
+    client_ssl = create_client_ssl_context(tls_files) if tls_files is not None else None
+    server_ssl = create_server_ssl_context(tls_files) if tls_files is not None else None
+    if tls_files is not None:
+        metrics.observe_certificate(args.worker_id, tls_files.cert_file)
+    artifact_fetcher = HttpArtifactFetcher(
+        args.jobmanager_url,
+        ssl_context=client_ssl,
+    )
+    jobmanager_client = HttpJobManagerClient(
+        args.jobmanager_url,
+        ssl_context=client_ssl,
+    )
+    data_server = DataPlaneServer(
+        args.data_listen_host,
+        args.data_port,
+        ssl_context=server_ssl,
+        metrics=metrics,
+    )
+    args._pystream_metrics = metrics
     object_store = _object_store(args)
+    runtime_options: dict[str, object] = {}
+    if client_ssl is not None:
+
+        async def open_data_connection(host: str, port: int):
+            return await asyncio.open_connection(
+                host,
+                port,
+                ssl=client_ssl,
+                server_hostname=host,
+            )
+
+        runtime_options["open_connection"] = open_data_connection
+    kafka_tls = _optional_tls_files(
+        args.kafka_ca_file,
+        args.kafka_cert_file,
+        args.kafka_key_file,
+        "Kafka",
+    )
+    kafka_consumer_options = (
+        {
+            "security_protocol": "SSL",
+            "ssl_context": create_client_ssl_context(kafka_tls),
+        }
+        if kafka_tls is not None
+        else {}
+    )
     manager = WorkerTaskManager(
         args.worker_id,
         args.work_root,
@@ -149,6 +246,8 @@ def _create_worker_app(args: argparse.Namespace) -> web.Application:
         status_reporter=jobmanager_client,
         checkpoint_root=(args.checkpoint_root if object_store is None else None),
         checkpoint_store=(S3CheckpointStore(object_store) if object_store is not None else None),
+        runtime_options=runtime_options,
+        kafka_consumer_options=kafka_consumer_options,
     )
     service = WorkerHttpService(
         WorkerServiceConfig(
@@ -161,8 +260,13 @@ def _create_worker_app(args: argparse.Namespace) -> web.Application:
         manager,
         data_server,
         jobmanager_client,
+        metrics_auth=_authenticator(args.metrics_token_file, "metrics token"),
+        require_internal_tls=tls_files is not None,
+        metrics=metrics,
     )
     app = service.create_app()
+    if server_ssl is not None:
+        app[SERVER_SSL_CONTEXT] = server_ssl
 
     async def close_clients(_: web.Application) -> None:
         await artifact_fetcher.close()
@@ -202,7 +306,35 @@ def _add_object_store_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _object_store(args: argparse.Namespace) -> S3ObjectStore | None:
+def _add_tls_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--tls-ca-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_TLS_CA_FILE"),
+    )
+    parser.add_argument(
+        "--tls-cert-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_TLS_CERT_FILE"),
+    )
+    parser.add_argument(
+        "--tls-key-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_TLS_KEY_FILE"),
+    )
+
+
+def _add_metrics_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--metrics-token-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_METRICS_TOKEN_FILE"),
+    )
+
+
+def _object_store(
+    args: argparse.Namespace,
+) -> S3ObjectStore | None:
     endpoint = args.object_store_endpoint
     if endpoint is None:
         return None
@@ -210,37 +342,62 @@ def _object_store(args: argparse.Namespace) -> S3ObjectStore | None:
         raise ValueError(
             "对象存储模式要求 --object-store-access-key-file 和 --object-store-secret-key-file"
         )
-    access_key = _read_secret_file(
+    access_key = read_secret_file(
         args.object_store_access_key_file,
         "object store access key",
     )
-    secret_key = _read_secret_file(
+    secret_key = read_secret_file(
         args.object_store_secret_key_file,
         "object store secret key",
     )
     verify: bool | str = (
         str(args.object_store_ca_file) if args.object_store_ca_file is not None else True
     )
-    store = S3ObjectStore(
-        args.object_store_bucket,
-        endpoint_url=endpoint,
-        region_name=args.object_store_region,
-        access_key_id=access_key,
-        secret_access_key=secret_key,
-        verify=verify,
-    )
+    arguments: dict[str, object] = {
+        "endpoint_url": endpoint,
+        "region_name": args.object_store_region,
+        "access_key_id": access_key,
+        "secret_access_key": secret_key,
+        "verify": verify,
+    }
+    metrics = getattr(args, "_pystream_metrics", None)
+    if metrics is not None:
+        arguments["metrics"] = metrics
+    store = S3ObjectStore(args.object_store_bucket, **arguments)
     store.probe_conditional_writes()
     return store
 
 
-def _read_secret_file(path: Path, name: str) -> str:
-    try:
-        value = path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise ValueError(f"无法读取 {name} 文件 {path}: {exc}") from exc
-    if not value:
-        raise ValueError(f"{name} 文件不能为空")
-    return value
+def _tls_files(args: argparse.Namespace) -> TlsFiles | None:
+    return _optional_tls_files(
+        args.tls_ca_file,
+        args.tls_cert_file,
+        args.tls_key_file,
+        "service TLS",
+    )
+
+
+def _optional_tls_files(
+    ca_file: Path | None,
+    cert_file: Path | None,
+    key_file: Path | None,
+    name: str,
+) -> TlsFiles | None:
+    values = (ca_file, cert_file, key_file)
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise ValueError(f"{name} 要求同时配置 CA、certificate 和 private key 文件")
+    return TlsFiles(ca_file, cert_file, key_file)
+
+
+def _authenticator(
+    path: Path | None,
+    name: str,
+) -> BearerTokenAuthenticator | None:
+    if path is None:
+        return None
+    return BearerTokenAuthenticator(read_secret_file(path, name))
 
 
 def _environment_path(name: str) -> Path | None:
@@ -261,6 +418,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         port=args.port,
         shutdown_timeout=15.0,
         print=None,
+        ssl_context=app.get(SERVER_SSL_CONTEXT),
     )
     return 0
 

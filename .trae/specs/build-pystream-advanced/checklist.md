@@ -79,24 +79,24 @@
 
 ## 安全
 
-- [ ] 外部管理 API 要求 HTTPS + Bearer
-- [ ] 内部 HTTP 使用 mTLS
-- [ ] 数据面使用 mTLS
-- [ ] Kafka demo 使用 SSL client
-- [ ] 对象存储使用 TLS 和 Secret
-- [ ] 错 Token/CA/CN/过期证书被拒绝
-- [ ] Secret 只从文件读取
-- [ ] 日志和错误响应不泄露 Secret
+- [x] 外部管理 API 要求 HTTPS + Bearer
+- [x] 内部 HTTP 使用 mTLS
+- [x] 数据面使用 mTLS
+- [x] Kafka demo 使用 SSL client
+- [x] 对象存储使用 TLS 和 Secret
+- [x] 错 Token/CA/CN/过期证书被拒绝
+- [x] Secret 只从文件读取
+- [x] 日志和错误响应不泄露 Secret
 
 ## 可观测性
 
-- [ ] leader/lease 指标
-- [ ] checkpoint/barrier 指标
-- [ ] transaction/finalize 指标
-- [ ] recovery duration 指标
-- [ ] object store 指标
-- [ ] TLS/auth rejection 指标
-- [ ] Prometheus rules 语法和阈值通过
+- [x] leader/lease 指标
+- [x] checkpoint/barrier 指标
+- [x] transaction/finalize 指标
+- [x] recovery duration 指标
+- [x] object store 指标
+- [x] TLS/auth rejection 指标
+- [x] Prometheus rules 语法和阈值通过
 
 ## Core E2E
 

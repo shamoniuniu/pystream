@@ -9,7 +9,8 @@ import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.request import urlopen
+
+from pystream.client import JobManagerClient
 
 DEFAULT_COMPOSE_FILE = Path(__file__).resolve().parents[1] / "deploy" / "compose.yaml"
 
@@ -27,14 +28,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--timeout", type=float, default=120.0)
     return parser
-
-
-def _get_json(url: str) -> dict[str, object]:
-    with urlopen(url, timeout=3) as response:
-        document = json.load(response)
-    if not isinstance(document, dict):
-        raise RuntimeError(f"{url} 未返回 JSON object")
-    return document
 
 
 def select_target_worker(status: dict[str, object], operator_id: str) -> str:
@@ -130,10 +123,8 @@ def run_experiment(args: argparse.Namespace) -> dict[str, object]:
     """执行单 Worker 故障实验并返回结构化证据。"""
     if args.timeout <= 0:
         raise ValueError("--timeout 必须大于 0")
-    base_url = args.jobmanager_url.rstrip("/")
-    status_url = f"{base_url}/v1/jobs/{args.job_id}"
-    workers_url = f"{base_url}/v1/workers"
-    before_status = _get_json(status_url)
+    client = JobManagerClient(args.jobmanager_url, timeout=3)
+    before_status = client.status(args.job_id)
     if before_status.get("status") != "RUNNING":
         raise RuntimeError(f"故障注入前作业不处于 RUNNING: {before_status}")
     before_attempt = before_status.get("attempt")
@@ -146,7 +137,7 @@ def run_experiment(args: argparse.Namespace) -> dict[str, object]:
         raise RuntimeError("故障注入前没有完整 Checkpoint")
 
     worker_id = select_target_worker(before_status, args.operator_id)
-    old_incarnation = _worker_incarnation(_get_json(workers_url), worker_id)
+    old_incarnation = _worker_incarnation(client.workers(), worker_id)
     container_id = _container_id(args.compose_file.resolve(), worker_id)
     before_restart_count, _, before_started_at = _docker_state(_inspect(container_id))
 
@@ -172,9 +163,9 @@ def run_experiment(args: argparse.Namespace) -> dict[str, object]:
     while time.monotonic() < deadline:
         try:
             final_restart_count, running, final_started_at = _docker_state(_inspect(container_id))
-            workers = _get_json(workers_url)
+            workers = client.workers()
             new_incarnation = _worker_incarnation(workers, worker_id)
-            final_status = _get_json(status_url)
+            final_status = client.status(args.job_id)
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
             time.sleep(0.1)
             continue

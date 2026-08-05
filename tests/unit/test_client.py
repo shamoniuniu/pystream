@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -64,6 +65,23 @@ def test_status_对_job_id_进行_url_编码():
     client.status("a/b")
 
     assert transport.requests[0]["url"] == "http://manager/v1/jobs/a%2Fb"
+
+
+def test_client_只从文件加载_bearer_token(
+    tmp_path: Path,
+) -> None:
+    token_file = tmp_path / "token"
+    token_file.write_text("file-only-token\n", encoding="utf-8")
+    transport = FakeTransport(json_response(200, {"workers": []}))
+    client = JobManagerClient(
+        "https://manager",
+        transport=transport,
+        token_file=token_file,
+    )
+
+    assert client.workers() == {"workers": []}
+
+    assert transport.requests[0]["headers"]["Authorization"] == "Bearer file-only-token"
 
 
 def test_cancel_发送空_post_请求():

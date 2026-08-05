@@ -165,10 +165,12 @@ def test_ha_jobmanager_injects_standby_leadership(monkeypatch) -> None:
             *,
             reconcile_interval: float,
             leadership,
+            **kwargs,
         ) -> None:
             captured["manager"] = manager
             captured["reconcile_interval"] = reconcile_interval
             captured["leadership"] = leadership
+            captured["http_options"] = kwargs
 
         def create_app(self) -> web.Application:
             return web.Application()
@@ -202,3 +204,4 @@ def test_ha_jobmanager_injects_standby_leadership(monkeypatch) -> None:
     assert leadership.ttl.total_seconds() == 12
     assert leadership.renew_interval.total_seconds() == 4
     assert leadership.poll_interval.total_seconds() == 2
+    assert captured["http_options"]["require_internal_tls"] is False

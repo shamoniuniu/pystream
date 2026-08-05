@@ -162,6 +162,7 @@ class KafkaJsonSource:
         payload_validator: PayloadValidator | None = None,
         event_time_strategy: EventTimeExecutionConfig | None = None,
         logger: logging.Logger | None = None,
+        consumer_options: dict[str, Any] | None = None,
     ) -> None:
         self.context = context
         self.job_id = _require_safe_segment(job_id, field="job_id")
@@ -172,6 +173,16 @@ class KafkaJsonSource:
         self._payload_validator = payload_validator
         self._event_time_strategy = event_time_strategy
         self._logger = logger or logging.getLogger(__name__)
+        self._consumer_options = dict(consumer_options or {})
+        reserved_options = {
+            "group_id",
+            "client_id",
+            "enable_auto_commit",
+            "auto_offset_reset",
+        }
+        conflicts = reserved_options & self._consumer_options.keys()
+        if conflicts:
+            raise ValueError("Kafka consumer_options 不能覆盖: " + ", ".join(sorted(conflicts)))
         self._consumer: AsyncKafkaConsumer | None = None
         self._state = OperatorState.CREATED
         self._records_read = 0
@@ -242,6 +253,7 @@ class KafkaJsonSource:
                 client_id=client_id,
                 enable_auto_commit=False,
                 auto_offset_reset="earliest",
+                **self._consumer_options,
             )
             await consumer.start()
             self._assign_partitions(consumer)

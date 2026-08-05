@@ -106,6 +106,18 @@ def _add_client_options(parser: argparse.ArgumentParser) -> None:
         default=10.0,
         help="单次 HTTP 请求超时秒数 (默认: 10)",
     )
+    parser.add_argument(
+        "--token-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_EXTERNAL_TOKEN_FILE"),
+        help="管理 API Bearer Token 文件",
+    )
+    parser.add_argument(
+        "--ca-file",
+        type=Path,
+        default=_environment_path("PYSTREAM_TLS_CA_FILE"),
+        help="JobManager HTTPS CA 文件",
+    )
 
 
 def _handle_validate(args: argparse.Namespace, out: TextIO) -> int:
@@ -167,10 +179,17 @@ def _handle_cancel(args: argparse.Namespace, out: TextIO) -> int:
 
 
 def _make_client(args: argparse.Namespace) -> JobManagerClient:
-    return args.client_factory(
-        args.jobmanager_url,
-        timeout=args.http_timeout,
-    )
+    options: dict[str, object] = {"timeout": args.http_timeout}
+    if args.token_file is not None:
+        options["token_file"] = args.token_file
+    if args.ca_file is not None:
+        options["ca_file"] = args.ca_file
+    return args.client_factory(args.jobmanager_url, **options)
+
+
+def _environment_path(name: str) -> Path | None:
+    value = os.getenv(name)
+    return Path(value) if value else None
 
 
 def _print_graph(graph: StreamGraph, out: TextIO) -> None:

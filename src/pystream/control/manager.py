@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -44,7 +45,7 @@ from pystream.control.models import (
 )
 from pystream.control.ports import ArtifactRepository, TaskDeployment, WorkerGateway
 from pystream.control.scheduler import SlotScheduler, WorkerRegistry
-from pystream.observability import log_event
+from pystream.observability import PyStreamMetrics, log_event
 
 
 @dataclass(slots=True)
@@ -79,6 +80,8 @@ class JobRun:
     metadata_revision: int = -1
     metadata_etag: str | None = None
     metadata_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    recovery_started_at_monotonic: float | None = field(default=None, repr=False)
+    recovery_metric_component: str = field(default="job", repr=False)
 
     def __post_init__(self) -> None:
         if self.deployed_task_ids is None:
@@ -140,6 +143,7 @@ class JobManager:
         metadata_repository: JobMetadataRepository | None = None,
         coordinator_epoch: int = 0,
         role: CoordinatorRole = CoordinatorRole.ACTIVE,
+        metrics: PyStreamMetrics | None = None,
     ) -> None:
         if (
             isinstance(coordinator_epoch, bool)
@@ -157,6 +161,7 @@ class JobManager:
         self.metadata_repository = metadata_repository
         self.coordinator_epoch = coordinator_epoch
         self.role = role
+        self.metrics = metrics
         self._leader_ready = role is CoordinatorRole.ACTIVE
         self._activating = False
         self._leadership_lock = asyncio.Lock()
@@ -184,6 +189,11 @@ class JobManager:
     @property
     def takeover_pending(self) -> tuple[str, ...]:
         return tuple(sorted(self._takeover_pending))
+
+    @property
+    def runs(self) -> tuple[JobRun, ...]:
+        """返回当前作业聚合的只读快照，供本地观测适配器使用。"""
+        return tuple(self._runs.values())
 
     def _require_active(self, *, ready: bool) -> None:
         if not self.is_active:
@@ -695,6 +705,9 @@ class JobManager:
                 run,
                 checkpoint_id,
             )
+            checkpoint_started = time.monotonic()
+            if self.metrics is not None:
+                self.metrics.set_checkpoint_phase("ARMED")
             try:
                 manifest = await coordinator.run(
                     run.execution_graph,
@@ -704,6 +717,8 @@ class JobManager:
                     timeout=run.checkpoint_timeout,
                 )
             except Exception as exc:
+                if self.metrics is not None:
+                    self.metrics.checkpoint_duration.observe(time.monotonic() - checkpoint_started)
                 run.consecutive_checkpoint_failures += 1
                 self._log_checkpoint(
                     logging.ERROR,
@@ -720,6 +735,10 @@ class JobManager:
                 )
                 if decision_exists:
                     run.last_decided_checkpoint_id = checkpoint_id
+                    if self.metrics is not None:
+                        self.metrics.set_checkpoint_phase("DECIDED")
+                elif self.metrics is not None:
+                    self.metrics.set_checkpoint_phase("ABORTED")
                 await self._persist_run_metadata(run)
                 if (
                     run.execution_graph.delivery_guarantee is DeliveryGuarantee.EXACTLY_ONCE
@@ -738,6 +757,11 @@ class JobManager:
             run.last_decided_checkpoint_id = checkpoint_id
             run.last_finalized_checkpoint_id = checkpoint_id
             run.consecutive_checkpoint_failures = 0
+            if self.metrics is not None:
+                self.metrics.checkpoint_duration.observe(time.monotonic() - checkpoint_started)
+                if run.execution_graph.delivery_guarantee is DeliveryGuarantee.EXACTLY_ONCE:
+                    self.metrics.checkpoint_decisions.inc()
+                self.metrics.set_checkpoint_phase("FINALIZED")
             await self._persist_run_metadata(run)
             self._log_checkpoint(
                 logging.INFO,
@@ -759,6 +783,9 @@ class JobManager:
         ):
             return
         for decision in store.unfinalized_decisions(run.job.job_id):
+            if self.metrics is not None:
+                self.metrics.checkpoint_finalize_retries.inc()
+                self.metrics.set_checkpoint_phase("FINALIZING")
             try:
                 manifest = await coordinator.resume_decision(
                     run.execution_graph,
@@ -793,6 +820,8 @@ class JobManager:
                 manifest.checkpoint_id + 1,
             )
             run.consecutive_checkpoint_failures = 0
+            if self.metrics is not None:
+                self.metrics.set_checkpoint_phase("FINALIZED")
             await self._persist_run_metadata(run)
             self._log_checkpoint(
                 logging.INFO,
@@ -907,6 +936,8 @@ class JobManager:
             elif run.job.status is not JobStatus.RECOVERING:
                 raise InvalidStateTransition(f"作业状态 {run.job.status.value} 不能开始恢复")
             run.recovery_attempts = 0
+            run.recovery_started_at_monotonic = time.monotonic()
+            run.recovery_metric_component = "worker" if reason.startswith("Worker ") else "job"
             await self._persist_run_metadata(run)
             run.recovery_task = asyncio.create_task(
                 self._recover_run(run),
@@ -1020,6 +1051,12 @@ class JobManager:
 
                 run.job.transition(JobStatus.RUNNING)
                 run.last_recovery_completed_at = datetime.now(UTC)
+                if self.metrics is not None and run.recovery_started_at_monotonic is not None:
+                    self.metrics.record_recovery(
+                        run.recovery_metric_component,
+                        time.monotonic() - run.recovery_started_at_monotonic,
+                    )
+                run.recovery_started_at_monotonic = None
                 run.consecutive_checkpoint_failures = 0
                 if not (
                     self.checkpoint_store

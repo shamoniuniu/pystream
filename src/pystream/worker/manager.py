@@ -82,6 +82,7 @@ class WorkerTaskManager:
         consumer_factory: KafkaConsumerFactory | None = None,
         clock_factory: Callable[[], Any] = SystemClock,
         runtime_options: dict[str, Any] | None = None,
+        kafka_consumer_options: dict[str, Any] | None = None,
         checkpoint_root: str | Path | None = None,
         checkpoint_store: CheckpointStore | None = None,
     ) -> None:
@@ -98,6 +99,7 @@ class WorkerTaskManager:
         self.consumer_factory = consumer_factory
         self.clock_factory = clock_factory
         self.runtime_options = dict(runtime_options or {})
+        self.kafka_consumer_options = dict(kafka_consumer_options or {})
         self.checkpoint_store = checkpoint_store or LocalCheckpointStore(
             checkpoint_root or self.work_root / "checkpoints",
         )
@@ -197,6 +199,7 @@ class WorkerTaskManager:
                         "config": config,
                         "source_parallelism": task.parallelism,
                         "event_time_strategy": event_time_strategy,
+                        "consumer_options": self.kafka_consumer_options,
                     }
                     if config.validator is not None:
                         loader = UDFLoader(job_root, job_id=f"{task.job_id}-{task.task_id}")

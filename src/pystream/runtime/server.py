@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import ssl
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Protocol, cast
 
 from pystream.common import JsonValue, MessageType, RecordEnvelope
-from pystream.observability import log_event
+from pystream.observability import PyStreamMetrics, log_event
 from pystream.runtime.errors import RuntimeConnectionError, RuntimeLifecycleError
 from pystream.runtime.protocol import (
     ChannelIdentity,
@@ -29,6 +30,7 @@ from pystream.runtime.protocol import (
     validate_hello,
     write_frame,
 )
+from pystream.security import PeerIdentityError, require_peer_identity
 
 
 class InputConsumer(Protocol):
@@ -70,6 +72,8 @@ class DataPlaneServer:
         port: int = 0,
         *,
         start_server: Callable[..., Awaitable[asyncio.AbstractServer]] = asyncio.start_server,
+        ssl_context: ssl.SSLContext | None = None,
+        metrics: PyStreamMetrics | None = None,
     ) -> None:
         if not host:
             raise ValueError("data host 不能为空")
@@ -78,6 +82,8 @@ class DataPlaneServer:
         self.host = host
         self.port = port
         self._start_server = start_server
+        self._ssl_context = ssl_context
+        self._metrics_exporter = metrics
         self._server: asyncio.AbstractServer | None = None
         self._registrations: dict[ChannelIdentity, _Registration] = {}
         self._lock = asyncio.Lock()
@@ -133,7 +139,19 @@ class DataPlaneServer:
         """启动共享 TCP 监听器。"""
         if self._server is not None:
             return
-        self._server = await self._start_server(self._handle_connection, self.host, self.port)
+        if self._ssl_context is None:
+            self._server = await self._start_server(
+                self._handle_connection,
+                self.host,
+                self.port,
+            )
+        else:
+            self._server = await self._start_server(
+                self._handle_connection,
+                self.host,
+                self.port,
+                ssl=self._ssl_context,
+            )
 
     async def close(self) -> None:
         """停止接收连接并关闭全部活动 writer。"""
@@ -195,6 +213,16 @@ class DataPlaneServer:
         registration: _Registration | None = None
         ended_normally = False
         try:
+            if self._ssl_context is not None:
+                try:
+                    require_peer_identity(
+                        writer,
+                        prefixes=("worker-",),
+                    )
+                except PeerIdentityError:
+                    if self._metrics_exporter is not None:
+                        self._metrics_exporter.record_tls_failure("worker_data_plane")
+                    raise
             hello = await read_frame(reader)
             identity = _identity_from_hello(hello)
             registration = self._registrations.get(identity)

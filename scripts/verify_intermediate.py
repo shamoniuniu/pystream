@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 
+from _demo import kafka_client_options
 from _intermediate_demo import (
     BASELINE_ROWS,
     DEFAULT_BOOTSTRAP_SERVERS,
@@ -110,16 +111,19 @@ async def kafka_offsets(
     """读取演示消费组每个 partition 的 committed/end offset。"""
     if metadata_timeout <= 0 or poll_interval < 0:
         raise ValueError("metadata_timeout 必须大于 0, poll_interval 必须非负")
+    client_options = kafka_client_options()
     metadata_consumer = AIOKafkaConsumer(
         topic,
         bootstrap_servers=bootstrap_servers,
         group_id=None,
         enable_auto_commit=False,
+        **client_options,
     )
     offset_consumer = AIOKafkaConsumer(
         bootstrap_servers=bootstrap_servers,
         group_id=group_id,
         enable_auto_commit=False,
+        **client_options,
     )
     await metadata_consumer.start()
     try:

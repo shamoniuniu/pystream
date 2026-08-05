@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from pystream.control.models import CoordinatorRole
-from pystream.observability import log_event
+from pystream.observability import PyStreamMetrics, log_event
 from pystream.storage import (
     ObjectConflict,
     ObjectNotFound,
@@ -305,6 +305,7 @@ class LeaderCoordinator:
         poll_interval: timedelta = DEFAULT_STANDBY_POLL_INTERVAL,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        metrics: PyStreamMetrics | None = None,
     ) -> None:
         if _SAFE_HOLDER_ID.fullmatch(holder_id) is None:
             raise ValueError("holder_id 只能包含字母、数字、下划线和连字符")
@@ -320,6 +321,7 @@ class LeaderCoordinator:
             raise ValueError("renew_interval 必须小于 ttl")
         self.clock = clock
         self.sleep = sleep
+        self.metrics = metrics
         self.role = CoordinatorRole.STANDBY
         self.current: StoredLeaderLease | None = None
         self._next_renew_at: datetime | None = None
@@ -392,6 +394,8 @@ class LeaderCoordinator:
                         timeout=remaining,
                     )
                 except Exception as exc:
+                    if self.metrics is not None:
+                        self.metrics.lease_renew_failures.inc()
                     with suppress(LeaderElectionError):
                         await asyncio.to_thread(
                             self.repository.release,
@@ -427,6 +431,8 @@ class LeaderCoordinator:
                         timeout=remaining,
                     )
                 except Exception as exc:
+                    if self.metrics is not None:
+                        self.metrics.lease_renew_failures.inc()
                     self.role = CoordinatorRole.PROTECTIVE
                     self._protect_until = current.lease.expires_at
                     self._next_renew_at = None
