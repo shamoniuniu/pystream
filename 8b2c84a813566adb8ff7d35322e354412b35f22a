@@ -1,0 +1,1 @@
+commit=8b2c84a813566adb8ff7d35322e354412b35f22a; receipt_object=77546957e077e6ead82b617bc8527d6e94a46b3f; scope=advanced-m6-security-observability; verification=478-passed-no-skip,core-ha-tls-healthy,mtls-token-negative-pass,prometheus-rules-8,resource-cleanup-zero; rollback=git revert 8b2c84a813566adb8ff7d35322e354412b35f22a
